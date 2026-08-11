@@ -63,6 +63,11 @@ public:
     };
     [[nodiscard]] Measure measure() const;
 
+    /// Enclosed volume in mm³, or 0 for a shape that encloses nothing. Cheap, exact, and
+    /// the single most useful assertion in a geometry test: it catches a boolean that
+    /// silently did nothing far more reliably than a face count.
+    [[nodiscard]] double volume() const;
+
     struct Impl;
     [[nodiscard]] const Impl& impl() const noexcept { return *impl_; }
     [[nodiscard]] Impl& impl() noexcept { return *impl_; }

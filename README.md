@@ -3,10 +3,15 @@
 Cross-platform parametric CAD. Desktop (Windows/macOS/Linux) is the full product; iPadOS is a
 stripped-down 3D-printing client on the same core, built later.
 
-**Current state: M1 complete on macOS-arm64.** Kernel wrapper, topological naming, chamfer,
-the healing pipeline and the unit system are implemented; 20 test cases / 713 assertions,
-22/22 under `ctest`, clean under ASan + UBSan. Windows and Linux runs are the only M1 items
-left, and they need CI machines rather than more code.
+**Current state: M1 complete, M2 in progress.** The kernel, naming, units, document DAG and
+recompute engine are implemented, and the C ABI is live. Everything passes:
+
+```bash
+tools/run-tests.sh
+```
+
+Four tiers — layering, C++ unit (Catch2), Rust acceptance through the C ABI, Rust property
+tests. See [docs/TESTING.md](docs/TESTING.md).
 
 ```bash
 ctest --test-dir build --output-on-failure
@@ -19,7 +24,8 @@ ctest --test-dir build --output-on-failure
 | [docs/STACK.md](docs/STACK.md) | Verified dependency facts as of Aug 2026. Re-verify before any major bump; don't trust it after ~6 months. |
 | [docs/M0_M1.md](docs/M0_M1.md) | The current milestone checklist and exit criteria. |
 | [docs/FORMATS.md](docs/FORMATS.md) | Industry format support, tiers, licensing traps, and the PMI constraint on the document model. |
-| [docs/decisions/](docs/decisions/) | Five ADRs. 0002 and 0005 are the load-bearing ones. |
+| [docs/TESTING.md](docs/TESTING.md) | The four test tiers, why acceptance tests are in Rust, and how to add one. |
+| [docs/decisions/](docs/decisions/) | Six ADRs. 0002, 0005 and 0006 are the load-bearing ones. |
 
 ## Layers — the one rule that matters
 
@@ -71,7 +77,9 @@ version argument — the version is checked afterwards instead.
 
 - **M0** de-risk (4–6 wk) — spikes in `spikes/`, incl. OCCT on a physical iPad and bgfx Metal
 - **M1** kernel wrapper + topological naming (6–8 wk) — **the gate for the whole project**
-- **M2** document + recompute + DDC (6–8 wk) — ends with a shippable headless kernel + Python
+- **M2** document + recompute + DDC (6–8 wk) — **in progress.** Document DAG, persistent
+  undo, recompute engine, in-memory cache and the C ABI are done; assetlib DDC, file I/O and
+  Python bindings remain.
 - **M3** renderer (8–10 wk) · **M4** Qt shell (8–10 wk) · **M5** sketcher (10–12 wk) ·
   **M6** features + plugin ABI v1 (12+ wk)
 

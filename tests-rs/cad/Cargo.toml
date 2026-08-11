@@ -1,0 +1,9 @@
+[package]
+name = "cad"
+description = "Safe Rust API over the CAD core's C ABI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cad-sys = { path = "../cad-sys" }

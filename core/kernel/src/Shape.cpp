@@ -148,6 +148,13 @@ Shape::Measure Shape::measure() const {
     return {props.Mass(), c.X(), c.Y(), c.Z()};
 }
 
+double Shape::volume() const {
+    if (isNull()) return 0.0;
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(impl_->shape, props);
+    return props.Mass();
+}
+
 Operation::Operation() : impl_(std::make_unique<Impl>()) {}
 Operation::~Operation() = default;
 Operation::Operation(Operation&&) noexcept = default;

@@ -1,0 +1,14 @@
+[package]
+name = "cad-tests"
+description = "Acceptance and property tests for the CAD core, driven through the C ABI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cad = { path = "../cad" }
+
+[dev-dependencies]
+cad = { path = "../cad" }
+proptest = "1"

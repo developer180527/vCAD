@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["cad-sys", "cad", "cad-tests"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+
+[profile.test]
+# Tests drive OCCT, which is not fast in a debug build. Optimise dependencies so the suite
+# stays usable as a pre-commit gate; keep the test crates themselves debuggable.
+opt-level = 0
+[profile.test.package."*"]
+opt-level = 2

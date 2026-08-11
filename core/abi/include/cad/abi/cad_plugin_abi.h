@@ -33,7 +33,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 0
+#define CAD_ABI_VERSION_MINOR 1
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -130,6 +130,90 @@ typedef struct {
 
 /* The one symbol a plugin shared library must export. */
 const CadPluginDesc* cad_plugin_main(void);
+
+/* =====================================================================================
+ * Session API
+ * =====================================================================================
+ *
+ * The same C surface, exported directly by the core library rather than reached through a
+ * host vtable. This is what out-of-process consumers use: the Rust test suite, the future
+ * SwiftUI iPad shell, and any language binding.
+ *
+ * It exists deliberately: driving the core from Rust means the acceptance tests exercise
+ * exactly the boundary that plugins and the iPad app will use, so an ABI regression fails
+ * the test suite instead of being discovered by a third party.
+ *
+ * Ownership rules, uniformly:
+ *   - Handles are opaque, non-zero on success, zero on failure.
+ *   - Every cad_*_release is idempotent and accepts 0.
+ *   - Returned strings are owned by the session and valid until the NEXT call on that
+ *     session. Copy immediately.
+ *   - Nothing throws. Every fallible call returns CadStatus.
+ */
+
+typedef uint64_t CadSession;   /* owns a document, a feature registry, and a cache */
+typedef uint64_t CadObject;    /* an object id within a session's document */
+
+/* --- lifecycle --- */
+CadSession cad_session_create(void);
+void       cad_session_release(CadSession);
+
+/* Last error on this session, as a NUL-terminated string. Never NULL. */
+const char* cad_session_last_error(CadSession);
+
+/* --- document editing --- */
+CadStatus cad_object_add(CadSession, const char* type, CadObject* out);
+CadStatus cad_object_remove(CadSession, CadObject);
+CadStatus cad_object_set_length(CadSession, CadObject, const char* prop, double millimetres);
+CadStatus cad_object_set_real(CadSession, CadObject, const char* prop, double value);
+CadStatus cad_object_set_int(CadSession, CadObject, const char* prop, int64_t value);
+CadStatus cad_object_set_bool(CadSession, CadObject, const char* prop, int32_t value);
+CadStatus cad_object_set_text(CadSession, CadObject, const char* prop, const char* value);
+CadStatus cad_object_set_object(CadSession, CadObject, const char* prop, CadObject target);
+CadStatus cad_object_set_element(CadSession, CadObject, const char* prop,
+                                 const char* element_name);
+/* Marks a property cosmetic: excluded from the recompute cache key. */
+CadStatus cad_object_set_cosmetic(CadSession, CadObject, const char* prop, int32_t cosmetic);
+
+/* --- queries --- */
+CadStatus   cad_object_state(CadSession, CadObject, int32_t* out_state);
+const char* cad_object_error(CadSession, CadObject);
+CadStatus   cad_object_face_count(CadSession, CadObject, uint64_t* out);
+CadStatus   cad_object_edge_count(CadSession, CadObject, uint64_t* out);
+CadStatus   cad_object_cache_key(CadSession, CadObject, uint64_t* out);
+CadStatus   cad_object_is_valid_shape(CadSession, CadObject, int32_t* out);
+CadStatus   cad_object_volume(CadSession, CadObject, double* out);
+
+/* Content hash of an object's output, as a 64-hex-char string. Empty if not computed. */
+const char* cad_object_content_hash(CadSession, CadObject);
+
+/* The element name of the edge bounded by the two named faces of a Box object, in the
+ * text form ElementName::toString produces. Empty string if there is no such edge. This is
+ * how a caller with no C++ access takes a stable geometric reference. */
+const char* cad_box_edge_between(CadSession, CadObject box, int32_t face_a, int32_t face_b);
+const char* cad_box_face_name(CadSession, CadObject box, int32_t face);
+
+/* --- recompute --- */
+typedef struct {
+    uint64_t computed;
+    uint64_t cached;
+    uint64_t skipped;
+    uint64_t failed;
+    uint64_t blocked;
+} CadRecomputeReport;
+
+CadStatus cad_recompute(CadSession, CadRecomputeReport* out);
+CadStatus cad_cache_stats(CadSession, uint64_t* out_hits, uint64_t* out_misses);
+CadStatus cad_cache_reset_stats(CadSession);
+
+/* --- undo/redo --- */
+CadStatus cad_undo(CadSession, int32_t* out_did_undo);
+CadStatus cad_redo(CadSession, int32_t* out_did_redo);
+CadStatus cad_document_digest(CadSession, uint64_t* out);
+CadStatus cad_object_count(CadSession, uint64_t* out);
+
+/* --- units, exposed so bindings do not reimplement parsing --- */
+CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);
 
 #ifdef __cplusplus
 }  /* extern "C" */

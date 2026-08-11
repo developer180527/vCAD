@@ -1,0 +1,492 @@
+//! Safe, ergonomic Rust API over the CAD core's C ABI.
+//!
+//! Two jobs:
+//!   1. Make the test suite pleasant to write, so tests actually get written.
+//!   2. Be the reference for how a language binding should consume the ABI. If something is
+//!      awkward here, the ABI is wrong and should be fixed rather than papered over.
+//!
+//! Safety contract with the C side: handles are validated by the core, every fallible call
+//! returns a status, and returned strings are copied immediately (they are only valid until
+//! the next call on the same session — see the header).
+
+use std::ffi::{CStr, CString};
+use std::fmt;
+
+pub use cad_sys as sys;
+
+// --- errors ------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Error {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    InvalidInput,
+    NotDone,
+    InvalidResult,
+    BooleanFailed,
+    Unsupported,
+    NamingLost,
+    KernelException,
+    Cancelled,
+    BadHandle,
+    NoPermission,
+    Internal,
+    Unknown(i32),
+}
+
+impl ErrorCode {
+    fn from_raw(v: sys::CadStatus) -> Self {
+        match v {
+            sys::CAD_ERR_INVALID_INPUT => Self::InvalidInput,
+            sys::CAD_ERR_NOT_DONE => Self::NotDone,
+            sys::CAD_ERR_INVALID_RESULT => Self::InvalidResult,
+            sys::CAD_ERR_BOOLEAN_FAILED => Self::BooleanFailed,
+            sys::CAD_ERR_UNSUPPORTED => Self::Unsupported,
+            sys::CAD_ERR_NAMING_LOST => Self::NamingLost,
+            sys::CAD_ERR_KERNEL_EXC => Self::KernelException,
+            sys::CAD_ERR_CANCELLED => Self::Cancelled,
+            sys::CAD_ERR_BAD_HANDLE => Self::BadHandle,
+            sys::CAD_ERR_NO_PERMISSION => Self::NoPermission,
+            sys::CAD_ERR_INTERNAL => Self::Internal,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+// --- enums mirroring the core ------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Clean,
+    Dirty,
+    Failed,
+    Blocked,
+}
+
+/// Axis-named on purpose: OCCT's `FrontFace()` is the x-max face, not y-min.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxFace {
+    ZMin,
+    ZMax,
+    XMax,
+    XMin,
+    YMin,
+    YMax,
+}
+
+impl BoxFace {
+    fn raw(self) -> i32 {
+        match self {
+            Self::ZMin => sys::BOX_Z_MIN,
+            Self::ZMax => sys::BOX_Z_MAX,
+            Self::XMax => sys::BOX_X_MAX,
+            Self::XMin => sys::BOX_X_MIN,
+            Self::YMin => sys::BOX_Y_MIN,
+            Self::YMax => sys::BOX_Y_MAX,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitSystem {
+    Millimetre,
+    Centimetre,
+    Metre,
+    Inch,
+    Foot,
+}
+
+impl UnitSystem {
+    fn raw(self) -> i32 {
+        match self {
+            Self::Millimetre => sys::UNIT_MM,
+            Self::Centimetre => sys::UNIT_CM,
+            Self::Metre => sys::UNIT_M,
+            Self::Inch => sys::UNIT_IN,
+            Self::Foot => sys::UNIT_FT,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RecomputeReport {
+    pub computed: u64,
+    pub cached: u64,
+    pub skipped: u64,
+    pub failed: u64,
+    pub blocked: u64,
+}
+
+impl RecomputeReport {
+    pub fn all_succeeded(&self) -> bool {
+        self.failed == 0 && self.blocked == 0
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+}
+
+// --- object handle ------------------------------------------------------------------------
+
+/// An object id within a session. Copyable and inert — it does not own anything, which
+/// matches the C ABI: the session owns every object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Object(pub sys::CadObject);
+
+// --- session -------------------------------------------------------------------------------
+
+/// Owns a document, a feature registry and a recompute cache. Released on drop.
+pub struct Session {
+    handle: sys::CadSession,
+}
+
+impl Session {
+    pub fn new() -> Result<Self> {
+        let handle = unsafe { sys::cad_session_create() };
+        if handle == 0 {
+            return Err(Error {
+                code: ErrorCode::Internal,
+                message: "could not create a session".into(),
+            });
+        }
+        Ok(Self { handle })
+    }
+
+    fn last_error(&self) -> String {
+        unsafe {
+            let p = sys::cad_session_last_error(self.handle);
+            if p.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        }
+    }
+
+    fn check(&self, status: sys::CadStatus) -> Result<()> {
+        if status == sys::CAD_OK {
+            Ok(())
+        } else {
+            Err(Error {
+                code: ErrorCode::from_raw(status),
+                message: self.last_error(),
+            })
+        }
+    }
+
+    /// Copies a session-owned string immediately, as the header requires.
+    fn take_str(&self, p: *const std::os::raw::c_char) -> String {
+        unsafe {
+            if p.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        }
+    }
+
+    // --- editing --------------------------------------------------------------------------
+
+    pub fn add(&mut self, ty: &str) -> Result<Object> {
+        let c = CString::new(ty).map_err(|_| Error {
+            code: ErrorCode::InvalidInput,
+            message: "type name contains a NUL byte".into(),
+        })?;
+        let mut out: sys::CadObject = 0;
+        let st = unsafe { sys::cad_object_add(self.handle, c.as_ptr(), &mut out) };
+        self.check(st)?;
+        Ok(Object(out))
+    }
+
+    pub fn remove(&mut self, o: Object) -> Result<()> {
+        let st = unsafe { sys::cad_object_remove(self.handle, o.0) };
+        self.check(st)
+    }
+
+    /// Sets a length property, in millimetres — the core's base unit.
+    pub fn set_length(&mut self, o: Object, prop: &str, mm: f64) -> Result<()> {
+        let c = cstr(prop)?;
+        let st = unsafe { sys::cad_object_set_length(self.handle, o.0, c.as_ptr(), mm) };
+        self.check(st)
+    }
+
+    pub fn set_real(&mut self, o: Object, prop: &str, v: f64) -> Result<()> {
+        let c = cstr(prop)?;
+        let st = unsafe { sys::cad_object_set_real(self.handle, o.0, c.as_ptr(), v) };
+        self.check(st)
+    }
+
+    pub fn set_int(&mut self, o: Object, prop: &str, v: i64) -> Result<()> {
+        let c = cstr(prop)?;
+        let st = unsafe { sys::cad_object_set_int(self.handle, o.0, c.as_ptr(), v) };
+        self.check(st)
+    }
+
+    pub fn set_bool(&mut self, o: Object, prop: &str, v: bool) -> Result<()> {
+        let c = cstr(prop)?;
+        let st = unsafe {
+            sys::cad_object_set_bool(self.handle, o.0, c.as_ptr(), if v { 1 } else { 0 })
+        };
+        self.check(st)
+    }
+
+    pub fn set_text(&mut self, o: Object, prop: &str, v: &str) -> Result<()> {
+        let c = cstr(prop)?;
+        let val = cstr(v)?;
+        let st =
+            unsafe { sys::cad_object_set_text(self.handle, o.0, c.as_ptr(), val.as_ptr()) };
+        self.check(st)
+    }
+
+    pub fn set_input(&mut self, o: Object, prop: &str, target: Object) -> Result<()> {
+        let c = cstr(prop)?;
+        let st = unsafe { sys::cad_object_set_object(self.handle, o.0, c.as_ptr(), target.0) };
+        self.check(st)
+    }
+
+    /// Sets a geometric reference from its stable text form. This is how a caller holds on
+    /// to "that edge" across rebuilds — the whole point of the naming layer.
+    pub fn set_element(&mut self, o: Object, prop: &str, element: &str) -> Result<()> {
+        let c = cstr(prop)?;
+        let e = cstr(element)?;
+        let st =
+            unsafe { sys::cad_object_set_element(self.handle, o.0, c.as_ptr(), e.as_ptr()) };
+        self.check(st)
+    }
+
+    /// Marks a property as excluded from the recompute cache key.
+    pub fn set_cosmetic(&mut self, o: Object, prop: &str, cosmetic: bool) -> Result<()> {
+        let c = cstr(prop)?;
+        let st = unsafe {
+            sys::cad_object_set_cosmetic(self.handle, o.0, c.as_ptr(), i32::from(cosmetic))
+        };
+        self.check(st)
+    }
+
+    // --- queries --------------------------------------------------------------------------
+
+    pub fn state(&self, o: Object) -> Result<State> {
+        let mut raw = 0i32;
+        let st = unsafe { sys::cad_object_state(self.handle, o.0, &mut raw) };
+        self.check(st)?;
+        Ok(match raw {
+            sys::CAD_STATE_CLEAN => State::Clean,
+            sys::CAD_STATE_DIRTY => State::Dirty,
+            sys::CAD_STATE_FAILED => State::Failed,
+            _ => State::Blocked,
+        })
+    }
+
+    pub fn object_error(&self, o: Object) -> String {
+        self.take_str(unsafe { sys::cad_object_error(self.handle, o.0) })
+    }
+
+    pub fn face_count(&self, o: Object) -> Result<u64> {
+        let mut out = 0u64;
+        let st = unsafe { sys::cad_object_face_count(self.handle, o.0, &mut out) };
+        self.check(st)?;
+        Ok(out)
+    }
+
+    pub fn edge_count(&self, o: Object) -> Result<u64> {
+        let mut out = 0u64;
+        let st = unsafe { sys::cad_object_edge_count(self.handle, o.0, &mut out) };
+        self.check(st)?;
+        Ok(out)
+    }
+
+    pub fn cache_key(&self, o: Object) -> Result<u64> {
+        let mut out = 0u64;
+        let st = unsafe { sys::cad_object_cache_key(self.handle, o.0, &mut out) };
+        self.check(st)?;
+        Ok(out)
+    }
+
+    pub fn is_valid_shape(&self, o: Object) -> Result<bool> {
+        let mut out = 0i32;
+        let st = unsafe { sys::cad_object_is_valid_shape(self.handle, o.0, &mut out) };
+        self.check(st)?;
+        Ok(out != 0)
+    }
+
+    pub fn volume(&self, o: Object) -> Result<f64> {
+        let mut out = 0f64;
+        let st = unsafe { sys::cad_object_volume(self.handle, o.0, &mut out) };
+        self.check(st)?;
+        Ok(out)
+    }
+
+    pub fn content_hash(&self, o: Object) -> String {
+        self.take_str(unsafe { sys::cad_object_content_hash(self.handle, o.0) })
+    }
+
+    /// Stable name of the edge shared by two of a box's faces. Empty if no such edge exists
+    /// — which is exactly what happens after an operation removes it, and is a result the
+    /// caller must handle rather than a failure.
+    pub fn box_edge_between(&self, b: Object, a: BoxFace, c: BoxFace) -> String {
+        self.take_str(unsafe {
+            sys::cad_box_edge_between(self.handle, b.0, a.raw(), c.raw())
+        })
+    }
+
+    pub fn box_face_name(&self, b: Object, face: BoxFace) -> String {
+        self.take_str(unsafe { sys::cad_box_face_name(self.handle, b.0, face.raw()) })
+    }
+
+    pub fn object_count(&self) -> Result<u64> {
+        let mut out = 0u64;
+        let st = unsafe { sys::cad_object_count(self.handle, &mut out) };
+        self.check(st)?;
+        Ok(out)
+    }
+
+    pub fn document_digest(&self) -> Result<u64> {
+        let mut out = 0u64;
+        let st = unsafe { sys::cad_document_digest(self.handle, &mut out) };
+        self.check(st)?;
+        Ok(out)
+    }
+
+    // --- recompute ------------------------------------------------------------------------
+
+    pub fn recompute(&mut self) -> Result<RecomputeReport> {
+        let mut raw = sys::CadRecomputeReport::default();
+        let st = unsafe { sys::cad_recompute(self.handle, &mut raw) };
+        self.check(st)?;
+        Ok(RecomputeReport {
+            computed: raw.computed,
+            cached: raw.cached,
+            skipped: raw.skipped,
+            failed: raw.failed,
+            blocked: raw.blocked,
+        })
+    }
+
+    pub fn cache_stats(&self) -> Result<CacheStats> {
+        let (mut hits, mut misses) = (0u64, 0u64);
+        let st = unsafe { sys::cad_cache_stats(self.handle, &mut hits, &mut misses) };
+        self.check(st)?;
+        Ok(CacheStats { hits, misses })
+    }
+
+    pub fn reset_cache_stats(&mut self) -> Result<()> {
+        let st = unsafe { sys::cad_cache_reset_stats(self.handle) };
+        self.check(st)
+    }
+
+    // --- history --------------------------------------------------------------------------
+
+    pub fn undo(&mut self) -> Result<bool> {
+        let mut out = 0i32;
+        let st = unsafe { sys::cad_undo(self.handle, &mut out) };
+        self.check(st)?;
+        Ok(out != 0)
+    }
+
+    pub fn redo(&mut self) -> Result<bool> {
+        let mut out = 0i32;
+        let st = unsafe { sys::cad_redo(self.handle, &mut out) };
+        self.check(st)?;
+        Ok(out != 0)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        unsafe { sys::cad_session_release(self.handle) };
+    }
+}
+
+// A Session is a handle into a mutex-guarded registry on the C side, so it is safe to move
+// between threads. It is deliberately NOT Sync: the returned-string contract ("valid until
+// the next call on this session") cannot survive concurrent readers.
+unsafe impl Send for Session {}
+
+// --- free functions -------------------------------------------------------------------------
+
+/// Parses a length through the core's own parser, so bindings never reimplement it.
+pub fn parse_length(text: &str, assumed: UnitSystem) -> Result<f64> {
+    let c = cstr(text)?;
+    let mut out = 0f64;
+    let st = unsafe { sys::cad_parse_length(c.as_ptr(), assumed.raw(), &mut out) };
+    if st == sys::CAD_OK {
+        Ok(out)
+    } else {
+        Err(Error {
+            code: ErrorCode::from_raw(st),
+            // No session, so no session-scoped message. The code is the whole signal here.
+            message: format!("could not parse {text:?} as a length"),
+        })
+    }
+}
+
+fn cstr(s: &str) -> Result<CString> {
+    CString::new(s).map_err(|_| Error {
+        code: ErrorCode::InvalidInput,
+        message: format!("{s:?} contains a NUL byte"),
+    })
+}
+
+// --- convenience builders used throughout the suite -------------------------------------------
+
+impl Session {
+    /// Adds a box and sets its three dimensions in one call.
+    pub fn add_box(&mut self, dx: f64, dy: f64, dz: f64) -> Result<Object> {
+        let o = self.add("Box")?;
+        self.set_length(o, "dx", dx)?;
+        self.set_length(o, "dy", dy)?;
+        self.set_length(o, "dz", dz)?;
+        Ok(o)
+    }
+
+    pub fn add_fillet(&mut self, base: Object, edge: &str, radius: f64) -> Result<Object> {
+        let o = self.add("Fillet")?;
+        self.set_input(o, "base", base)?;
+        self.set_element(o, "edges", edge)?;
+        self.set_length(o, "radius", radius)?;
+        Ok(o)
+    }
+
+    pub fn add_chamfer(&mut self, base: Object, edge: &str, distance: f64) -> Result<Object> {
+        let o = self.add("Chamfer")?;
+        self.set_input(o, "base", base)?;
+        self.set_element(o, "edges", edge)?;
+        self.set_length(o, "distance", distance)?;
+        Ok(o)
+    }
+
+    /// Boolean cut. Property names are ordered so `base` sorts before `tool`, which is what
+    /// determines the order the engine passes them to the feature.
+    pub fn add_cut(&mut self, base: Object, tool: Object) -> Result<Object> {
+        let o = self.add("Cut")?;
+        self.set_input(o, "a_base", base)?;
+        self.set_input(o, "b_tool", tool)?;
+        Ok(o)
+    }
+
+    pub fn add_translate(&mut self, base: Object, dx: f64, dy: f64, dz: f64) -> Result<Object> {
+        let o = self.add("Translate")?;
+        self.set_input(o, "base", base)?;
+        self.set_length(o, "dx", dx)?;
+        self.set_length(o, "dy", dy)?;
+        self.set_length(o, "dz", dz)?;
+        Ok(o)
+    }
+}

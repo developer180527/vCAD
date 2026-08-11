@@ -1,0 +1,9 @@
+[package]
+name = "cad-sys"
+description = "Raw FFI declarations for the CAD core's C ABI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+links = "cad_abi"
+
+[dependencies]
