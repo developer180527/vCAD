@@ -1,0 +1,46 @@
+#pragma once
+
+#include "cad/kernel/Result.h"
+#include "cad/kernel/Shape.h"
+
+#include <vector>
+
+namespace cad::kernel {
+
+/// A primitive plus the faces its constructor can name for us.
+///
+/// The tags matter: BRepPrimAPI_MakeBox exposes BottomFace()/TopFace()/FrontFace()/
+/// BackFace()/LeftFace()/RightFace(). Using those instead of explorer indices is what makes
+/// "the top face" survive a width change. Never name a primitive's faces by iteration order.
+struct BoxResult {
+    Operation op;
+    /// Indexed by BoxFace below. Face tags are positional and therefore stable.
+    std::vector<Shape> taggedFaces;
+};
+
+/// Axis-relative face tags for a box spanning (0,0,0)..(dx,dy,dz).
+///
+/// Named by axis on purpose. OCCT's own accessors are named Front/Back/Left/Right, and
+/// their meaning is NOT what a reader assumes: BRepPrimAPI_MakeBox::FrontFace() is the
+/// **x = dx** face and BackFace() is **x = 0**, while LeftFace() is **y = 0** and
+/// RightFace() is **y = dy**. Verified against OCCT 8.0.1 — see tests/acceptance/debug_dump.
+/// Passing those names through would guarantee that someone eventually fillets the wrong
+/// edge and blames the naming layer.
+///
+/// The numeric values are the discriminators baked into persisted element names, so they
+/// are part of the file format. Do not reorder them.
+enum BoxFace : std::size_t {
+    ZMin = 0,   ///< OCCT BottomFace(), z = 0
+    ZMax,       ///< OCCT TopFace(),    z = dz
+    XMax,       ///< OCCT FrontFace(),  x = dx
+    XMin,       ///< OCCT BackFace(),   x = 0
+    YMin,       ///< OCCT LeftFace(),   y = 0
+    YMax,       ///< OCCT RightFace(),  y = dy
+    BoxFaceCount
+};
+
+Result<BoxResult> makeBox(double dx, double dy, double dz);
+
+Result<Operation> makeCylinder(double radius, double height);
+
+}  // namespace cad::kernel

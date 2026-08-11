@@ -1,0 +1,138 @@
+/* cad_plugin_abi.h — the entire boundary between the core and everything outside it.
+ *
+ * C99. No C++ types cross this line. Ever.
+ *
+ * This one header serves two consumers, which is why it is defined in M1 alongside the core
+ * API rather than later:
+ *
+ *   1. Desktop native plugins (tier 2). C++ across a shared-library boundary means MSVC
+ *      debug/release CRT mismatches, libstdc++ vs libc++, and OCCT's handle refcounting
+ *      crossing allocators. All of that is fatal and none of it is debuggable in the field.
+ *
+ *   2. The future iPad shell. Swift imports C cleanly; Swift/C++ interop still has sharp
+ *      edges. A C facade costs one design instead of two.
+ *
+ * Conventions:
+ *   - Errors are return codes. Nothing throws across the boundary.
+ *   - Strings are (const char*, length), host-owned, valid until the next host call.
+ *   - Shapes and document objects are opaque uint64 handles into a host-side registry.
+ *     Never pointers: handles survive host-side reallocation and can be validated.
+ *   - The host passes a vtable struct, it does not export symbols. That lets us version the
+ *     surface, stub functions out for sandboxed (WASM) plugins, and load two ABI
+ *     generations side by side.
+ */
+
+#ifndef CAD_PLUGIN_ABI_H
+#define CAD_PLUGIN_ABI_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define CAD_ABI_VERSION_MAJOR 1
+#define CAD_ABI_VERSION_MINOR 0
+
+/* --- status ------------------------------------------------------------------------- */
+typedef int32_t CadStatus;
+#define CAD_OK                  0
+#define CAD_ERR_INVALID_INPUT   1
+#define CAD_ERR_NOT_DONE        2
+#define CAD_ERR_INVALID_RESULT  3
+#define CAD_ERR_BOOLEAN_FAILED  4
+#define CAD_ERR_UNSUPPORTED     5
+#define CAD_ERR_NAMING_LOST     6
+#define CAD_ERR_KERNEL_EXC      7
+#define CAD_ERR_CANCELLED       8
+#define CAD_ERR_BAD_HANDLE      9
+#define CAD_ERR_NO_PERMISSION  10
+#define CAD_ERR_INTERNAL       99
+
+/* --- handles ------------------------------------------------------------------------ */
+typedef uint64_t CadShape;      /* 0 == null */
+typedef uint64_t CadDocObject;
+typedef uint64_t CadDocument;
+typedef uint64_t CadTransaction;
+
+/* A topological element identity. `digest` is the fast path; `text` is the round-trippable
+ * form (see cad::naming::ElementName::toString). Both are host-owned. */
+typedef struct {
+    uint64_t    digest;
+    const char* text;
+    size_t      text_len;
+} CadElementId;
+
+typedef struct {
+    const char* data;
+    size_t      len;
+} CadStr;
+
+/* --- capabilities a plugin may request ---------------------------------------------- */
+#define CAD_CAP_FILESYSTEM  (1u << 0)
+#define CAD_CAP_NETWORK     (1u << 1)
+#define CAD_CAP_SUBPROCESS  (1u << 2)
+#define CAD_CAP_UI          (1u << 3)
+
+/* --- host interface ------------------------------------------------------------------
+ * Function-pointer table handed to the plugin at init. A NULL entry means the host does
+ * not offer that call in this configuration (e.g. a sandboxed tier); plugins MUST check.
+ */
+typedef struct CadHost CadHost;
+
+struct CadHost {
+    uint32_t abi_major;
+    uint32_t abi_minor;
+    void*    host_ctx;
+
+    /* diagnostics */
+    void (*log)(void* ctx, int32_t level, const char* msg);
+    CadStr (*last_error)(void* ctx);
+
+    /* geometry */
+    CadStatus (*make_box)(void* ctx, double dx, double dy, double dz, CadShape* out);
+    CadStatus (*boolean_fuse)(void* ctx, CadShape a, CadShape b, CadShape* out);
+    CadStatus (*boolean_cut)(void* ctx, CadShape a, CadShape b, CadShape* out);
+    CadStatus (*fillet_edges)(void* ctx, CadShape base, const CadElementId* edges,
+                              size_t edge_count, double radius, CadShape* out);
+    CadStatus (*shape_validate)(void* ctx, CadShape s);
+    void      (*shape_release)(void* ctx, CadShape s);
+
+    /* naming — the reason plugins can hold references across rebuilds at all */
+    CadStatus (*element_resolve)(void* ctx, CadShape s, const CadElementId* id,
+                                 CadShape* out_sub);
+    CadStatus (*element_name_of)(void* ctx, CadShape s, CadShape sub, CadElementId* out);
+
+    /* document */
+    CadStatus (*txn_begin)(void* ctx, CadDocument doc, const char* label, CadTransaction* out);
+    CadStatus (*txn_commit)(void* ctx, CadTransaction t);
+    CadStatus (*txn_abort)(void* ctx, CadTransaction t);
+
+    /* extension-point registration */
+    CadStatus (*register_feature)(void* ctx, const void* feature_desc);
+    CadStatus (*register_command)(void* ctx, const void* command_desc);
+    CadStatus (*register_format)(void* ctx, const void* format_desc);
+};
+
+/* --- plugin interface ---------------------------------------------------------------- */
+typedef struct {
+    uint32_t    abi_major;          /* must equal CAD_ABI_VERSION_MAJOR */
+    uint32_t    abi_minor;          /* host may be newer */
+    const char* id;                 /* reverse-DNS, e.g. "com.acme.sheetmetal" */
+    const char* display_name;
+    const char* semver;
+    uint32_t    required_caps;      /* CAD_CAP_* bitmask; host may refuse */
+
+    CadStatus (*initialize)(const CadHost* host);
+    void      (*shutdown)(void);
+} CadPluginDesc;
+
+/* The one symbol a plugin shared library must export. */
+const CadPluginDesc* cad_plugin_main(void);
+
+#ifdef __cplusplus
+}  /* extern "C" */
+#endif
+
+#endif /* CAD_PLUGIN_ABI_H */

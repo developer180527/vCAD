@@ -1,0 +1,7 @@
+# M0 de-risking spikes. Throwaway code — deleted once docs/M0_M1.md records the answer.
+# Each must build and run in CI on all three desktop platforms.
+
+add_subdirectory(occt_smoke)
+# add_subdirectory(rhi_triangle)          # 0.3 — bgfx
+# add_subdirectory(planegcs_standalone)   # 0.4
+# add_subdirectory(assetlib_standalone)   # 0.5
