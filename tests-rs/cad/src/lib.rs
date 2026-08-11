@@ -157,6 +157,26 @@ pub struct Session {
     handle: sys::CadSession,
 }
 
+/// What an import found, without committing it to a document.
+#[derive(Debug, Clone, Default)]
+pub struct ImportReport {
+    pub solids: u64,
+    pub faces: u64,
+    pub units_were_assumed: bool,
+    pub unsupported: Vec<String>,
+    pub warnings: Vec<String>,
+    summary: String,
+}
+
+impl ImportReport {
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+    pub fn lossless(&self) -> bool {
+        self.unsupported.is_empty()
+    }
+}
+
 impl Session {
     pub fn new() -> Result<Self> {
         let handle = unsafe { sys::cad_session_create() };
@@ -167,6 +187,57 @@ impl Session {
             });
         }
         Ok(Self { handle })
+    }
+
+    /// A session with the on-disk DDC tier enabled. Results computed here are available to
+    /// any later session pointed at the same directory — which is what makes a team or CI
+    /// cache work.
+    pub fn with_cache(dir: &str) -> Result<Self> {
+        let c = cstr(dir)?;
+        let handle = unsafe { sys::cad_session_create_cached(c.as_ptr()) };
+        if handle == 0 {
+            return Err(Error {
+                code: ErrorCode::Internal,
+                message: "could not create a cached session".into(),
+            });
+        }
+        Ok(Self { handle })
+    }
+
+    pub fn export_file(&self, o: Object, path: &str) -> Result<()> {
+        let c = cstr(path)?;
+        let st = unsafe { sys::cad_object_export(self.handle, o.0, c.as_ptr()) };
+        self.check(st)
+    }
+
+    /// Reads a file and reports on it without adding anything to the document.
+    pub fn probe_import(&self, path: &str, assumed: UnitSystem) -> Result<ImportReport> {
+        let c = cstr(path)?;
+        let mut info = sys::CadImportInfo::default();
+        let st =
+            unsafe { sys::cad_import_probe(self.handle, c.as_ptr(), assumed.raw(), &mut info) };
+        self.check(st)?;
+
+        // The summary is session-scoped and only valid until the next call, so copy it now.
+        let summary = self.take_str(unsafe { sys::cad_import_summary(self.handle) });
+        Ok(ImportReport {
+            solids: info.solids,
+            faces: info.faces,
+            units_were_assumed: info.units_were_assumed != 0,
+            // The ABI reports counts rather than the strings themselves; the strings are in
+            // the summary. Placeholders keep `lossless()` meaningful without a second call.
+            unsupported: vec![String::new(); info.unsupported_count.max(0) as usize],
+            warnings: vec![String::new(); info.warning_count.max(0) as usize],
+            summary,
+        })
+    }
+
+    pub fn readable_extensions(&self) -> Vec<String> {
+        self.take_str(unsafe { sys::cad_readable_extensions(self.handle) })
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     fn last_error(&self) -> String {
@@ -478,6 +549,14 @@ impl Session {
         let o = self.add("Cut")?;
         self.set_input(o, "a_base", base)?;
         self.set_input(o, "b_tool", tool)?;
+        Ok(o)
+    }
+
+    /// An imported file as a document feature: it has a cache key like anything else, so a
+    /// re-import is cached and downstream features survive it.
+    pub fn add_import(&mut self, path: &str) -> Result<Object> {
+        let o = self.add("Import")?;
+        self.set_text(o, "path", path)?;
         Ok(o)
     }
 

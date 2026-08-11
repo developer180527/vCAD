@@ -4,6 +4,7 @@
 #include "cad/kernel/Fillet.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/kernel/Transform.h"
+#include "cad/io/Format.h"
 
 namespace cad::recompute {
 namespace {
@@ -175,6 +176,39 @@ kernel::Result<Output> computeTranslate(const ComputeContext& ctx) {
     return nameResult(op.value(), ctx.inputs, ctx.namingSerial);
 }
 
+kernel::Result<Output> computeImport(const ComputeContext& ctx) {
+    auto path = require<std::string>(ctx.object, "path");
+    if (!path) return path.error();
+
+    // The ordering that matters: read -> heal -> name. Healing changes topology, so naming
+    // an imported shape before healing it would silently invalidate every name.
+    // cad::io::importFile guarantees the first two; we do the third.
+    static const io::FormatRegistry registry = io::FormatRegistry::builtins();
+
+    io::ImportOptions options;
+    if (const auto* assumed = ctx.object.find("assumedUnits")) {
+        if (const auto* v = std::get_if<std::int64_t>(assumed)) {
+            options.assumedUnits = static_cast<units::UnitSystem>(*v);
+        }
+    }
+
+    auto imported = io::importFile(registry, path.value(), options);
+    if (!imported) return imported.error();
+
+    naming::NamingContext naming(ctx.namingSerial, 0);
+    auto map = naming.nameprimitive(imported.value().shape, {});
+    if (!map) {
+        // Foreign geometry that we cannot fully name is usable but not safely referenceable.
+        // Say which, rather than failing the import outright — the user can still see and
+        // export the part.
+        return Error{ErrorCode::NamingLost,
+                     "This file was read, but its geometry could not be identified well "
+                     "enough to attach features to.",
+                     map.error().detail};
+    }
+    return Output{imported.value().shape, std::move(map).value()};
+}
+
 }  // namespace
 
 FeatureRegistry FeatureRegistry::builtins() {
@@ -187,6 +221,7 @@ FeatureRegistry FeatureRegistry::builtins() {
     r.add({"Fuse", 1, computeBoolean<&kernel::booleanFuse>});
     r.add({"Common", 1, computeBoolean<&kernel::booleanCommon>});
     r.add({"Translate", 1, computeTranslate});
+    r.add({"Import", 1, computeImport});
     return r;
 }
 

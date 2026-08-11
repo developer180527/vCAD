@@ -19,10 +19,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Shared libs by default: the LGPL relink obligation for Qt and planegcs is satisfied by
-# dynamic linking. Do not flip this to static for a shipping desktop build without reading
-# docs/decisions/0001-qt-linking.md.
-option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+# Applies to THIRD-PARTY dependencies only. The LGPL relink obligation for Qt and planegcs
+# is satisfied by dynamic linking — see docs/decisions/0001-qt-linking.md.
+#
+# Our own core modules are always STATIC regardless (see cad_core_library in
+# cmake/CadLayering.cmake): OCCT is a static archive, and duplicating it across several
+# shared libraries duplicates its global state.
+option(BUILD_SHARED_LIBS "Build third-party dependencies as shared libraries" ON)
 
 option(CAD_BUILD_TESTS      "Build tests"                         ON)
 option(CAD_BUILD_SPIKES     "Build M0 de-risking spikes"          ON)
@@ -30,6 +33,10 @@ option(CAD_BUILD_RENDER     "Build renderer (M3)"                 OFF)
 option(CAD_BUILD_SHELL_QT   "Build Qt desktop shell (M4)"         OFF)
 option(CAD_ENABLE_ASAN      "Enable AddressSanitizer"             OFF)
 option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
+
+# assetlib: the content-addressed DDC (ADR 0004). Vendored as a submodule; standalone by
+# design, with BLAKE3 and SQLite vendored inside it.
+add_subdirectory(modules/engine/modules/assetlib EXCLUDE_FROM_ALL)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CadWarnings)
@@ -63,6 +70,8 @@ message(STATUS "OCCT ${OpenCASCADE_VERSION} at ${OpenCASCADE_INCLUDE_DIR}")
 # --- Layers ------------------------------------------------------------------------
 # Strict, one-directional. core knows nothing about render/app/shell.
 add_subdirectory(core)
+
+add_subdirectory(bindings/python)
 
 if(CAD_BUILD_TESTS)
   enable_testing()

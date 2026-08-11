@@ -3,15 +3,27 @@
 Cross-platform parametric CAD. Desktop (Windows/macOS/Linux) is the full product; iPadOS is a
 stripped-down 3D-printing client on the same core, built later.
 
-**Current state: M1 complete, M2 in progress.** The kernel, naming, units, document DAG and
-recompute engine are implemented, and the C ABI is live. Everything passes:
+**Current state: M1 and M2 complete.** Kernel, topological naming, units, document DAG,
+recompute engine, the assetlib DDC, file interchange, the C ABI and Python bindings are all
+implemented. Everything passes:
 
 ```bash
 tools/run-tests.sh
 ```
 
-Four tiers — layering, C++ unit (Catch2), Rust acceptance through the C ABI, Rust property
-tests. See [docs/TESTING.md](docs/TESTING.md).
+Five tiers — layering, C++ unit (Catch2), Rust acceptance through the C ABI, Rust property
+tests, Python bindings. See [docs/TESTING.md](docs/TESTING.md).
+
+There is a headless kernel with a Python API, which was the point of M2:
+
+```python
+import cad
+s = cad.Session(cache_dir="~/.cad-cache")   # on-disk DDC, shared across sessions
+box = s.add("Box")
+s.set_length(box, "dx", cad.Length.mm(100))
+...
+s.export_file(box, "part.step")
+```
 
 ```bash
 ctest --test-dir build --output-on-failure
@@ -25,7 +37,7 @@ ctest --test-dir build --output-on-failure
 | [docs/M0_M1.md](docs/M0_M1.md) | The current milestone checklist and exit criteria. |
 | [docs/FORMATS.md](docs/FORMATS.md) | Industry format support, tiers, licensing traps, and the PMI constraint on the document model. |
 | [docs/TESTING.md](docs/TESTING.md) | The four test tiers, why acceptance tests are in Rust, and how to add one. |
-| [docs/decisions/](docs/decisions/) | Six ADRs. 0002, 0005 and 0006 are the load-bearing ones. |
+| [docs/decisions/](docs/decisions/) | Six ADRs. 0002, 0004, 0005 and 0006 are the load-bearing ones. |
 
 ## Layers — the one rule that matters
 
@@ -57,8 +69,12 @@ out-of-process · CPython + C ABI plugins (desktop only).
 Requires a vcpkg checkout and CMake 3.24+.
 
 ```bash
+git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 ```
+
+Python bindings need `pip install pybind11` — deliberately from the interpreter you intend
+to bind to, not from vcpkg (whose port builds a whole CPython, and fails on arm64-osx).
 
 Then:
 
@@ -77,9 +93,9 @@ version argument — the version is checked afterwards instead.
 
 - **M0** de-risk (4–6 wk) — spikes in `spikes/`, incl. OCCT on a physical iPad and bgfx Metal
 - **M1** kernel wrapper + topological naming (6–8 wk) — **the gate for the whole project**
-- **M2** document + recompute + DDC (6–8 wk) — **in progress.** Document DAG, persistent
-  undo, recompute engine, in-memory cache and the C ABI are done; assetlib DDC, file I/O and
-  Python bindings remain.
+- **M2** document + recompute + DDC (6–8 wk) — **complete.** Persistent document with
+  free undo, recompute engine, two-tier cache over assetlib's DDC, STEP/IGES/STL
+  interchange, the C ABI, and Python bindings.
 - **M3** renderer (8–10 wk) · **M4** Qt shell (8–10 wk) · **M5** sketcher (10–12 wk) ·
   **M6** features + plugin ABI v1 (12+ wk)
 

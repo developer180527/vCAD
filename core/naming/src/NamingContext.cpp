@@ -153,16 +153,48 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
     }
 
     ElementMap map;
-    // Tags are positional and come from the primitive's own constructor
-    // (BRepPrimAPI_MakeBox::TopFace() and friends), never from explorer order.
-    for (std::size_t i = 0; i < taggedFaces.size(); ++i) {
-        if (taggedFaces[i].isNull()) continue;
-        NameStep step;
-        step.featureSerial = impl_->featureSerial;
-        step.opTag = impl_->opTag;
-        step.provenance = Provenance::Primitive;
-        step.discriminator = static_cast<std::uint32_t>(i);
-        map.bind(taggedFaces[i], ElementName({step}));
+
+    if (!taggedFaces.empty()) {
+        // Tags are positional and come from the primitive's own constructor
+        // (BRepPrimAPI_MakeBox::TopFace() and friends), never from explorer order.
+        for (std::size_t i = 0; i < taggedFaces.size(); ++i) {
+            if (taggedFaces[i].isNull()) continue;
+            NameStep step;
+            step.featureSerial = impl_->featureSerial;
+            step.opTag = impl_->opTag;
+            step.provenance = Provenance::Primitive;
+            step.discriminator = static_cast<std::uint32_t>(i);
+            map.bind(taggedFaces[i], ElementName({step}));
+        }
+    } else {
+        // No constructor tags: a cylinder, or geometry read from a foreign file. Name every
+        // face by its position in a canonical MEASURE order - area then centroid, both
+        // quantised - which is deterministic across processes and machines.
+        //
+        // The honest caveat: unlike a box's positional tags, these names are only as stable
+        // as the geometry itself. Change a cylinder's radius and the faces keep their names
+        // (their relative measure order is unchanged); change it enough to reorder two faces
+        // by area and they swap. For imported foreign geometry there is nothing better
+        // available - the file carries no construction history - and a deterministic name is
+        // still far more useful than an explorer index, which changes on every read.
+        //
+        // Primitives that CAN expose tagged faces should; see the note in computeCylinder.
+        std::vector<std::pair<FaceMetric, TopoDS_Shape>> faces;
+        for (const auto& f : result.subShapes(kernel::ShapeType::Face)) {
+            const TopoDS_Shape& of = kernel::occt(const_cast<kernel::Shape&>(f));
+            faces.emplace_back(measureFace(of), of);
+        }
+        std::sort(faces.begin(), faces.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        for (std::size_t i = 0; i < faces.size(); ++i) {
+            NameStep step;
+            step.featureSerial = impl_->featureSerial;
+            step.opTag = impl_->opTag;
+            step.provenance = Provenance::Primitive;
+            step.discriminator = static_cast<std::uint32_t>(i);
+            map.bind(kernel::wrap(faces[i].second), ElementName({step}));
+        }
     }
 
     if (auto r = impl_->deriveBoundaries(result, map); !r) return r.error();

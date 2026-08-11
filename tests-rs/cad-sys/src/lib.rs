@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 1;
+pub const CAD_ABI_VERSION_MINOR: u32 = 2;
 
 pub type CadStatus = i32;
 
@@ -57,6 +57,16 @@ pub const UNIT_FT: i32 = 4;
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CadImportInfo {
+    pub solids: u64,
+    pub faces: u64,
+    pub units_were_assumed: i32,
+    pub unsupported_count: i32,
+    pub warning_count: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CadRecomputeReport {
     pub computed: u64,
     pub cached: u64,
@@ -67,6 +77,7 @@ pub struct CadRecomputeReport {
 
 extern "C" {
     pub fn cad_session_create() -> CadSession;
+    pub fn cad_session_create_cached(dir: *const c_char) -> CadSession;
     pub fn cad_session_release(s: CadSession);
     pub fn cad_session_last_error(s: CadSession) -> *const c_char;
 
@@ -147,6 +158,17 @@ extern "C" {
     pub fn cad_redo(s: CadSession, out: *mut i32) -> CadStatus;
     pub fn cad_document_digest(s: CadSession, out: *mut u64) -> CadStatus;
     pub fn cad_object_count(s: CadSession, out: *mut u64) -> CadStatus;
+
+    pub fn cad_object_export(s: CadSession, id: CadObject, path: *const c_char) -> CadStatus;
+    pub fn cad_import_probe(
+        s: CadSession,
+        path: *const c_char,
+        assumed: i32,
+        out: *mut CadImportInfo,
+    ) -> CadStatus;
+    pub fn cad_import_summary(s: CadSession) -> *const c_char;
+    pub fn cad_readable_extensions(s: CadSession) -> *const c_char;
+    pub fn cad_writable_extensions(s: CadSession) -> *const c_char;
 
     pub fn cad_parse_length(text: *const c_char, system: c_int, out: *mut f64) -> CadStatus;
 }

@@ -19,6 +19,12 @@ pub fn recompute_ok(s: &mut Session) -> RecomputeReport {
     report
 }
 
+/// Probes a file through a throwaway session. Import reporting needs no document.
+pub fn import_report(path: &str) -> Result<ImportReport> {
+    let s = Session::new()?;
+    s.probe_import(path, UnitSystem::Millimetre)
+}
+
 /// Volume of a box, for asserting a boolean actually removed material.
 pub fn box_volume(dx: f64, dy: f64, dz: f64) -> f64 {
     dx * dy * dz

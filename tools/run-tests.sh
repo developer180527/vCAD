@@ -54,4 +54,15 @@ else
   echo "(skipped by --quick)"
 fi
 
+cd "$ROOT"
+step "Python binding tests"
+# The only non-Rust tests in the repo, and necessarily so: a Python API cannot be exercised
+# from Rust. They cover the Python surface only — the semantics underneath are tested once,
+# in Rust, through the C ABI.
+if [ -f bindings/python/cad/_cad*.so ] || ls bindings/python/cad/_cad*.{so,pyd,dylib} >/dev/null 2>&1; then
+  PYTHONPATH="$ROOT/bindings/python" python3 -m pytest bindings/python/tests -q
+else
+  echo "(module not built — install pybind11 and reconfigure to enable)"
+fi
+
 printf '\n\033[1;32mAll tiers passed.\033[0m\n'

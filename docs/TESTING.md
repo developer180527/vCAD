@@ -35,14 +35,21 @@ Cheapest first, so failures surface early. `tools/run-tests.sh` runs them in thi
 | 2 | **C++ unit / acceptance** | `tests/` (Catch2) | ~3 s | Kernel wrapper, topological naming, units. Internals with no ABI representation. |
 | 3 | **Rust acceptance** | `tests-rs/cad-tests/tests/m2_*.rs` | ~0.2 s | Document DAG, recompute, cache behaviour, undo — through the ABI. |
 | 4 | **Rust property** | `tests-rs/cad-tests/tests/prop_*.rs` | ~3 s | Invariants over generated inputs, with shrinking. |
+| 5 | **Python bindings** | `bindings/python/tests/` (pytest) | ~1 s | The Python surface only — that errors arrive as exceptions, that the objects are idiomatic, that the docstring example is true. |
+
+Tier 5 is the one exception to "new tests go in Rust", and it is a necessary one: a Python
+API cannot be exercised from Rust. It deliberately does **not** re-test geometry or
+recompute semantics — those are covered once, in Rust, through the ABI. What it tests is
+that the *binding* behaves like Python: a failed call raises rather than returning a code,
+and a failed **feature** does not raise, because a partly-broken model must stay openable.
 
 Planned and not yet built, in the order they earn their place:
 
 | Tier | Trigger to build it |
 |---|---|
-| **Golden geometry** | When we have file import (M2 io). Compare content hashes of imported reference parts against a committed manifest; a diff means a kernel or naming change moved geometry. |
+| **Golden geometry** | Now possible — import landed. Compare content hashes of imported reference parts against a committed manifest; a diff means a kernel or naming change moved geometry. Blocked only on choosing licence-clean reference files. |
 | **Performance** | When the renderer lands (M3). `criterion` benchmarks over recompute latency and cache hit rate, gated in CI on a regression threshold rather than an absolute number. |
-| **Fuzzing** | When file import lands. `cargo-fuzz` against the ABI's string-taking entry points and the STEP/3MF readers — parsers of foreign files are where malformed input meets C++. |
+| **Fuzzing** | Now possible — import landed. `cargo-fuzz` against the ABI's string-taking entry points and the STEP/IGES readers. Parsers of foreign files are where malformed input meets C++, and `cad_import_probe` is a ready-made entry point. |
 | **Render regression** | With M3. Golden images with a perceptual diff. |
 | **UI** | With M4. Deliberately last and deliberately thin. |
 

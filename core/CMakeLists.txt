@@ -6,14 +6,14 @@ add_subdirectory(kernel)
 add_subdirectory(naming)
 add_subdirectory(units)
 add_subdirectory(document)
+add_subdirectory(io)
 add_subdirectory(recompute)
 add_subdirectory(abi)
 
 # M2+
-# add_subdirectory(io)
 # add_subdirectory(sketch)
 # add_subdirectory(features)
 
 add_library(cad_core INTERFACE)
 add_library(cad::core ALIAS cad_core)
-target_link_libraries(cad_core INTERFACE cad::kernel cad::naming cad::units cad::document cad::recompute)
+target_link_libraries(cad_core INTERFACE cad::kernel cad::naming cad::units cad::document cad::recompute cad::io)

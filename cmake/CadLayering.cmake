@@ -29,7 +29,22 @@ endfunction()
 
 # Marks a target as belonging to the core layer: no UI, no GPU, no platform toolkits.
 function(cad_core_library name)
-  add_library(${name} ${ARGN})
+  # STATIC, always — never controlled by BUILD_SHARED_LIBS.
+  #
+  # vcpkg ships OCCT as static archives. Linking those PRIVATE into several SHARED libraries
+  # gives EACH one its own copy of OCCT's global state — type registries, session singletons,
+  # the plugin tables. A shape built against one copy handed to an algorithm running against
+  # another fails in ways that look like geometry bugs: BRepFilletAPI_MakeFillet simply
+  # reports IsDone() == false, with no hint that the cause is a duplicated static.
+  #
+  # We hit exactly that when core/io was added. Diagnosis cost real time because every
+  # symptom pointed at the fillet.
+  #
+  # The rule: internal modules are static, and OCCT is linked exactly once per SHARED
+  # boundary we deliberately create (cad_abi, the Python module). BUILD_SHARED_LIBS remains
+  # ON for THIRD-PARTY LGPL dependencies — Qt and planegcs — where dynamic linking is a
+  # licensing requirement (ADR 0001). That obligation says nothing about our own code.
+  add_library(${name} STATIC ${ARGN})
   # cad_kernel -> cad::kernel (not cad::cad_kernel)
   string(REGEX REPLACE "^cad_" "" _short "${name}")
   add_library(cad::${_short} ALIAS ${name})

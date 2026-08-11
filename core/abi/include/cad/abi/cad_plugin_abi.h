@@ -33,7 +33,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 1
+#define CAD_ABI_VERSION_MINOR 2
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -156,6 +156,11 @@ typedef uint64_t CadObject;    /* an object id within a session's document */
 
 /* --- lifecycle --- */
 CadSession cad_session_create(void);
+
+/* Session with the on-disk DDC tier enabled at `cache_dir`. Pass NULL or "" for assetlib's
+ * default location. The disk tier is what lets a result computed on one machine — or by CI —
+ * be served to another without recomputing. */
+CadSession cad_session_create_cached(const char* cache_dir);
 void       cad_session_release(CadSession);
 
 /* Last error on this session, as a NUL-terminated string. Never NULL. */
@@ -211,6 +216,31 @@ CadStatus cad_undo(CadSession, int32_t* out_did_undo);
 CadStatus cad_redo(CadSession, int32_t* out_did_redo);
 CadStatus cad_document_digest(CadSession, uint64_t* out);
 CadStatus cad_object_count(CadSession, uint64_t* out);
+
+/* --- file interchange --- */
+
+/* Writes an object's geometry. Format is chosen by the path's extension. */
+CadStatus cad_object_export(CadSession, CadObject, const char* path);
+
+/* What an import found. Everything a caller needs to warn the user BEFORE committing to a
+ * conversion — docs/FORMATS.md rule 1: import never silently discards. */
+typedef struct {
+    uint64_t solids;
+    uint64_t faces;
+    int32_t  units_were_assumed;   /* the format carried no unit declaration */
+    int32_t  unsupported_count;    /* entity kinds we could not represent */
+    int32_t  warning_count;
+} CadImportInfo;
+
+/* Reads a file and reports on it WITHOUT adding anything to the document. For a file dialog
+ * preview. To actually use the geometry, add an "Import" feature and set its "path". */
+CadStatus   cad_import_probe(CadSession, const char* path, int32_t assumed_units,
+                             CadImportInfo* out);
+const char* cad_import_summary(CadSession);
+
+/* Extensions we can read / write, as a single comma-separated string. */
+const char* cad_readable_extensions(CadSession);
+const char* cad_writable_extensions(CadSession);
 
 /* --- units, exposed so bindings do not reimplement parsing --- */
 CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);

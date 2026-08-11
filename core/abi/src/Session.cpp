@@ -9,6 +9,8 @@
 #include "cad/document/Document.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/naming/ElementMap.h"
+#include "cad/io/Format.h"
+#include "cad/recompute/DdcCache.h"
 #include "cad/recompute/Engine.h"
 #include "cad/units/Units.h"
 
@@ -32,8 +34,19 @@ using cad::recompute::MemoryCache;
 
 struct Session {
     FeatureRegistry registry = FeatureRegistry::builtins();
-    MemoryCache cache;
+    cad::io::FormatRegistry formats = cad::io::FormatRegistry::builtins();
+    std::unique_ptr<cad::recompute::Cache> cache;
     History history{Document{}};
+
+    explicit Session(const std::string& cacheDir) {
+        auto l0 = std::make_unique<MemoryCache>();
+        if (cacheDir.empty()) {
+            cache = std::move(l0);
+        } else {
+            cache = std::make_unique<cad::recompute::TieredCache>(
+                std::move(l0), std::make_unique<cad::recompute::DdcCache>(cacheDir));
+        }
+    }
 
     /// Returned strings live here. Valid until the next call on this session, exactly as
     /// the header promises — a single slot makes that promise impossible to accidentally
@@ -139,15 +152,21 @@ const cad::document::Output* outputOf(Session& s, CadObject id) {
 
 extern "C" {
 
-CadSession cad_session_create(void) {
+static CadSession createSession(const std::string& cacheDir) {
     std::lock_guard<std::mutex> lock(g_mutex);
     try {
         const std::uint64_t id = g_nextSession++;
-        g_sessions[id] = std::make_unique<Session>();
+        g_sessions[id] = std::make_unique<Session>(cacheDir);
         return id;
     } catch (...) {
         return 0;
     }
+}
+
+CadSession cad_session_create(void) { return createSession({}); }
+
+CadSession cad_session_create_cached(const char* dir) {
+    return createSession(dir == nullptr ? std::string{} : std::string(dir));
 }
 
 void cad_session_release(CadSession handle) {
@@ -398,7 +417,7 @@ const char* cad_box_edge_between(CadSession handle, CadObject id, int32_t a, int
 
 CadStatus cad_recompute(CadSession handle, CadRecomputeReport* out) {
     return withSession(handle, [&](Session& s) {
-        Engine engine(s.registry, s.cache);
+        Engine engine(s.registry, *s.cache);
         auto result = engine.recompute(s.doc());
         if (!result) {
             s.lastError = result.error().message;
@@ -421,15 +440,15 @@ CadStatus cad_recompute(CadSession handle, CadRecomputeReport* out) {
 
 CadStatus cad_cache_stats(CadSession handle, uint64_t* hits, uint64_t* misses) {
     return withSession(handle, [&](Session& s) {
-        if (hits != nullptr) *hits = s.cache.hits();
-        if (misses != nullptr) *misses = s.cache.misses();
+        if (hits != nullptr) *hits = s.cache->hits();
+        if (misses != nullptr) *misses = s.cache->misses();
         return CAD_OK;
     });
 }
 
 CadStatus cad_cache_reset_stats(CadSession handle) {
     return withSession(handle, [&](Session& s) {
-        s.cache.resetStats();
+        s.cache->resetStats();
         return CAD_OK;
     });
 }
@@ -465,6 +484,75 @@ CadStatus cad_object_count(CadSession handle, uint64_t* out) {
         return CAD_OK;
     });
 }
+
+CadStatus cad_object_export(CadSession handle, CadObject id, const char* path) {
+    return withSession(handle, [&](Session& s) {
+        if (path == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing path.");
+        const auto* output = outputOf(s, id);
+        if (output == nullptr) {
+            return fail(s, CAD_ERR_NOT_DONE,
+                        "This object has no geometry yet. Recompute first.");
+        }
+        auto r = cad::io::exportFile(s.formats, path, output->shape);
+        if (!r) {
+            s.lastError = r.error().message;
+            return toStatus(r.error().code);
+        }
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_import_probe(CadSession handle, const char* path, int32_t assumed,
+                           CadImportInfo* out) {
+    return withSession(handle, [&](Session& s) {
+        if (path == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing path.");
+        if (assumed < 0 || assumed > 4) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "Unknown unit system.");
+        }
+        cad::io::ImportOptions options;
+        options.assumedUnits = static_cast<cad::units::UnitSystem>(assumed);
+
+        auto result = cad::io::importFile(s.formats, path, options);
+        if (!result) {
+            s.lastError = result.error().message;
+            return toStatus(result.error().code);
+        }
+        const auto& report = result.value().report;
+        s.scratch = report.summary();
+        if (out != nullptr) {
+            out->solids = report.solids;
+            out->faces = report.faces;
+            out->units_were_assumed = report.unitsWereAssumed ? 1 : 0;
+            out->unsupported_count = static_cast<int32_t>(report.unsupported.size());
+            out->warning_count = static_cast<int32_t>(report.warnings.size());
+        }
+        return CAD_OK;
+    });
+}
+
+const char* cad_import_summary(CadSession handle) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    Session* s = lookup(handle);
+    // Deliberately does NOT clear the scratch: this reads what cad_import_probe just left.
+    return s ? s->scratch.c_str() : "";
+}
+
+static const char* joinExtensions(CadSession handle, bool writable) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    Session* s = lookup(handle);
+    if (s == nullptr) return "";
+    s->scratch.clear();
+    const auto list = writable ? s->formats.writableExtensions()
+                               : s->formats.readableExtensions();
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        if (i) s->scratch += ",";
+        s->scratch += list[i];
+    }
+    return s->scratch.c_str();
+}
+
+const char* cad_readable_extensions(CadSession h) { return joinExtensions(h, false); }
+const char* cad_writable_extensions(CadSession h) { return joinExtensions(h, true); }
 
 CadStatus cad_parse_length(const char* text, int32_t system, double* out) {
     if (text == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
