@@ -97,3 +97,46 @@ out of our binary. Not available on iPad (no `fork`/`exec`), which is fine — i
   would have been on 7.x.
 - iPad plugins, when we get there: JS in a `WKWebView`. That is the only place Apple grants
   JIT on iOS, and it sidesteps App Store §2.5.2 (no downloaded native code).
+
+## CI build time — what actually mattered (Aug 2026)
+
+OCCT compiles from source on every platform; there is no prebuilt 8.0.1 in apt or Homebrew
+(Ubuntu 24.04 ships 7.x, Homebrew 7.9.3). That makes the cold build 30–60 minutes per
+platform, so the binary cache is not an optimisation — it is the difference between a
+workflow people wait for and one they ignore.
+
+**The bottleneck was not OCCT. It was a silently broken cache.**
+
+`VCPKG_BINARY_SOURCES: clear;x-gha,readwrite` looks right and is what most guides recommend,
+but `x-gha` talks to the *legacy* Actions Cache API, which GitHub has retired. It fails
+silently: no error, no warning, just a full rebuild every run. It went unnoticed through
+several runs because a slow CI is indistinguishable from a correctly-slow first run.
+
+Diagnosis: `gh api /repos/OWNER/REPO/actions/cache/usage` reported **0 caches** after
+multiple complete runs. That single number is the check worth remembering.
+
+Fix: a plain `files` binary source plus `actions/cache@v4`, which speaks the current cache
+service. The archive directory is also inspectable, so the workflow now prints package count
+and size after configure — a silent regression here should be visible in the log rather than
+inferred from the wall clock an hour later.
+
+Three smaller levers, in descending order of value:
+
+1. **Release-only dependencies** (`cmake/triplets/`). vcpkg builds every port debug *and*
+   release by default; we link only release. Roughly halves the cold build.
+2. **Scope.** Docs-only pushes skip CI entirely; the sanitizer job does not run on pull
+   requests, where it would race the Linux job for the same cold cache.
+
+Two things we deliberately did NOT do, both for the same reason — they only shorten the
+*cold* build, which a working cache makes a once-per-baseline-bump event:
+
+- **Dropping OCCT's `freetype` default feature.** It would shed fontconfig, freetype, brotli,
+  libpng and gperf. But those are minutes against OCCT's own 30–60, and `USE_FREETYPE=OFF` is
+  unverified here: it would fail deep into the OCCT compile, costing a full cycle on three
+  platforms per attempt.
+- **An overlay port disabling `BUILD_MODULE_Visualization`.** This is where the remaining cold
+  time actually lives, but DataExchange's glTF/VRML readers link `TKService`, so it is a real
+  experiment rather than a flag flip, and it is maintenance we would carry across every vcpkg
+  bump.
+
+Both are worth revisiting if cold builds ever become frequent. Measure before either.

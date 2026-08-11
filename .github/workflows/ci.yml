@@ -10,7 +10,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE']
   pull_request:
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE']
   workflow_dispatch:
 
 concurrency:
@@ -23,8 +25,19 @@ env:
   # The pinned vcpkg commit MUST match builtin-baseline in vcpkg.json, or CI silently tests
   # a different OCCT than developers do.
   VCPKG_COMMIT: dc31f86a441067d6c2e9e4ad52988eb41ef4f442
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   CARGO_TERM_COLOR: always
+
+  # Binary caching, and the single thing that decides whether this workflow is usable.
+  #
+  # NOT x-gha. That provider talks to the legacy Actions Cache API, which GitHub has
+  # retired; it fails silently, so every run rebuilt OCCT from source and the repo cache
+  # sat at zero entries. Diagnosed by checking /actions/cache/usage, which reported
+  # 0 caches after several full runs.
+  #
+  # A plain `files` provider plus actions/cache@v4 is dumber and works: v4 speaks the
+  # current cache service, and the archive directory is inspectable when something is off.
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-archives,readwrite"
 
 jobs:
   # Structural checks that need no compiler. Seconds, not minutes — so a layering violation
@@ -94,13 +107,21 @@ jobs:
           # Without this, configure fails with a bare "add_subdirectory ... does not exist".
           submodules: recursive
 
-      - name: Export vcpkg cache credentials
-        uses: actions/github-script@v7
+      - name: Prepare binary cache directory
+        shell: bash
+        run: mkdir -p "${{ github.workspace }}/.vcpkg-archives"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ${{ github.workspace }}/.vcpkg-archives
+          # The key covers everything that changes the built bytes: the runner image, the
+          # pinned vcpkg commit, the manifest, and our triplet overlays. Anything else
+          # changing must NOT invalidate an hour of OCCT.
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
+            vcpkg-${{ matrix.os }}-
 
       # OCCT needs X11/GL headers to configure even though we never link its visualisation
       # toolkits: its CMake probes for them unconditionally.
@@ -147,6 +168,14 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=${{ matrix.preset }}
+
+      - name: Binary cache report
+        # Prints after configure so a broken cache is obvious in the log rather than
+        # something you infer from the wall clock an hour later.
+        shell: bash
+        run: |
+          dir="${{ github.workspace }}/.vcpkg-archives"
+          echo "archives: $(find "$dir" -name '*.zip' 2>/dev/null | wc -l) packages, $(du -sh "$dir" 2>/dev/null | cut -f1)"
 
       - name: Build
         run: cmake --build build -j
@@ -211,18 +240,29 @@ jobs:
   sanitizers:
     name: ASan + UBSan
     needs: lint
+    # Not on pull requests. It rebuilds the same dependencies as the Linux test job, and on a
+    # cold cache the two race and both pay full price. A PR still gets all three platforms;
+    # this runs on the merge to main, before anything ships.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: actions/github-script@v7
+      - name: Prepare binary cache directory
+        run: mkdir -p "${{ github.workspace }}/.vcpkg-archives"
+
+      # Same triplet as the Linux test job, so this restores THAT job's archives rather than
+      # building OCCT a second time for the same platform.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ${{ github.workspace }}/.vcpkg-archives
+          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          restore-keys: |
+            vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-
+            vcpkg-ubuntu-24.04-
       - name: System dependencies
         run: |
           sudo apt-get update

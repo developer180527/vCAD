@@ -3,7 +3,7 @@
   "name": "cad",
   "version": "0.0.1",
   "description": "Cross-platform parametric CAD",
-  "$comment-opencascade": "OCCT 8.0.1 (2026-07-30). C++17 minimum. DataExchange toolkits are TKDE*-prefixed since 7.8. VTK deliberately not requested; it is off by default in OCCT 8 anyway.",
+  "$comment-opencascade": "OCCT 8.0.1 (2026-07-30). C++17 minimum. DataExchange toolkits are TKDE*-prefixed since 7.8. VTK deliberately not requested; it is off by default in OCCT 8 anyway. The freetype default feature is kept: dropping it would shed fontconfig/gperf/brotli/libpng, but that is minutes against OCCT's own 30-60, and a USE_FREETYPE=OFF build is unverified \u2014 it would fail deep into the OCCT compile, costing a full CI cycle per attempt.",
   "dependencies": [
     "opencascade",
     "eigen3"
