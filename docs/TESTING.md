@@ -110,7 +110,35 @@ and the CI workflow handle it.
 
 ## CI
 
-`.github/workflows/ci.yml` runs the whole thing on macos-14, ubuntu-24.04 and windows-2022,
-plus a separate ASan + UBSan job. The vcpkg commit is pinned there and **must match
-`builtin-baseline` in `vcpkg.json`** — otherwise CI silently tests a different OCCT than
-developers do.
+`.github/workflows/ci.yml`, three jobs:
+
+- **lint** (seconds, no compiler) — layering, `cargo fmt`, and two consistency checks that
+  exist because they are otherwise invisible until something breaks far away: the C header's
+  `CAD_ABI_VERSION_MINOR` must equal `cad-sys`'s, and `vcpkg.json`'s `builtin-baseline` must
+  equal the workflow's pin. Both run first so a five-second failure does not wait behind an
+  hour-long OCCT build.
+- **test** — the full suite on ubuntu-24.04 (gcc), windows-2022 (MSVC) and macos-14 (arm64).
+  `fail-fast: false`, so one platform failing does not hide the others.
+- **sanitizers** — ASan + UBSan on Linux. `detect_leaks=0`: OCCT allocates plenty it never
+  frees at exit, and leak reports would drown the signal we actually want.
+
+The vcpkg binary cache is **load-bearing, not an optimisation**. A cold OCCT build is 30–60
+minutes; without the cache this workflow is unusable.
+
+### Platform notes that cost real time
+
+- **Shared-library lookup differs three ways.** macOS finds `libcad_abi` via the absolute
+  install name baked into the dylib; Linux needs `LD_LIBRARY_PATH`; Windows needs the DLL's
+  directory on `PATH`. This lives in the workflow rather than `cad-sys/build.rs` because
+  Cargo's `rustc-link-arg` only applies to the crate whose build script emits it — it never
+  reaches a downstream crate's test binary.
+- **Windows exports nothing by default.** ELF and Mach-O export all symbols; PE exports none.
+  Hence `CAD_API` in `cad_plugin_abi.h` and `CAD_ABI_BUILD` on the library target. Without
+  them the DLL builds fine and every consumer fails to link.
+- **`submodules: recursive` in checkout is mandatory** — `modules/engine` provides assetlib,
+  and configure fails without it.
+- **`M_PI` is not standard C++.** MSVC hides it behind `_USE_MATH_DEFINES`. `core/units` uses
+  `std::numbers::pi`.
+- **`popen`/`pclose` are `_popen`/`_pclose` on MSVC**, and `cmd.exe` has no
+  `VAR=value command` prefix — the cross-process determinism test sets the variable in its
+  own environment instead.

@@ -21,7 +21,10 @@ fn changing_one_parameter_recomputes_only_what_depends_on_it() {
     recompute_ok(&mut s);
 
     let edge = s.box_edge_between(base, BoxFace::ZMax, BoxFace::YMin);
-    assert!(!edge.is_empty(), "expected a top-front edge on the base box");
+    assert!(
+        !edge.is_empty(),
+        "expected a top-front edge on the base box"
+    );
 
     let fillet = s.add_fillet(base, &edge, 5.0).unwrap();
     let tool = s.add_box(20.0, 20.0, 200.0).unwrap();
@@ -38,7 +41,10 @@ fn changing_one_parameter_recomputes_only_what_depends_on_it() {
     // A second pass with no edits must do nothing at all. If this recomputes anything, the
     // dirty tracking is wrong and every interaction will feel sluggish for no reason.
     let idle = recompute_ok(&mut s);
-    assert_eq!(idle.computed, 0, "an idle recompute must not compute anything");
+    assert_eq!(
+        idle.computed, 0,
+        "an idle recompute must not compute anything"
+    );
     assert_eq!(idle.skipped, 5);
 
     // Now change the TOOL's size. The base and its fillet do not depend on it, so they must
@@ -94,7 +100,10 @@ fn undo_restores_geometry_and_hits_the_cache() {
     // still holds the computed output and its Clean state. A mutable document would have to
     // recompute here, or maintain a parallel undo cache that can disagree with the model.
     assert_eq!(after_undo.computed, 0, "undo must not recompute anything");
-    assert_eq!(after_undo.skipped, 1, "the restored version is already clean");
+    assert_eq!(
+        after_undo.skipped, 1,
+        "the restored version is already clean"
+    );
     assert_eq!(s.cache_stats().unwrap().hits, 0);
 
     assert!(s.redo().unwrap());

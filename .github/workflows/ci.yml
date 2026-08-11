@@ -1,80 +1,227 @@
 name: CI
 
-# Closes the remaining M1 item: the acceptance suite has only ever run on macOS-arm64, and
-# Windows/Linux need machines rather than more code.
+# Closes the last outstanding M1 item: the suite has only ever run on macOS-arm64.
+#
+# Everything here is shaped by one fact — the first build compiles OCCT from source, which
+# takes 30–60 minutes. Without a working binary cache this workflow is unusable, so the
+# vcpkg GHA cache is load-bearing rather than an optimisation, and the job is split so a
+# compile error surfaces without waiting for the whole matrix.
 
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref. With hour-long builds, letting
+  # them queue up wastes the runner budget on results nobody will read.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
+  # The pinned vcpkg commit MUST match builtin-baseline in vcpkg.json, or CI silently tests
+  # a different OCCT than developers do.
+  VCPKG_COMMIT: dc31f86a441067d6c2e9e4ad52988eb41ef4f442
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, ubuntu-24.04, windows-2022]
+  # Structural checks that need no compiler. Seconds, not minutes — so a layering violation
+  # or a stale ABI declaration fails before anyone waits on OCCT.
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Layer include direction
+        run: python3 tools/check_layering.py .
 
-      - name: Export GitHub Actions cache env
+      - name: ABI header and Rust declarations agree
+        # The FFI bindings are hand-written on purpose (ADR 0006). This is the tripwire that
+        # makes "hand-written" safe: if the C header's version moves and cad-sys does not,
+        # the two have drifted and someone forgot to update the other half.
+        run: |
+          header=$(grep -oP 'CAD_ABI_VERSION_MINOR\s+\K\d+' \
+            core/abi/include/cad/abi/cad_plugin_abi.h)
+          rust=$(grep -oP 'CAD_ABI_VERSION_MINOR: u32 = \K\d+' \
+            tests-rs/cad-sys/src/lib.rs)
+          echo "C header: $header, cad-sys: $rust"
+          if [ "$header" != "$rust" ]; then
+            echo "::error::ABI minor version mismatch — the C header and cad-sys must change together"
+            exit 1
+          fi
+
+      - name: vcpkg baseline matches CI pin
+        run: |
+          manifest=$(python3 -c "import json;print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          echo "manifest: $manifest / workflow: $VCPKG_COMMIT"
+          if [ "$manifest" != "$VCPKG_COMMIT" ]; then
+            echo "::error::vcpkg.json baseline and the workflow pin disagree; CI would test a different OCCT"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Rust formatting
+        working-directory: tests-rs
+        run: cargo fmt --all --check
+
+  test:
+    name: ${{ matrix.name }}
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120     # a cold OCCT build is slow; a hung one should not run for six hours
+    strategy:
+      fail-fast: false       # one platform failing must not hide the others
+      matrix:
+        include:
+          - name: Linux (gcc)
+            os: ubuntu-24.04
+            preset: RelWithDebInfo
+          - name: Windows (MSVC)
+            os: windows-2022
+            preset: RelWithDebInfo
+          - name: macOS (arm64)
+            os: macos-14
+            preset: RelWithDebInfo
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # modules/engine provides assetlib, which core/recompute links against.
+          # Without this, configure fails with a bare "add_subdirectory ... does not exist".
+          submodules: recursive
+
+      - name: Export vcpkg cache credentials
         uses: actions/github-script@v7
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-      - name: Install Linux build deps
+      # OCCT needs X11/GL headers to configure even though we never link its visualisation
+      # toolkits: its CMake probes for them unconditionally.
+      - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libgl1-mesa-dev libx11-dev \
-            libxmu-dev libxi-dev libfontconfig1-dev autoconf automake libtool
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxext-dev libxmu-dev libxi-dev libxt-dev \
+            libfontconfig1-dev libfreetype-dev \
+            autoconf automake libtool pkg-config \
+            python3-dev
+
+      - name: macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install ninja autoconf automake libtool
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python build dependencies
+        # pybind11 comes from the interpreter we bind to, never from vcpkg — its port builds
+        # a whole CPython and fails on arm64-osx.
+        run: python -m pip install --upgrade pip pybind11 pytest
 
       - uses: lukka/run-vcpkg@v11
         with:
-          # Must match builtin-baseline in vcpkg.json, or the pinned OCCT is not what builds.
-          vcpkgGitCommitId: dc31f86a441067d6c2e9e4ad52988eb41ef4f442
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests-rs
 
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_BUILD_TYPE=${{ matrix.preset }}
 
       - name: Build
         run: cmake --build build -j
 
-      - name: Layering
-        run: python3 tools/check_layering.py .
-
       - name: C++ tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 300
 
-      - name: Rust tests
+      # The C ABI is a shared library, and only macOS finds it without help: we bake an
+      # absolute install name into the dylib. Linux needs LD_LIBRARY_PATH; Windows needs the
+      # DLL's directory on PATH. Cargo's `rustc-link-arg` cannot supply an rpath to a
+      # DOWNSTREAM crate's test binary, which is why this is set here rather than in
+      # cad-sys/build.rs.
+      - name: Rust tests (Linux)
+        if: runner.os == 'Linux'
         working-directory: tests-rs
         env:
           CAD_BUILD_DIR: ${{ github.workspace }}/build
-          # Windows and Linux resolve the shared library at run time differently from the
-          # absolute install_name we bake in on macOS.
           LD_LIBRARY_PATH: ${{ github.workspace }}/build/core/abi
-          PATH_EXTRA: ${{ github.workspace }}/build/core/abi
+        run: cargo test --workspace -- --nocapture
+
+      - name: Rust tests (Windows)
+        if: runner.os == 'Windows'
+        working-directory: tests-rs
+        env:
+          CAD_BUILD_DIR: ${{ github.workspace }}\build
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ github.workspace }}\build\core\abi;$env:PATH"
+          cargo test --workspace
+
+      - name: Rust tests (macOS)
+        if: runner.os == 'macOS'
+        working-directory: tests-rs
+        env:
+          CAD_BUILD_DIR: ${{ github.workspace }}/build
         run: cargo test --workspace
 
-  asan:
-    name: ASan + UBSan (macOS)
-    runs-on: macos-14
+      - name: Python binding tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/bindings/python
+        run: python -m pytest bindings/python/tests -q
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.os }}
+          path: |
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/LastTest.log
+            vcpkg/buildtrees/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  sanitizers:
+    name: ASan + UBSan
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxext-dev \
+            libxmu-dev libxi-dev libxt-dev libfontconfig1-dev libfreetype-dev \
+            autoconf automake libtool pkg-config
       - uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: dc31f86a441067d6c2e9e4ad52988eb41ef4f442
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
       - name: Configure
         run: >
           cmake -S . -B build-asan -G Ninja
@@ -83,4 +230,9 @@ jobs:
       - name: Build
         run: cmake --build build-asan -j
       - name: Test
-        run: ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build-asan --output-on-failure
+        # OCCT allocates plenty it never frees at exit; leak detection would drown the
+        # signal we actually want, which is memory errors and UB.
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure --timeout 600

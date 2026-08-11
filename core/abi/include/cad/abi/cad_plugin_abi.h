@@ -28,6 +28,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Symbol visibility.
+ *
+ * ELF and Mach-O export everything by default; PE exports NOTHING unless asked. Without this
+ * macro the Windows DLL is a black box and every consumer — the Rust suite, a plugin host,
+ * the future Swift bridge — fails to link with unresolved externals. Define CAD_ABI_BUILD
+ * when compiling the library itself, and nothing when consuming it.
+ */
+#if defined(_WIN32)
+#  if defined(CAD_ABI_BUILD)
+#    define CAD_API __declspec(dllexport)
+#  else
+#    define CAD_API __declspec(dllimport)
+#  endif
+#else
+#  define CAD_API __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -129,7 +146,7 @@ typedef struct {
 } CadPluginDesc;
 
 /* The one symbol a plugin shared library must export. */
-const CadPluginDesc* cad_plugin_main(void);
+CAD_API const CadPluginDesc* cad_plugin_main(void);
 
 /* =====================================================================================
  * Session API
@@ -155,48 +172,48 @@ typedef uint64_t CadSession;   /* owns a document, a feature registry, and a cac
 typedef uint64_t CadObject;    /* an object id within a session's document */
 
 /* --- lifecycle --- */
-CadSession cad_session_create(void);
+CAD_API CadSession cad_session_create(void);
 
 /* Session with the on-disk DDC tier enabled at `cache_dir`. Pass NULL or "" for assetlib's
  * default location. The disk tier is what lets a result computed on one machine — or by CI —
  * be served to another without recomputing. */
-CadSession cad_session_create_cached(const char* cache_dir);
-void       cad_session_release(CadSession);
+CAD_API CadSession cad_session_create_cached(const char* cache_dir);
+CAD_API void       cad_session_release(CadSession);
 
 /* Last error on this session, as a NUL-terminated string. Never NULL. */
-const char* cad_session_last_error(CadSession);
+CAD_API const char* cad_session_last_error(CadSession);
 
 /* --- document editing --- */
-CadStatus cad_object_add(CadSession, const char* type, CadObject* out);
-CadStatus cad_object_remove(CadSession, CadObject);
-CadStatus cad_object_set_length(CadSession, CadObject, const char* prop, double millimetres);
-CadStatus cad_object_set_real(CadSession, CadObject, const char* prop, double value);
-CadStatus cad_object_set_int(CadSession, CadObject, const char* prop, int64_t value);
-CadStatus cad_object_set_bool(CadSession, CadObject, const char* prop, int32_t value);
-CadStatus cad_object_set_text(CadSession, CadObject, const char* prop, const char* value);
-CadStatus cad_object_set_object(CadSession, CadObject, const char* prop, CadObject target);
-CadStatus cad_object_set_element(CadSession, CadObject, const char* prop,
+CAD_API CadStatus cad_object_add(CadSession, const char* type, CadObject* out);
+CAD_API CadStatus cad_object_remove(CadSession, CadObject);
+CAD_API CadStatus cad_object_set_length(CadSession, CadObject, const char* prop, double millimetres);
+CAD_API CadStatus cad_object_set_real(CadSession, CadObject, const char* prop, double value);
+CAD_API CadStatus cad_object_set_int(CadSession, CadObject, const char* prop, int64_t value);
+CAD_API CadStatus cad_object_set_bool(CadSession, CadObject, const char* prop, int32_t value);
+CAD_API CadStatus cad_object_set_text(CadSession, CadObject, const char* prop, const char* value);
+CAD_API CadStatus cad_object_set_object(CadSession, CadObject, const char* prop, CadObject target);
+CAD_API CadStatus cad_object_set_element(CadSession, CadObject, const char* prop,
                                  const char* element_name);
 /* Marks a property cosmetic: excluded from the recompute cache key. */
-CadStatus cad_object_set_cosmetic(CadSession, CadObject, const char* prop, int32_t cosmetic);
+CAD_API CadStatus cad_object_set_cosmetic(CadSession, CadObject, const char* prop, int32_t cosmetic);
 
 /* --- queries --- */
-CadStatus   cad_object_state(CadSession, CadObject, int32_t* out_state);
-const char* cad_object_error(CadSession, CadObject);
-CadStatus   cad_object_face_count(CadSession, CadObject, uint64_t* out);
-CadStatus   cad_object_edge_count(CadSession, CadObject, uint64_t* out);
-CadStatus   cad_object_cache_key(CadSession, CadObject, uint64_t* out);
-CadStatus   cad_object_is_valid_shape(CadSession, CadObject, int32_t* out);
-CadStatus   cad_object_volume(CadSession, CadObject, double* out);
+CAD_API CadStatus   cad_object_state(CadSession, CadObject, int32_t* out_state);
+CAD_API const char* cad_object_error(CadSession, CadObject);
+CAD_API CadStatus   cad_object_face_count(CadSession, CadObject, uint64_t* out);
+CAD_API CadStatus   cad_object_edge_count(CadSession, CadObject, uint64_t* out);
+CAD_API CadStatus   cad_object_cache_key(CadSession, CadObject, uint64_t* out);
+CAD_API CadStatus   cad_object_is_valid_shape(CadSession, CadObject, int32_t* out);
+CAD_API CadStatus   cad_object_volume(CadSession, CadObject, double* out);
 
 /* Content hash of an object's output, as a 64-hex-char string. Empty if not computed. */
-const char* cad_object_content_hash(CadSession, CadObject);
+CAD_API const char* cad_object_content_hash(CadSession, CadObject);
 
 /* The element name of the edge bounded by the two named faces of a Box object, in the
  * text form ElementName::toString produces. Empty string if there is no such edge. This is
  * how a caller with no C++ access takes a stable geometric reference. */
-const char* cad_box_edge_between(CadSession, CadObject box, int32_t face_a, int32_t face_b);
-const char* cad_box_face_name(CadSession, CadObject box, int32_t face);
+CAD_API const char* cad_box_edge_between(CadSession, CadObject box, int32_t face_a, int32_t face_b);
+CAD_API const char* cad_box_face_name(CadSession, CadObject box, int32_t face);
 
 /* --- recompute --- */
 typedef struct {
@@ -207,20 +224,20 @@ typedef struct {
     uint64_t blocked;
 } CadRecomputeReport;
 
-CadStatus cad_recompute(CadSession, CadRecomputeReport* out);
-CadStatus cad_cache_stats(CadSession, uint64_t* out_hits, uint64_t* out_misses);
-CadStatus cad_cache_reset_stats(CadSession);
+CAD_API CadStatus cad_recompute(CadSession, CadRecomputeReport* out);
+CAD_API CadStatus cad_cache_stats(CadSession, uint64_t* out_hits, uint64_t* out_misses);
+CAD_API CadStatus cad_cache_reset_stats(CadSession);
 
 /* --- undo/redo --- */
-CadStatus cad_undo(CadSession, int32_t* out_did_undo);
-CadStatus cad_redo(CadSession, int32_t* out_did_redo);
-CadStatus cad_document_digest(CadSession, uint64_t* out);
-CadStatus cad_object_count(CadSession, uint64_t* out);
+CAD_API CadStatus cad_undo(CadSession, int32_t* out_did_undo);
+CAD_API CadStatus cad_redo(CadSession, int32_t* out_did_redo);
+CAD_API CadStatus cad_document_digest(CadSession, uint64_t* out);
+CAD_API CadStatus cad_object_count(CadSession, uint64_t* out);
 
 /* --- file interchange --- */
 
 /* Writes an object's geometry. Format is chosen by the path's extension. */
-CadStatus cad_object_export(CadSession, CadObject, const char* path);
+CAD_API CadStatus cad_object_export(CadSession, CadObject, const char* path);
 
 /* What an import found. Everything a caller needs to warn the user BEFORE committing to a
  * conversion — docs/FORMATS.md rule 1: import never silently discards. */
@@ -234,16 +251,16 @@ typedef struct {
 
 /* Reads a file and reports on it WITHOUT adding anything to the document. For a file dialog
  * preview. To actually use the geometry, add an "Import" feature and set its "path". */
-CadStatus   cad_import_probe(CadSession, const char* path, int32_t assumed_units,
+CAD_API CadStatus   cad_import_probe(CadSession, const char* path, int32_t assumed_units,
                              CadImportInfo* out);
-const char* cad_import_summary(CadSession);
+CAD_API const char* cad_import_summary(CadSession);
 
 /* Extensions we can read / write, as a single comma-separated string. */
-const char* cad_readable_extensions(CadSession);
-const char* cad_writable_extensions(CadSession);
+CAD_API const char* cad_readable_extensions(CadSession);
+CAD_API const char* cad_writable_extensions(CadSession);
 
 /* --- units, exposed so bindings do not reimplement parsing --- */
-CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);
+CAD_API CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);
 
 #ifdef __cplusplus
 }  /* extern "C" */

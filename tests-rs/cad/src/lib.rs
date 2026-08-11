@@ -321,8 +321,7 @@ impl Session {
     pub fn set_text(&mut self, o: Object, prop: &str, v: &str) -> Result<()> {
         let c = cstr(prop)?;
         let val = cstr(v)?;
-        let st =
-            unsafe { sys::cad_object_set_text(self.handle, o.0, c.as_ptr(), val.as_ptr()) };
+        let st = unsafe { sys::cad_object_set_text(self.handle, o.0, c.as_ptr(), val.as_ptr()) };
         self.check(st)
     }
 
@@ -337,8 +336,7 @@ impl Session {
     pub fn set_element(&mut self, o: Object, prop: &str, element: &str) -> Result<()> {
         let c = cstr(prop)?;
         let e = cstr(element)?;
-        let st =
-            unsafe { sys::cad_object_set_element(self.handle, o.0, c.as_ptr(), e.as_ptr()) };
+        let st = unsafe { sys::cad_object_set_element(self.handle, o.0, c.as_ptr(), e.as_ptr()) };
         self.check(st)
     }
 
@@ -412,9 +410,7 @@ impl Session {
     /// — which is exactly what happens after an operation removes it, and is a result the
     /// caller must handle rather than a failure.
     pub fn box_edge_between(&self, b: Object, a: BoxFace, c: BoxFace) -> String {
-        self.take_str(unsafe {
-            sys::cad_box_edge_between(self.handle, b.0, a.raw(), c.raw())
-        })
+        self.take_str(unsafe { sys::cad_box_edge_between(self.handle, b.0, a.raw(), c.raw()) })
     }
 
     pub fn box_face_name(&self, b: Object, face: BoxFace) -> String {

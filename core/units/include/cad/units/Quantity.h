@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <compare>
+#include <numbers>
 #include <cstdint>
 
 namespace cad::units {
@@ -125,7 +126,12 @@ constexpr Length feet(double v)        noexcept { return Length::fromBase(v * 30
 constexpr Length thou(double v)        noexcept { return Length::fromBase(v * 0.0254); }
 
 constexpr Angle radians(double v) noexcept { return Angle::fromBase(v); }
-inline Angle degrees(double v) noexcept { return Angle::fromBase(v * (M_PI / 180.0)); }
+// std::numbers, not M_PI: M_PI is a POSIX extension that MSVC hides behind
+// _USE_MATH_DEFINES, and relying on a macro being defined before <cmath> in every
+// translation unit is a portability trap. This is also constexpr.
+constexpr Angle degrees(double v) noexcept {
+    return Angle::fromBase(v * (std::numbers::pi / 180.0));
+}
 
 constexpr Mass kilograms(double v) noexcept { return Mass::fromBase(v); }
 constexpr Mass grams(double v)     noexcept { return Mass::fromBase(v / 1000.0); }
@@ -138,7 +144,9 @@ constexpr double toInches(Length l)      noexcept { return l.base() / 25.4; }
 constexpr double toFeet(Length l)        noexcept { return l.base() / 304.8; }
 
 constexpr double toRadians(Angle a) noexcept { return a.base(); }
-inline double toDegrees(Angle a)    noexcept { return a.base() * (180.0 / M_PI); }
+constexpr double toDegrees(Angle a) noexcept {
+    return a.base() * (180.0 / std::numbers::pi);
+}
 
 inline namespace literals {
 constexpr Length operator""_mm(long double v) { return millimetres(static_cast<double>(v)); }
@@ -146,12 +154,12 @@ constexpr Length operator""_cm(long double v) { return centimetres(static_cast<d
 constexpr Length operator""_m (long double v) { return metres(static_cast<double>(v)); }
 constexpr Length operator""_in(long double v) { return inches(static_cast<double>(v)); }
 constexpr Length operator""_ft(long double v) { return feet(static_cast<double>(v)); }
-inline    Angle  operator""_deg(long double v) { return degrees(static_cast<double>(v)); }
+constexpr Angle  operator""_deg(long double v) { return degrees(static_cast<double>(v)); }
 constexpr Angle  operator""_rad(long double v) { return radians(static_cast<double>(v)); }
 
 constexpr Length operator""_mm(unsigned long long v) { return millimetres(static_cast<double>(v)); }
 constexpr Length operator""_in(unsigned long long v) { return inches(static_cast<double>(v)); }
-inline    Angle  operator""_deg(unsigned long long v) { return degrees(static_cast<double>(v)); }
+constexpr Angle  operator""_deg(unsigned long long v) { return degrees(static_cast<double>(v)); }
 }  // namespace literals
 
 }  // namespace cad::units

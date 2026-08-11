@@ -7,6 +7,7 @@ add_library(cad::abi ALIAS cad_abi)
 
 target_include_directories(cad_abi PUBLIC include)
 target_link_libraries(cad_abi PRIVATE cad::core)
+target_compile_definitions(cad_abi PRIVATE CAD_ABI_BUILD)
 cad_set_warnings(cad_abi)
 
 # Stable output name so the Rust build script can find it without guessing.

@@ -181,14 +181,25 @@ fn a_corrupt_cache_blob_becomes_a_miss_not_an_error() {
             }
         }
     }
-    assert!(damaged > 0, "expected the DDC to have written something to damage");
+    assert!(
+        damaged > 0,
+        "expected the DDC to have written something to damage"
+    );
 
     let mut s = Session::with_cache(dir.to_str().unwrap()).unwrap();
     let b = s.add_box(77.0, 33.0, 11.0).unwrap();
-    let report = s.recompute().expect("a corrupt cache must not fail the recompute");
+    let report = s
+        .recompute()
+        .expect("a corrupt cache must not fail the recompute");
 
-    assert!(report.all_succeeded(), "corruption must degrade to a miss: {report:?}");
-    assert_eq!(report.computed, 1, "the damaged blob must be recomputed, not trusted");
+    assert!(
+        report.all_succeeded(),
+        "corruption must degrade to a miss: {report:?}"
+    );
+    assert_eq!(
+        report.computed, 1,
+        "the damaged blob must be recomputed, not trusted"
+    );
     assert!(s.is_valid_shape(b).unwrap());
 }
 

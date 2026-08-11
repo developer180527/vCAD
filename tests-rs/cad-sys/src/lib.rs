@@ -142,12 +142,7 @@ extern "C" {
     pub fn cad_object_volume(s: CadSession, id: CadObject, out: *mut f64) -> CadStatus;
     pub fn cad_object_content_hash(s: CadSession, id: CadObject) -> *const c_char;
 
-    pub fn cad_box_edge_between(
-        s: CadSession,
-        b: CadObject,
-        a: i32,
-        c: i32,
-    ) -> *const c_char;
+    pub fn cad_box_edge_between(s: CadSession, b: CadObject, a: i32, c: i32) -> *const c_char;
     pub fn cad_box_face_name(s: CadSession, b: CadObject, face: i32) -> *const c_char;
 
     pub fn cad_recompute(s: CadSession, out: *mut CadRecomputeReport) -> CadStatus;

@@ -23,7 +23,12 @@ fn main() {
         });
 
     let lib_dir = build_dir.join("core/abi");
-    let names = ["libcad_abi.dylib", "libcad_abi.so", "cad_abi.dll", "cad_abi.lib"];
+    let names = [
+        "libcad_abi.dylib",
+        "libcad_abi.so",
+        "cad_abi.dll",
+        "cad_abi.lib",
+    ];
     if !names.iter().any(|n| lib_dir.join(n).exists()) {
         panic!(
             "cad_abi not found in {}.\n\

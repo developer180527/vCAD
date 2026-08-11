@@ -1,4 +1,6 @@
-# CAD
+# vCAD
+
+[![CI](https://github.com/developer180527/vCAD/actions/workflows/ci.yml/badge.svg)](https://github.com/developer180527/vCAD/actions/workflows/ci.yml)
 
 Cross-platform parametric CAD. Desktop (Windows/macOS/Linux) is the full product; iPadOS is a
 stripped-down 3D-printing client on the same core, built later.
