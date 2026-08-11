@@ -1,1 +1,141 @@
-build/
+# ─────────────────────────────────────────────────────────────────────────────
+# Build output
+# ─────────────────────────────────────────────────────────────────────────────
+# Anything named build*/ at any depth: build/, build-asan/, build-release/,
+# out-of-source trees people create by hand.
+build*/
+cmake-build-*/          # CLion
+out/                    # Visual Studio's default
+_deps/
+
+# CMake droppings when someone configures in-source by accident
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+Testing/
+*.cmake.in.log
+
+# ─────────────────────────────────────────────────────────────────────────────
+# vcpkg
+# ─────────────────────────────────────────────────────────────────────────────
+# vcpkg_installed/ is a full dependency tree — for us that is OCCT, which alone
+# is hundreds of megabytes of static archives. It is fully reproducible from
+# vcpkg.json plus the pinned builtin-baseline, so it must never be committed.
+# (It was, once. See the note in docs/CONTRIBUTING.md.)
+vcpkg_installed/
+vcpkg/
+.vcpkg-root
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rust
+# ─────────────────────────────────────────────────────────────────────────────
+target/
+**/*.rs.bk
+*.pdb
+# Cargo.lock IS committed: tests-rs is a workspace of binaries/tests, not a
+# published library, so a reproducible dependency set is what we want.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+# The compiled pybind11 module lands next to the package for a no-install
+# workflow; it is a build artifact.
+bindings/python/cad/_cad*.so
+bindings/python/cad/_cad*.pyd
+bindings/python/cad/_cad*.dylib
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Native build artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.exp
+*.ilk
+*.idb
+*.gch
+*.pch
+*.d
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test and profiling output
+# ─────────────────────────────────────────────────────────────────────────────
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.gcov
+coverage/
+# proptest records failing seeds so a shrunk counterexample reproduces. Those
+# ARE worth committing — see tests-rs/cad-tests/proptest-regressions/.gitignore
+# if you want to opt a directory out.
+
+# Geometry the spikes and tests write next to the binary
+*.step
+*.stp
+*.iges
+*.igs
+*.stl
+*.brep
+*.3mf
+!tests/fixtures/**          # …except committed reference parts
+!tests-rs/fixtures/**
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editors and OS
+# ─────────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+.clangd/
+.ccls-cache/
+
+# Xcode, for when the iPad shell lands
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local configuration and secrets
+# ─────────────────────────────────────────────────────────────────────────────
+*.local
+.env
+.env.*
+!.env.example
+CMakeUserPresets.json    # per-developer; CMakePresets.json is shared
