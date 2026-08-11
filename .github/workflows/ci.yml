@@ -72,7 +72,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: lint
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120     # a cold OCCT build is slow; a hung one should not run for six hours
+    timeout-minutes: 180     # a COLD OCCT build is slow; cached runs are minutes
     strategy:
       fail-fast: false       # one platform failing must not hide the others
       matrix:
@@ -99,6 +99,7 @@ jobs:
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       # OCCT needs X11/GL headers to configure even though we never link its visualisation
@@ -112,12 +113,13 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev \
             libx11-dev libxext-dev libxmu-dev libxi-dev libxt-dev \
             libfontconfig1-dev libfreetype-dev \
-            autoconf automake libtool pkg-config \
+            autoconf autoconf-archive automake libtool pkg-config \
+            gperf bison flex \
             python3-dev
 
       - name: macOS system dependencies
         if: runner.os == 'macOS'
-        run: brew install ninja autoconf automake libtool
+        run: brew install ninja autoconf autoconf-archive automake libtool
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
@@ -143,12 +145,15 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=${{ matrix.preset }}
 
       - name: Build
         run: cmake --build build -j
 
       - name: C++ tests
+        # vcpkg's toolchain copies dependency DLLs next to built executables on Windows, so
+        # ctest needs no extra path setup. The Rust step below does — see its comment.
         run: ctest --test-dir build --output-on-failure --timeout 300
 
       # The C ABI is a shared library, and only macOS finds it without help: we bake an
@@ -171,7 +176,12 @@ jobs:
           CAD_BUILD_DIR: ${{ github.workspace }}\build
         shell: pwsh
         run: |
-          $env:PATH = "${{ github.workspace }}\build\core\abi;$env:PATH"
+          # Two directories, both required. Windows is the only platform where vcpkg's
+          # default library linkage is DYNAMIC, so OCCT itself ships as DLLs alongside our
+          # cad_abi.dll. The Rust test binary needs to find both.
+          $abi = "${{ github.workspace }}\build\core\abi"
+          $deps = "${{ github.workspace }}\build\vcpkg_installed\x64-windows\bin"
+          $env:PATH = "$abi;$deps;$env:PATH"
           cargo test --workspace
 
       - name: Rust tests (macOS)
@@ -202,7 +212,7 @@ jobs:
     name: ASan + UBSan
     needs: lint
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
@@ -211,6 +221,7 @@ jobs:
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
       - name: System dependencies
         run: |
@@ -218,7 +229,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxext-dev \
             libxmu-dev libxi-dev libxt-dev libfontconfig1-dev libfreetype-dev \
-            autoconf automake libtool pkg-config
+            autoconf autoconf-archive automake libtool pkg-config gperf bison flex
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
@@ -226,6 +237,7 @@ jobs:
         run: >
           cmake -S . -B build-asan -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=Debug -DCAD_ENABLE_ASAN=ON -DCAD_BUILD_SPIKES=OFF
       - name: Build
         run: cmake --build build-asan -j
