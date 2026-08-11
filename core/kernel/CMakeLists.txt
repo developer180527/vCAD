@@ -4,6 +4,7 @@ cad_core_library(cad_kernel
   src/Primitives.cpp
   src/Booleans.cpp
   src/Fillet.cpp
+  src/Chamfer.cpp
   src/Healing.cpp
   src/Transform.cpp
 )

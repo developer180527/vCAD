@@ -1,0 +1,157 @@
+#pragma once
+
+// Dimensional quantities.
+//
+// This exists in M1 rather than "when we need it" because retrofitting units is agony: by
+// the time there are a few hundred `double`s flowing between features, properties, the
+// solver, and file I/O, nobody can tell which are millimetres, which are metres, and which
+// are radians. The bugs that produces are silent and geometric.
+//
+// Design:
+//   * Dimensions are checked at COMPILE time. Adding a Length to an Angle does not build.
+//   * Storage is always in canonical base units — millimetres and radians. Conversion
+//     happens only at the boundary (parsing, formatting, file I/O), never in the middle.
+//   * Zero runtime cost: a Quantity is a double, and every operation is constexpr.
+//
+// Millimetres are the base unit because that is what CAD, STEP, and 3MF conventionally use,
+// and because it keeps typical model coordinates in a range where double has ample
+// precision.
+
+#include <cmath>
+#include <compare>
+#include <cstdint>
+
+namespace cad::units {
+
+/// Exponents of the base dimensions. Angle is tracked as its own dimension even though it
+/// is formally dimensionless: conflating radians with a bare ratio is a rich source of bugs.
+template <int Length, int Mass, int Time, int Angle>
+struct Dimension {
+    static constexpr int length = Length;
+    static constexpr int mass = Mass;
+    static constexpr int time = Time;
+    static constexpr int angle = Angle;
+};
+
+template <class A, class B>
+using DimensionMultiply = Dimension<A::length + B::length, A::mass + B::mass,
+                                    A::time + B::time, A::angle + B::angle>;
+template <class A, class B>
+using DimensionDivide = Dimension<A::length - B::length, A::mass - B::mass,
+                                  A::time - B::time, A::angle - B::angle>;
+
+template <class D>
+class Quantity {
+public:
+    using DimensionType = D;
+
+    constexpr Quantity() = default;
+
+    /// Explicit: a bare double is not a quantity. Construct through the named factories or
+    /// the literals below so the unit is visible at the call site.
+    static constexpr Quantity fromBase(double v) noexcept { return Quantity(v); }
+
+    [[nodiscard]] constexpr double base() const noexcept { return value_; }
+
+    constexpr Quantity operator+(Quantity o) const noexcept { return Quantity(value_ + o.value_); }
+    constexpr Quantity operator-(Quantity o) const noexcept { return Quantity(value_ - o.value_); }
+    constexpr Quantity operator-() const noexcept { return Quantity(-value_); }
+    constexpr Quantity& operator+=(Quantity o) noexcept { value_ += o.value_; return *this; }
+    constexpr Quantity& operator-=(Quantity o) noexcept { value_ -= o.value_; return *this; }
+
+    constexpr Quantity operator*(double s) const noexcept { return Quantity(value_ * s); }
+    constexpr Quantity operator/(double s) const noexcept { return Quantity(value_ / s); }
+    constexpr Quantity& operator*=(double s) noexcept { value_ *= s; return *this; }
+    constexpr Quantity& operator/=(double s) noexcept { value_ /= s; return *this; }
+
+    /// Same-dimension division yields a plain ratio, not a Quantity.
+    constexpr double operator/(Quantity o) const noexcept { return value_ / o.value_; }
+
+    template <class E>
+    constexpr Quantity<DimensionMultiply<D, E>> operator*(Quantity<E> o) const noexcept {
+        return Quantity<DimensionMultiply<D, E>>::fromBase(value_ * o.base());
+    }
+    template <class E>
+    constexpr Quantity<DimensionDivide<D, E>> operator/(Quantity<E> o) const noexcept {
+        return Quantity<DimensionDivide<D, E>>::fromBase(value_ / o.base());
+    }
+
+    constexpr auto operator<=>(const Quantity&) const noexcept = default;
+    constexpr bool operator==(const Quantity&) const noexcept = default;
+
+    /// Tolerant comparison. Exact == on a quantity derived from geometry is almost always
+    /// a mistake; this is what feature code should use.
+    [[nodiscard]] constexpr bool isNear(Quantity o, Quantity tolerance) const noexcept {
+        const double d = value_ - o.value_;
+        return (d < 0 ? -d : d) <= tolerance.value_;
+    }
+
+private:
+    constexpr explicit Quantity(double v) noexcept : value_(v) {}
+    double value_ = 0.0;
+};
+
+template <class D>
+constexpr Quantity<D> operator*(double s, Quantity<D> q) noexcept {
+    return q * s;
+}
+
+template <class D>
+[[nodiscard]] constexpr Quantity<D> abs(Quantity<D> q) noexcept {
+    return Quantity<D>::fromBase(q.base() < 0 ? -q.base() : q.base());
+}
+
+// --- the dimensions we actually use --------------------------------------------------
+using Dimensionless = Dimension<0, 0, 0, 0>;
+using LengthDim     = Dimension<1, 0, 0, 0>;
+using AreaDim       = Dimension<2, 0, 0, 0>;
+using VolumeDim     = Dimension<3, 0, 0, 0>;
+using AngleDim      = Dimension<0, 0, 0, 1>;
+using MassDim       = Dimension<0, 1, 0, 0>;
+
+using Scalar = Quantity<Dimensionless>;
+using Length = Quantity<LengthDim>;   ///< base unit: millimetre
+using Area   = Quantity<AreaDim>;     ///< base unit: mm²
+using Volume = Quantity<VolumeDim>;   ///< base unit: mm³
+using Angle  = Quantity<AngleDim>;    ///< base unit: radian
+using Mass   = Quantity<MassDim>;     ///< base unit: kilogram
+
+// --- named factories -------------------------------------------------------------------
+constexpr Length millimetres(double v) noexcept { return Length::fromBase(v); }
+constexpr Length centimetres(double v) noexcept { return Length::fromBase(v * 10.0); }
+constexpr Length metres(double v)      noexcept { return Length::fromBase(v * 1000.0); }
+constexpr Length inches(double v)      noexcept { return Length::fromBase(v * 25.4); }
+constexpr Length feet(double v)        noexcept { return Length::fromBase(v * 304.8); }
+constexpr Length thou(double v)        noexcept { return Length::fromBase(v * 0.0254); }
+
+constexpr Angle radians(double v) noexcept { return Angle::fromBase(v); }
+inline Angle degrees(double v) noexcept { return Angle::fromBase(v * (M_PI / 180.0)); }
+
+constexpr Mass kilograms(double v) noexcept { return Mass::fromBase(v); }
+constexpr Mass grams(double v)     noexcept { return Mass::fromBase(v / 1000.0); }
+
+// --- named accessors -------------------------------------------------------------------
+constexpr double toMillimetres(Length l) noexcept { return l.base(); }
+constexpr double toCentimetres(Length l) noexcept { return l.base() / 10.0; }
+constexpr double toMetres(Length l)      noexcept { return l.base() / 1000.0; }
+constexpr double toInches(Length l)      noexcept { return l.base() / 25.4; }
+constexpr double toFeet(Length l)        noexcept { return l.base() / 304.8; }
+
+constexpr double toRadians(Angle a) noexcept { return a.base(); }
+inline double toDegrees(Angle a)    noexcept { return a.base() * (180.0 / M_PI); }
+
+inline namespace literals {
+constexpr Length operator""_mm(long double v) { return millimetres(static_cast<double>(v)); }
+constexpr Length operator""_cm(long double v) { return centimetres(static_cast<double>(v)); }
+constexpr Length operator""_m (long double v) { return metres(static_cast<double>(v)); }
+constexpr Length operator""_in(long double v) { return inches(static_cast<double>(v)); }
+constexpr Length operator""_ft(long double v) { return feet(static_cast<double>(v)); }
+inline    Angle  operator""_deg(long double v) { return degrees(static_cast<double>(v)); }
+constexpr Angle  operator""_rad(long double v) { return radians(static_cast<double>(v)); }
+
+constexpr Length operator""_mm(unsigned long long v) { return millimetres(static_cast<double>(v)); }
+constexpr Length operator""_in(unsigned long long v) { return inches(static_cast<double>(v)); }
+inline    Angle  operator""_deg(unsigned long long v) { return degrees(static_cast<double>(v)); }
+}  // namespace literals
+
+}  // namespace cad::units

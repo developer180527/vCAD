@@ -6,6 +6,8 @@ add_executable(cad_tests
   acceptance/m1_naming_stability.cpp
   acceptance/m1_determinism_subprocess.cpp
   acceptance/debug_dump.cpp
+  acceptance/m1_units.cpp
+  acceptance/m1_chamfer_healing.cpp
 )
 
 target_include_directories(cad_tests PRIVATE acceptance)

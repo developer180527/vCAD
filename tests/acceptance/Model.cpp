@@ -76,6 +76,36 @@ Result<Model> fillet(const Model& base, const ElementName& edge, double radius,
     return Model{op.value().shape(), std::move(map).value(), base.primitiveSerial};
 }
 
+Result<Model> chamfer(const Model& base, const ElementName& edge, double distance,
+                      std::uint32_t serial) {
+    const auto edges = base.map.resolveAll(edge);
+    if (edges.empty()) {
+        return Error{ErrorCode::NamingLost,
+                     "The edge selected for this chamfer no longer exists.",
+                     edge.toString()};
+    }
+
+    auto op = cad::kernel::chamferEdges(base.shape, edges, distance);
+    if (!op) return op.error();
+
+    NamingContext ctx(serial, 0);
+    auto map = ctx.propagate(op.value(), {&base.shape}, {&base.map});
+    if (!map) return map.error();
+
+    return Model{op.value().shape(), std::move(map).value(), base.primitiveSerial};
+}
+
+Result<Model> fuseOnly(const Model& a, const Model& b, std::uint32_t serial) {
+    auto op = cad::kernel::booleanFuse(a.shape, b.shape);
+    if (!op) return op.error();
+
+    NamingContext ctx(serial, 0);
+    auto map = ctx.propagate(op.value(), {&a.shape, &b.shape}, {&a.map, &b.map});
+    if (!map) return map.error();
+
+    return Model{op.value().shape(), std::move(map).value(), a.primitiveSerial};
+}
+
 Result<Model> cut(const Model& base, const Model& tool, std::uint32_t serial) {
     auto op = cad::kernel::booleanCut(base.shape, tool.shape);
     if (!op) return op.error();
@@ -117,6 +147,12 @@ Result<Model> translated(const Model& m, double dx, double dy, double dz,
     if (!map) return map.error();
 
     return Model{op.value().shape(), std::move(map).value(), m.primitiveSerial};
+}
+
+Result<Shape> openShellSolid(double dx, double dy, double dz) {
+    auto built = cad::kernel::makeBox(dx, dy, dz);
+    if (!built) return built.error();
+    return cad::kernel::makeOpenShellSolid(built.value().op.shape());
 }
 
 std::vector<std::string> nameStrings(const Model& m) {

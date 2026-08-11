@@ -6,6 +6,7 @@
 
 #include "cad/kernel/Booleans.h"
 #include "cad/kernel/Fillet.h"
+#include "cad/kernel/Healing.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/kernel/Result.h"
 #include "cad/kernel/Shape.h"
@@ -53,8 +54,20 @@ Result<ElementName> faceName(const Model& m, cad::kernel::BoxFace f);
 Result<Model> fillet(const Model& base, const ElementName& edge, double radius,
                      std::uint32_t serial = 2);
 
+/// Feature `serial`: chamfer the named edge. Same resolveAll contract as fillet.
+Result<Model> chamfer(const Model& base, const ElementName& edge, double distance,
+                      std::uint32_t serial = 2);
+
 /// Feature `serial`: cut `tool` out of `base`.
 Result<Model> cut(const Model& base, const Model& tool, std::uint32_t serial = 3);
+
+/// Feature `serial`: fuse only, without unifying — leaves the coplanar faces separate.
+Result<Model> fuseOnly(const Model& a, const Model& b, std::uint32_t serial = 4);
+
+/// A deliberately invalid solid: a box shell with one face removed, wrapped as a solid.
+/// Stands in for the routinely-broken B-rep that arrives in foreign STEP and IGES, until
+/// M2 brings real import and we can use a captured file as the fixture instead.
+Result<Shape> openShellSolid(double dx, double dy, double dz);
 
 /// Feature `serial`: fuse, then unify coplanar faces — the merge case.
 Result<Model> fuseAndUnify(const Model& a, const Model& b, std::uint32_t serial = 4);

@@ -3,10 +3,10 @@
 Cross-platform parametric CAD. Desktop (Windows/macOS/Linux) is the full product; iPadOS is a
 stripped-down 3D-printing client on the same core, built later.
 
-**Current state: M1 green on macOS-arm64.** The kernel wrapper and the topological naming
-layer are implemented and the acceptance suite passes — 7 cases / 468 assertions, clean
-under ASan + UBSan, including the split, vanish, merge, and cross-process determinism cases.
-Windows and Linux runs are the remaining M1 work.
+**Current state: M1 complete on macOS-arm64.** Kernel wrapper, topological naming, chamfer,
+the healing pipeline and the unit system are implemented; 20 test cases / 713 assertions,
+22/22 under `ctest`, clean under ASan + UBSan. Windows and Linux runs are the only M1 items
+left, and they need CI machines rather than more code.
 
 ```bash
 ctest --test-dir build --output-on-failure
@@ -75,6 +75,6 @@ version argument — the version is checked afterwards instead.
 - **M3** renderer (8–10 wk) · **M4** Qt shell (8–10 wk) · **M5** sketcher (10–12 wk) ·
   **M6** features + plugin ABI v1 (12+ wk)
 
-M1 is done when `tests/acceptance/m1_naming_stability.cpp` passes under ASan on all three
-desktop platforms. See [docs/M0_M1.md](docs/M0_M1.md) for the per-item status and for the
-two design corrections the tests forced.
+M1 is done when the acceptance suite passes under ASan on all three desktop platforms.
+See [docs/M0_M1.md](docs/M0_M1.md) for per-item status and the five design corrections the
+tests forced.

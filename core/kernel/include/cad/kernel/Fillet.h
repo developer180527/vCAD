@@ -16,4 +16,13 @@ Result<Operation> filletEdges(const Shape& base,
                               const std::vector<Shape>& edges,
                               double radius);
 
+/// Symmetric chamfer on the given edges.
+///
+/// Same contract as filletEdges, including the empty-list-is-an-error rule. Naming-wise the
+/// two are identical: both generate a new face FROM AN EDGE, which is why NamingContext
+/// interrogates input edges and not just input faces.
+Result<Operation> chamferEdges(const Shape& base,
+                               const std::vector<Shape>& edges,
+                               double distance);
+
 }  // namespace cad::kernel
