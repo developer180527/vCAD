@@ -36,6 +36,7 @@ ctest --test-dir build --output-on-failure
 | [docs/STACK.md](docs/STACK.md) | Verified dependency facts as of Aug 2026. Re-verify before any major bump; don't trust it after ~6 months. |
 | [docs/M0_M1.md](docs/M0_M1.md) | The current milestone checklist and exit criteria. |
 | [docs/FORMATS.md](docs/FORMATS.md) | Industry format support, tiers, licensing traps, and the PMI constraint on the document model. |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | First checkout (submodules are required), what is and is not committed, and the traps that have already bitten once. |
 | [docs/TESTING.md](docs/TESTING.md) | The four test tiers, why acceptance tests are in Rust, and how to add one. |
 | [docs/decisions/](docs/decisions/) | Six ADRs. 0002, 0004, 0005 and 0006 are the load-bearing ones. |
 
@@ -69,9 +70,12 @@ out-of-process · CPython + C ABI plugins (desktop only).
 Requires a vcpkg checkout and CMake 3.24+.
 
 ```bash
-git submodule update --init --recursive
+git clone --recurse-submodules <url> CAD
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 ```
+
+`modules/engine` is a required submodule (it provides assetlib). See
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 Python bindings need `pip install pybind11` — deliberately from the interpreter you intend
 to bind to, not from vcpkg (whose port builds a whole CPython, and fails on arm64-osx).
