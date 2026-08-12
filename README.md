@@ -72,12 +72,10 @@ out-of-process · CPython + C ABI plugins (desktop only).
 Requires a vcpkg checkout and CMake 3.24+.
 
 ```bash
-git clone --recurse-submodules <url> CAD
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 ```
 
-`modules/engine` is a required submodule (it provides assetlib). See
-[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+No submodules — `assetlib` is vendored at `modules/assetlib`.
 
 Python bindings need `pip install pybind11` — deliberately from the interpreter you intend
 to bind to, not from vcpkg (whose port builds a whole CPython, and fails on arm64-osx).

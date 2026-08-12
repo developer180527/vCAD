@@ -34,9 +34,10 @@ option(CAD_BUILD_SHELL_QT   "Build Qt desktop shell (M4)"         OFF)
 option(CAD_ENABLE_ASAN      "Enable AddressSanitizer"             OFF)
 option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 
-# assetlib: the content-addressed DDC (ADR 0004). Vendored as a submodule; standalone by
-# design, with BLAKE3 and SQLite vendored inside it.
-add_subdirectory(modules/engine/modules/assetlib EXCLUDE_FROM_ALL)
+# assetlib: the content-addressed DDC (ADR 0004). Vendored in-tree — see
+# modules/assetlib/VENDORED.md for provenance, the sync procedure, and why this is a copy
+# rather than a submodule of the engine repository it comes from.
+add_subdirectory(modules/assetlib EXCLUDE_FROM_ALL)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CadWarnings)

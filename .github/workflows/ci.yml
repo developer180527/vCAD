@@ -101,11 +101,8 @@ jobs:
             preset: RelWithDebInfo
 
     steps:
+      # No submodules: assetlib is vendored in-tree at modules/assetlib.
       - uses: actions/checkout@v4
-        with:
-          # modules/engine provides assetlib, which core/recompute links against.
-          # Without this, configure fails with a bare "add_subdirectory ... does not exist".
-          submodules: recursive
 
       - name: Prepare binary cache directory
         shell: bash
@@ -263,8 +260,6 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Prepare binary cache directory
         run: mkdir -p "${{ github.workspace }}/.vcpkg-archives"
 

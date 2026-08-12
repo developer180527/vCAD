@@ -3,18 +3,14 @@
 ## First checkout
 
 ```bash
-git clone --recurse-submodules <url> CAD
-cd CAD
+git clone https://github.com/developer180527/vCAD.git
+cd vCAD
 ```
 
-If you forgot `--recurse-submodules`:
-
-```bash
-git submodule update --init --recursive
-```
-
-`modules/engine` is a submodule and is **required** — `core/recompute/DdcCache` builds
-against `assetlib` inside it. CMake will fail at configure time without it.
+No submodules. `assetlib` is vendored at `modules/assetlib` — see
+[modules/assetlib/VENDORED.md](../modules/assetlib/VENDORED.md) for where it came from and
+how to sync it. **If you fix something in there, push it upstream too**, or the next sync
+silently reverts you.
 
 Then:
 
