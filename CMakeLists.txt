@@ -38,6 +38,28 @@ option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 # design, with BLAKE3 and SQLite vendored inside it.
 add_subdirectory(modules/engine/modules/assetlib EXCLUDE_FROM_ALL)
 
+# Force-include <atomic> into assetlib.
+#
+# TEMPORARY SHIM for an upstream bug: src/ddc/fs_util.cpp uses std::atomic<uint64_t> without
+# including <atomic>. libc++ and MSVC's STL pull it in transitively, so it builds on macOS and
+# Windows; libstdc++ does not, so gcc fails outright. Diagnosed on the first Linux CI run.
+#
+# The real fix is one line in the engine repo. This shim exists so a submodule bump is not a
+# prerequisite for CI being green, and should be deleted once upstream carries the include.
+if(TARGET assetlib)
+  # CXX only. assetlib compiles vendored C as well (BLAKE3, the SQLite amalgamation), and
+  # force-including a C++ header into a .c file fails with the same "'atomic' file not found"
+  # that sent me looking at include paths rather than at the language.
+  set(_assetlib_prelude "${CMAKE_CURRENT_SOURCE_DIR}/cmake/shims/assetlib_prelude.h")
+  if(MSVC)
+    target_compile_options(assetlib PRIVATE
+      "$<$<COMPILE_LANGUAGE:CXX>:/FI${_assetlib_prelude}>")
+  else()
+    target_compile_options(assetlib PRIVATE
+      "$<$<COMPILE_LANGUAGE:CXX>:-include;${_assetlib_prelude}>")
+  endif()
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CadWarnings)
 include(CadLayering)

@@ -15,6 +15,11 @@ if(Python3_FOUND)
     ERROR_QUIET
     RESULT_VARIABLE _pybind11_result)
   if(_pybind11_result EQUAL 0)
+    # TO_CMAKE_PATH is not optional here. On Windows the interpreter returns a native path
+    # (C:\hostedtoolcache\...), and CMake parses the backslashes as escape sequences —
+    # "Invalid character escape '\h'" at the find_package call, which reads like a CMake
+    # bug rather than a path-separator problem.
+    file(TO_CMAKE_PATH "${_pybind11_dir}" _pybind11_dir)
     find_package(pybind11 CONFIG QUIET PATHS "${_pybind11_dir}" NO_DEFAULT_PATH)
   endif()
 endif()

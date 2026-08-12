@@ -111,8 +111,14 @@ jobs:
         shell: bash
         run: mkdir -p "${{ github.workspace }}/.vcpkg-archives"
 
+      # restore/save split rather than actions/cache, so the archives are saved even when a
+      # LATER step fails. actions/cache only saves in a post step on success, which meant our
+      # three failed runs each rebuilt OCCT from scratch and banked nothing — the exact loop
+      # that made CI feel unusable. The dependencies are correct regardless of whether our own
+      # code compiles, so there is no reason to throw them away.
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
           # The key covers everything that changes the built bytes: the runner image, the
@@ -176,6 +182,15 @@ jobs:
         run: |
           dir="${{ github.workspace }}/.vcpkg-archives"
           echo "archives: $(find "$dir" -name '*.zip' 2>/dev/null | wc -l) packages, $(du -sh "$dir" 2>/dev/null | cut -f1)"
+
+      # Immediately after configure, which is when vcpkg has finished writing archives, and
+      # BEFORE our own build can fail. always() so a compile error still banks the hour.
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-archives
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
 
       - name: Build
         run: cmake --build build -j
@@ -256,7 +271,8 @@ jobs:
       # Same triplet as the Linux test job, so this restores THAT job's archives rather than
       # building OCCT a second time for the same platform.
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
           key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
@@ -279,6 +295,13 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=Debug -DCAD_ENABLE_ASAN=ON -DCAD_BUILD_SPIKES=OFF
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-archives
+          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+
       - name: Build
         run: cmake --build build-asan -j
       - name: Test
