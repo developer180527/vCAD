@@ -12,7 +12,7 @@ UBSan from `build-asan/`.
 ## Why the suite is split across two languages
 
 The C++ tests exercise the core's **internals**. The Rust tests exercise the **C ABI** —
-`core/abi/include/cad/abi/cad_plugin_abi.h` — which is the surface that third-party plugins,
+`abi/include/cad/abi/cad_plugin_abi.h` — which is the surface that third-party plugins,
 the future SwiftUI iPad shell, and any language binding will use.
 
 That split is the point, not an accident of tooling. A test suite that only ever calls C++
@@ -85,7 +85,7 @@ runs before committing protects nothing.
   gets `CAD_ERR_BAD_HANDLE`, not a crash.
 - Returned strings are **valid only until the next call on that session**. The safe wrapper
   copies immediately; do not hold a `*const c_char`.
-- Nothing throws across the boundary. `Session.cpp` wraps every export.
+- Nothing throws across the boundary. `abi/src/Session.cpp` wraps every export.
 - `tests-rs/cad-sys/src/lib.rs` is hand-written, not bindgen-generated. Change it and the C
   header in the **same commit**, and bump `CAD_ABI_VERSION_MINOR`. That is deliberate: an
   accidental header change should be a compile error, not a silent regeneration.

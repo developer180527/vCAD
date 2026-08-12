@@ -1,12 +1,18 @@
-# The C ABI. Built as a SHARED library on purpose: it is what Rust, the future SwiftUI
-# shell, and native plugins load, and none of them can consume a C++ static archive.
+# The C ABI: the application-facing facade.
+#
+# Lives at the top level, NOT under core/, because it depends on core AND render. It sat in
+# core/abi for two milestones and the layering check caught it the moment it needed to include
+# a renderer header — the rule was right and the placement was wrong.
+#
+# SHARED on purpose: this is what Rust, the future SwiftUI shell and native plugins load, and
+# none of them can consume a C++ static archive.
 add_library(cad_abi SHARED
   src/Session.cpp
 )
 add_library(cad::abi ALIAS cad_abi)
 
 target_include_directories(cad_abi PUBLIC include)
-target_link_libraries(cad_abi PRIVATE cad::core)
+target_link_libraries(cad_abi PRIVATE cad::core cad::render)
 target_compile_definitions(cad_abi PRIVATE CAD_ABI_BUILD)
 cad_set_warnings(cad_abi)
 

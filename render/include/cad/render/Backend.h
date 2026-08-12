@@ -54,25 +54,51 @@ struct Camera {
 /// per-element, not per-object, because a user selects a face and not a part.
 enum class Highlight : std::uint8_t { None = 0, Hovered, Selected, Error };
 
-/// One instance of a mesh. Flat and POD so a frame is memcpy-able and diffable.
-struct DrawItem {
+/// One placement of a mesh.
+///
+/// 56 bytes, and every byte is deliberate — at 1M instances this is the difference between
+/// 56 MB and 96 MB of per-frame instance data:
+///   * 4x3 affine transform, not Mat4. The fourth row of a CAD placement is always
+///     (0,0,0,1); storing it costs 16 MB per million instances to say nothing.
+///   * packed RGBA8 colour, not four floats.
+struct Instance {
+    float transform[12];              ///< column-major 4x3
+    std::uint8_t colour[4]{191, 194, 199, 255};
+    /// Where this instance's element names start in the frame's element table.
+    ///
+    /// This exists because dedupe means one mesh is shared by many parts: 50,000 identical
+    /// bolts are one mesh, and that mesh cannot carry 50,000 sets of element names. The mesh
+    /// stores element SLOTS; the instance stores its base. A GPU pick returns
+    /// (instance, slot) and resolves through this.
+    std::uint32_t elementBase = 0;
+};
+// The assert is here because I got this wrong once: 48 + 4 + 4 is 56, and an earlier draft
+// carried a speculative `flags` field that made it 60 while the comment still claimed 56.
+// At a million instances that unused field cost 4 MB per frame to say nothing.
+static_assert(sizeof(Instance) == 56, "Instance size is a per-frame bandwidth decision");
+
+/// One draw call, instanced across every part that uses this mesh.
+///
+/// NOT one item per part. 100k parts means 100k draw calls, which the CPU cannot submit at
+/// any framerate — see the scale amendment in ADR 0007. Content-addressed dedupe is what
+/// makes this tractable: ~1000 unique meshes for a 100k-part assembly.
+struct Batch {
     BufferId vertices = BufferId::None;
     BufferId indices = BufferId::None;
     std::uint32_t indexOffset = 0;
     std::uint32_t indexCount = 0;
-    Mat4 transform;
-    float colour[4]{0.75f, 0.76f, 0.78f, 1.0f};
+    std::span<const Instance> instances;
     bool doubleSided = false;
 };
 
-/// Edge draw. A separate stream because edges are line primitives with their own pass and
-/// their own depth bias — see ADR 0007 decision 5.
-struct EdgeItem {
+/// Edge batch. Separate stream: line primitives, own pass, own depth bias (ADR 0007
+/// decision 5).
+struct EdgeBatch {
     BufferId vertices = BufferId::None;
     std::uint32_t vertexOffset = 0;
     std::uint32_t vertexCount = 0;
-    Mat4 transform;
-    float colour[4]{0.15f, 0.16f, 0.18f, 1.0f};
+    std::span<const Instance> instances;
+    std::uint8_t colour[4]{38, 41, 46, 255};
     float widthPx = 1.5f;
 };
 
@@ -89,13 +115,18 @@ struct SectionPlane {
 struct SceneFrame {
     Camera camera;
     Viewport viewport;
-    std::span<const DrawItem> items;
-    std::span<const EdgeItem> edges;
+    std::span<const Batch> batches;
+    std::span<const EdgeBatch> edgeBatches;
     std::span<const SectionPlane> sections;
 
-    /// Per-element highlight, parallel to the element table the vertices index into. This is
-    /// why CadVertex carries an element index at all.
+    /// Per-element highlight, indexed by (instance.elementBase + vertex.element). Sparse in
+    /// practice — a user selects a handful of faces out of millions — so backends should treat
+    /// an empty span as "nothing highlighted" rather than allocating per element.
     std::span<const Highlight> highlights;
+
+    /// Total element slots this frame, i.e. the size of the logical element table. Backends
+    /// need it to size the pick target's id range.
+    std::uint32_t elementCount = 0;
 
     float background[4]{0.16f, 0.17f, 0.19f, 1.0f};
     bool showEdges = true;
@@ -139,6 +170,9 @@ public:
 
     struct Stats {
         std::uint32_t drawCalls = 0;
+        std::uint32_t instances = 0;
+        /// Ratio of instances to drawCalls is the number that says whether dedupe is working.
+        /// If they are equal on a large assembly, something has defeated it.
         std::uint32_t triangles = 0;
         std::uint32_t lines = 0;
         double cpuFrameMs = 0.0;
@@ -157,7 +191,8 @@ public:
     virtual ~IPicker() = default;
 
     struct Hit {
-        std::uint32_t element = 0;     ///< index into the frame's element table
+        std::uint32_t instance = 0;    ///< index into the batch's instance span
+        std::uint32_t element = 0;     ///< absolute slot: instance.elementBase + local
         float depth = 1.0f;
         bool valid = false;
     };

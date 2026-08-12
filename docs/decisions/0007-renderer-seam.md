@@ -1,6 +1,6 @@
 # 0007 — Renderer architecture and the swap seam
 
-Status: proposed (Aug 2026)
+Status: accepted (Aug 2026), amended — see "Amendment" at the end
 
 ## Context
 
@@ -135,3 +135,92 @@ A game renderer has no concept of this. It stays ours permanently, above the sea
   [docs/M3.md](../M3.md). Pixel-level regression needs a software rasteriser and is deferred.
 - The iPad shell will need the seam reachable from Swift. It is POD-only by construction, so
   a C facade over it is mechanical. Not built yet.
+
+
+---
+
+# Amendment (Aug 2026): swap requirement dropped, scale requirement added
+
+Two changes from the original brief. The first invalidates an argument this ADR leaned on;
+the second changes the data model.
+
+## The engine-swap requirement is withdrawn
+
+"No need to make it swappable by engine's renderer — we could develop the renderers
+independently."
+
+That removes the main justification for Decision 2. Rather than quietly keep a design
+defended by a dead requirement, here is what actually survives and why:
+
+- **Decision 1 (C++, not Rust) — still holds, weaker reasons.** The shared-bgfx argument is
+  gone. What remains: tessellation output lives in OCCT-owned memory, so a Rust renderer needs
+  a copy or an unsafe view per frame at the hottest path; and cargo would become a release
+  dependency rather than a test one. Real, but no longer decisive. If the renderer were being
+  started from scratch today with no other constraints, Rust + wgpu would be a defensible
+  choice. We are not restarting.
+- **Decision 2 (three narrow interfaces) — still holds, different reasons.** Not for swapping
+  in the engine any more, but because:
+  1. **CI has no GPU.** A `NullBackend` behind these interfaces is the only way the scene
+     layer — where the logic bugs live — gets tested at all.
+  2. **iPad needs a second real backend.** Metal behind SwiftUI is a different backend to the
+     desktop one whatever we do.
+  3. Two implementations existing from day one is what keeps an abstraction honest.
+- **Decisions 3, 4, 5 (no IPC, own vertex layout, edges first-class) — unaffected.** Decision 4
+  gets *stronger*: with no engine layout to converge on, `CadVertex` is free to be exactly
+  what CAD wants.
+- **Decision 2's adoption path (M3.4) — deleted.** No longer a goal.
+
+## Scale: 100k–1M parts
+
+This is the requirement that shapes the data model, and the original design fails it.
+
+A `DrawItem` per part means 100k draw calls per frame. That is not a budget problem, it is a
+category error — the CPU cannot submit them, let alone at 60fps.
+
+### What replaces it: instanced batches
+
+```
+Batch { BufferId vertices, indices; uint32 indexOffset, indexCount; span<Instance> }
+Instance { float transform[12]; uint8 colour[4]; uint32 elementBase; }   // 56 bytes exactly
+```
+
+One draw call per *unique mesh*, instanced across every part that uses it. `Instance` is
+deliberately 56 bytes with a 4x3 affine transform (the fourth row is always 0,0,0,1) and
+packed colour: at 1M instances that is the difference between 56 MB and 96 MB per frame of
+instance data.
+
+### Why this works at all: content-addressed dedupe
+
+The single biggest win, and it is already in the design rather than bolted on. A `RenderMesh`
+is keyed by *shape content hash*, so **identical parts collapse to one mesh automatically.**
+
+Large assemblies are overwhelmingly repeats — fasteners, brackets, fittings. A 100k-part
+assembly plausibly has 500–2000 unique shapes. That turns:
+
+| | naive | content-addressed |
+|---|---|---|
+| meshes tessellated | 100,000 | ~1,000 |
+| GPU buffers | 100,000 | ~1,000 |
+| draw calls / frame | 100,000 | ~1,000 (instanced) |
+
+Dedupe is not an optimisation pass here; it is a consequence of keying on content, which we
+were doing anyway for the DDC. The 50,000 identical bolts tessellate once.
+
+### Consequences for M3.1
+
+1. **Tessellation must be per-unique-shape, not per-part.** The cache lookup happens before
+   any work, and a hit costs a hash lookup.
+2. **Tessellation must be parallel across shapes.** ~1000 unique shapes at tens of
+   milliseconds each is a minute single-threaded. Independent shapes, embarrassingly parallel.
+3. **A memory budget is mandatory, not a nicety.** 1000 unique meshes is fine; a pathological
+   assembly with 100k unique shapes is not, and must degrade (coarser LOD, evict, proxy boxes)
+   rather than exhaust memory. The DDC's budget eviction already covers the disk tier; the
+   live tier needs its own.
+4. **Element tables must be per-instance, not per-mesh.** One mesh shared by 50,000 bolts
+   cannot carry 50,000 element names. Hence `Instance::elementBase`: the mesh stores element
+   *slots*, the instance stores where its names start in the frame's element table. A GPU pick
+   returns (instance, slot) and resolves to a name through that.
+
+Deferred to M3.3, recorded so the data model does not preclude them: GPU-driven frustum and
+occlusion culling, LOD selection, and small-feature culling (a part under a few pixels draws
+as a box or not at all).

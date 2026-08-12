@@ -12,6 +12,7 @@
 #include "cad/io/Format.h"
 #include "cad/recompute/DdcCache.h"
 #include "cad/recompute/Engine.h"
+#include "cad/render/Tessellate.h"
 #include "cad/units/Units.h"
 
 #include <exception>
@@ -36,15 +37,32 @@ struct Session {
     FeatureRegistry registry = FeatureRegistry::builtins();
     cad::io::FormatRegistry formats = cad::io::FormatRegistry::builtins();
     std::unique_ptr<cad::recompute::Cache> cache;
+
+    /// Mesh blobs go through a BlobStore, not the Output cache — a tessellated mesh is derived
+    /// data but it is not a shape (see the note on BlobStore). When a disk cache is configured
+    /// ONE DdcCache serves both roles, so meshes reach the shared tier exactly like cooked
+    /// features do.
+    ///
+    /// NON-OWNING. The TieredCache owns it. An earlier draft held it in a second unique_ptr
+    /// as well, which compiles perfectly and double-frees on session release.
+    cad::recompute::DdcCache* ddc = nullptr;
+    std::unique_ptr<cad::recompute::BlobStore> memoryBlobs;
+    std::unique_ptr<cad::render::MeshCache> meshes;
+
     History history{Document{}};
 
     explicit Session(const std::string& cacheDir) {
         auto l0 = std::make_unique<MemoryCache>();
         if (cacheDir.empty()) {
             cache = std::move(l0);
+            memoryBlobs = std::make_unique<cad::recompute::MemoryBlobStore>();
+            meshes = std::make_unique<cad::render::MeshCache>(*memoryBlobs);
         } else {
-            cache = std::make_unique<cad::recompute::TieredCache>(
-                std::move(l0), std::make_unique<cad::recompute::DdcCache>(cacheDir));
+            auto owned = std::make_unique<cad::recompute::DdcCache>(cacheDir);
+            ddc = owned.get();
+            cache = std::make_unique<cad::recompute::TieredCache>(std::move(l0),
+                                                                 std::move(owned));
+            meshes = std::make_unique<cad::render::MeshCache>(*ddc);
         }
     }
 
@@ -53,6 +71,11 @@ struct Session {
     /// break by holding two results at once.
     std::string scratch;
     std::string lastError;
+
+    /// The mesh from the most recent tessellate call, so element slots can be read back
+    /// without re-entering the cache per slot.
+    cad::render::RenderMeshPtr lastMesh;
+    CadObject lastMeshObject = 0;
 
     [[nodiscard]] const Document& doc() const { return history.current(); }
 };
@@ -553,6 +576,68 @@ static const char* joinExtensions(CadSession handle, bool writable) {
 
 const char* cad_readable_extensions(CadSession h) { return joinExtensions(h, false); }
 const char* cad_writable_extensions(CadSession h) { return joinExtensions(h, true); }
+
+CadStatus cad_object_tessellate(CadSession handle, CadObject id, double deflection,
+                                double angular, CadMeshInfo* out) {
+    return withSession(handle, [&](Session& s) {
+        const auto* output = outputOf(s, id);
+        if (output == nullptr) {
+            return fail(s, CAD_ERR_NOT_DONE,
+                        "This object has no geometry yet. Recompute first.");
+        }
+        cad::render::TessellationSettings settings;
+        if (deflection > 0.0) settings.deflection = deflection;
+        if (angular > 0.0) settings.angularDeflection = angular;
+
+        auto mesh = s.meshes->get(*output, settings);
+        if (!mesh) {
+            s.lastError = mesh.error().message;
+            return toStatus(mesh.error().code);
+        }
+        s.lastMesh = mesh.value();
+        s.lastMeshObject = id;
+
+        if (out != nullptr) {
+            const auto& m = *mesh.value();
+            out->triangles = m.triangleCount();
+            out->vertices = m.vertices.size();
+            out->edgePolylines = m.edges.size();
+            out->edgePoints = m.edgeVertices.size() / 3;
+            out->elements = m.elements.size();
+            for (int i = 0; i < 3; ++i) {
+                out->boundsMin[i] = m.bounds.min[i];
+                out->boundsMax[i] = m.bounds.max[i];
+            }
+        }
+        return CAD_OK;
+    });
+}
+
+const char* cad_mesh_element_name(CadSession handle, CadObject id, uint32_t slot) {
+    return withSessionStr(handle, [&](Session& s) {
+        // Reads the mesh from the last tessellate call on this session rather than
+        // re-tessellating: the caller is iterating slots, and re-entering the cache per slot
+        // would make an O(n) loop look like an O(n) cache workload in the stats.
+        if (!s.lastMesh || s.lastMeshObject != id) return;
+        if (slot >= s.lastMesh->elements.size()) return;
+        s.scratch = s.lastMesh->elements[slot].toString();
+    });
+}
+
+CadStatus cad_mesh_cache_stats(CadSession handle, uint64_t* hits, uint64_t* misses) {
+    return withSession(handle, [&](Session& s) {
+        if (hits != nullptr) *hits = s.meshes->hits();
+        if (misses != nullptr) *misses = s.meshes->misses();
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_mesh_cache_reset_stats(CadSession handle) {
+    return withSession(handle, [&](Session& s) {
+        s.meshes->resetStats();
+        return CAD_OK;
+    });
+}
 
 CadStatus cad_parse_length(const char* text, int32_t system, double* out) {
     if (text == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;

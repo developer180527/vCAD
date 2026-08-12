@@ -42,6 +42,13 @@ FORBIDDEN: dict[str, list[str]] = {
         "bgfx/", "bx/",   # app talks to render through cad/render, not the RHI directly
         "cad/shell",
     ],
+    # The C facade over core + render. May use both; may not reach a UI toolkit or the RHI,
+    # because everything it exposes has to be callable from Swift and from a plugin.
+    "abi": [
+        "Q",
+        "bgfx/", "bx/", "Diligent",
+        "cad/shell",
+    ],
 }
 
 # Narrow, deliberate exemptions. Each needs a comment justifying it.
@@ -63,6 +70,8 @@ def layer_of(path: Path, root: Path) -> str | None:
         return "render"
     if top == "app":
         return "app"
+    if top == "abi":
+        return "abi"
     return None
 
 

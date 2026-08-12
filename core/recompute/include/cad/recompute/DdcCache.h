@@ -4,8 +4,40 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 namespace cad::recompute {
+
+/// Content-addressed byte storage.
+///
+/// Separate from `Cache`, which stores `document::Output` — a shape plus its element map.
+/// Tessellated meshes are derived data that belong in the same DDC but are NOT shapes, and
+/// squeezing them into `Output` (an earlier draft did) makes a lie of that type. assetlib's
+/// DdcStore already exposes storeBytes/fetchBytes, so this interface is a thin wrapper rather
+/// than an abstraction invented to make something compile.
+class BlobStore {
+public:
+    virtual ~BlobStore() = default;
+    virtual bool get(std::uint64_t key, std::string& out) = 0;
+    virtual void put(std::uint64_t key, const std::string& bytes) = 0;
+    [[nodiscard]] virtual std::size_t hits() const = 0;
+    [[nodiscard]] virtual std::size_t misses() const = 0;
+};
+
+/// In-memory BlobStore, for tests and for sessions with no disk cache configured.
+class MemoryBlobStore : public BlobStore {
+public:
+    bool get(std::uint64_t key, std::string& out) override;
+    void put(std::uint64_t key, const std::string& bytes) override;
+    [[nodiscard]] std::size_t hits() const override { return hits_; }
+    [[nodiscard]] std::size_t misses() const override { return misses_; }
+
+private:
+    std::unordered_map<std::uint64_t, std::string> blobs_;
+    std::size_t hits_ = 0;
+    std::size_t misses_ = 0;
+};
 
 /// L1/L2 tier backed by assetlib's `DdcStore` (ADR 0004).
 ///
@@ -24,7 +56,7 @@ namespace cad::recompute {
 ///     unreachable rather than misread.
 ///   * A blob that fails to read is a MISS, never an error. A stale or corrupt cache entry
 ///     must not be able to fail a build.
-class DdcCache : public Cache {
+class DdcCache : public Cache, public BlobStore {
 public:
     /// Empty `localRoot` uses assetlib's default (~/.engine/ddc, or $ENGINE_DDC).
     /// Empty `sharedRoot` disables the shared tier.
@@ -34,6 +66,11 @@ public:
 
     std::optional<Output> get(std::uint64_t key) override;
     void put(std::uint64_t key, const Output&) override;
+
+    /// BlobStore: raw bytes through the same two-tier store, so a tessellated mesh reaches the
+    /// shared tier exactly like cooked feature output does.
+    bool get(std::uint64_t key, std::string& out) override;
+    void put(std::uint64_t key, const std::string& bytes) override;
 
     std::size_t hits() const override;
     std::size_t misses() const override;

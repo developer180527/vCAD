@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 2
+#define CAD_ABI_VERSION_MINOR 3
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -258,6 +258,35 @@ CAD_API const char* cad_import_summary(CadSession);
 /* Extensions we can read / write, as a single comma-separated string. */
 CAD_API const char* cad_readable_extensions(CadSession);
 CAD_API const char* cad_writable_extensions(CadSession);
+
+/* --- tessellation (M3.1) --- */
+
+/* What tessellating one object produced. Counts rather than data: the Rust suite verifies
+ * structure and cache behaviour, and shipping a million vertices across the ABI to assert a
+ * number would be absurd. The bgfx backend consumes RenderMesh in-process. */
+typedef struct {
+    uint64_t triangles;
+    uint64_t vertices;
+    uint64_t edgePolylines;
+    uint64_t edgePoints;
+    uint64_t elements;        /* named face+edge slots; every one must resolve */
+    float    boundsMin[3];
+    float    boundsMax[3];
+} CadMeshInfo;
+
+/* Tessellates an object's current geometry, through the mesh cache. Deflection and angular
+ * deflection are part of the cache key, so changing either is a miss by construction. */
+CAD_API CadStatus cad_object_tessellate(CadSession, CadObject, double deflection,
+                                        double angular_deflection, CadMeshInfo* out);
+
+/* Element name for a mesh element slot, in the round-trippable text form. Empty if the slot
+ * is out of range. This is what proves a GPU pick could resolve to a stable reference. */
+CAD_API const char* cad_mesh_element_name(CadSession, CadObject, uint32_t slot);
+
+/* Mesh cache counters. The one that matters at assembly scale is hits: N identical parts must
+ * tessellate ONCE. */
+CAD_API CadStatus cad_mesh_cache_stats(CadSession, uint64_t* out_hits, uint64_t* out_misses);
+CAD_API CadStatus cad_mesh_cache_reset_stats(CadSession);
 
 /* --- units, exposed so bindings do not reimplement parsing --- */
 CAD_API CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);

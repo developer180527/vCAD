@@ -1,4 +1,4 @@
-//! Raw FFI declarations for `core/abi/include/cad/abi/cad_plugin_abi.h`.
+//! Raw FFI declarations for `abi/include/cad/abi/cad_plugin_abi.h`.
 //!
 //! Hand-written, not bindgen-generated. Against a deliberately frozen ABI that is the right
 //! trade: an accidental change to the C header becomes a link error or a test failure here,
@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 2;
+pub const CAD_ABI_VERSION_MINOR: u32 = 3;
 
 pub type CadStatus = i32;
 
@@ -63,6 +63,18 @@ pub struct CadImportInfo {
     pub units_were_assumed: i32,
     pub unsupported_count: i32,
     pub warning_count: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct CadMeshInfo {
+    pub triangles: u64,
+    pub vertices: u64,
+    pub edge_polylines: u64,
+    pub edge_points: u64,
+    pub elements: u64,
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
 }
 
 #[repr(C)]
@@ -164,6 +176,17 @@ extern "C" {
     pub fn cad_import_summary(s: CadSession) -> *const c_char;
     pub fn cad_readable_extensions(s: CadSession) -> *const c_char;
     pub fn cad_writable_extensions(s: CadSession) -> *const c_char;
+
+    pub fn cad_object_tessellate(
+        s: CadSession,
+        id: CadObject,
+        deflection: f64,
+        angular: f64,
+        out: *mut CadMeshInfo,
+    ) -> CadStatus;
+    pub fn cad_mesh_element_name(s: CadSession, id: CadObject, slot: u32) -> *const c_char;
+    pub fn cad_mesh_cache_stats(s: CadSession, hits: *mut u64, misses: *mut u64) -> CadStatus;
+    pub fn cad_mesh_cache_reset_stats(s: CadSession) -> CadStatus;
 
     pub fn cad_parse_length(text: *const c_char, system: c_int, out: *mut f64) -> CadStatus;
 }

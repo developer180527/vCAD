@@ -56,7 +56,7 @@ jobs:
         # the two have drifted and someone forgot to update the other half.
         run: |
           header=$(grep -oP 'CAD_ABI_VERSION_MINOR\s+\K\d+' \
-            core/abi/include/cad/abi/cad_plugin_abi.h)
+            abi/include/cad/abi/cad_plugin_abi.h)
           rust=$(grep -oP 'CAD_ABI_VERSION_MINOR: u32 = \K\d+' \
             tests-rs/cad-sys/src/lib.rs)
           echo "C header: $header, cad-sys: $rust"
@@ -230,7 +230,7 @@ jobs:
         working-directory: tests-rs
         env:
           CAD_BUILD_DIR: ${{ github.workspace }}/build
-          LD_LIBRARY_PATH: ${{ github.workspace }}/build/core/abi
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build/abi
         run: cargo test --workspace -- --nocapture
 
       - name: Rust tests (Windows)
@@ -243,7 +243,7 @@ jobs:
           # Two directories, both required. Windows is the only platform where vcpkg's
           # default library linkage is DYNAMIC, so OCCT itself ships as DLLs alongside our
           # cad_abi.dll. The Rust test binary needs to find both.
-          $abi = "${{ github.workspace }}\build\core\abi"
+          $abi = "${{ github.workspace }}\build\abi"
           $deps = "${{ github.workspace }}\build\vcpkg_installed\x64-windows\bin"
           $env:PATH = "$abi;$deps;$env:PATH"
           cargo test --workspace

@@ -2,8 +2,10 @@
 
 #include "cad/document/Document.h"
 #include "cad/kernel/Result.h"
-#include "cad/recompute/Engine.h"
+#include "cad/recompute/DdcCache.h"
 #include "cad/render/RenderMesh.h"
+
+#include <unordered_map>
 
 namespace cad::render {
 
@@ -31,15 +33,16 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output&, const Tessella
 /// cooked feature output — tessellation is exactly the kind of derived data it exists for.
 class MeshCache {
 public:
-    explicit MeshCache(recompute::Cache& blobs);
+    explicit MeshCache(recompute::BlobStore& blobs);
 
     kernel::Result<RenderMeshPtr> get(const document::Output&, const TessellationSettings&);
 
     [[nodiscard]] std::size_t hits() const noexcept { return hits_; }
     [[nodiscard]] std::size_t misses() const noexcept { return misses_; }
+    void resetStats() noexcept { hits_ = misses_ = 0; }
 
 private:
-    recompute::Cache& blobs_;
+    recompute::BlobStore& blobs_;
     /// L0: the same tiering argument as ADR 0004. Panning must not deserialise.
     std::unordered_map<std::uint64_t, RenderMeshPtr> live_;
     std::size_t hits_ = 0;

@@ -22,7 +22,7 @@ fn main() {
                 .join("build")
         });
 
-    let lib_dir = build_dir.join("core/abi");
+    let lib_dir = build_dir.join("abi");
     let names = [
         "libcad_abi.dylib",
         "libcad_abi.so",

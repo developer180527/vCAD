@@ -8,7 +8,6 @@ add_subdirectory(units)
 add_subdirectory(document)
 add_subdirectory(io)
 add_subdirectory(recompute)
-add_subdirectory(abi)
 
 # M2+
 # add_subdirectory(sketch)

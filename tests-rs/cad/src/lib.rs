@@ -137,6 +137,19 @@ impl RecomputeReport {
     }
 }
 
+/// What tessellating one object produced. Counts, not data: the mesh itself is consumed
+/// in-process by the renderer.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct MeshInfo {
+    pub triangles: u64,
+    pub vertices: u64,
+    pub edge_polylines: u64,
+    pub edge_points: u64,
+    pub elements: u64,
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CacheStats {
     pub hits: u64,
@@ -230,6 +243,42 @@ impl Session {
             warnings: vec![String::new(); info.warning_count.max(0) as usize],
             summary,
         })
+    }
+
+    /// Tessellates through the mesh cache. Tolerances are part of the cache key, so changing
+    /// either is a miss by construction — a mesh at the wrong fidelity cannot be served.
+    pub fn tessellate(&mut self, o: Object, deflection: f64, angular: f64) -> Result<MeshInfo> {
+        let mut info = sys::CadMeshInfo::default();
+        let st =
+            unsafe { sys::cad_object_tessellate(self.handle, o.0, deflection, angular, &mut info) };
+        self.check(st)?;
+        Ok(MeshInfo {
+            triangles: info.triangles,
+            vertices: info.vertices,
+            edge_polylines: info.edge_polylines,
+            edge_points: info.edge_points,
+            elements: info.elements,
+            bounds_min: info.bounds_min,
+            bounds_max: info.bounds_max,
+        })
+    }
+
+    /// Name of a mesh element slot. Empty if out of range — this is what a GPU pick would
+    /// resolve through, so an empty result for a valid slot means picking is broken.
+    pub fn mesh_element_name(&self, o: Object, slot: u32) -> String {
+        self.take_str(unsafe { sys::cad_mesh_element_name(self.handle, o.0, slot) })
+    }
+
+    pub fn mesh_cache_stats(&self) -> Result<CacheStats> {
+        let (mut hits, mut misses) = (0u64, 0u64);
+        let st = unsafe { sys::cad_mesh_cache_stats(self.handle, &mut hits, &mut misses) };
+        self.check(st)?;
+        Ok(CacheStats { hits, misses })
+    }
+
+    pub fn reset_mesh_cache_stats(&mut self) -> Result<()> {
+        let st = unsafe { sys::cad_mesh_cache_reset_stats(self.handle) };
+        self.check(st)
     }
 
     pub fn readable_extensions(&self) -> Vec<String> {

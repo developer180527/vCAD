@@ -70,6 +70,36 @@ void DdcCache::put(std::uint64_t key, const Output& value) {
     impl_->store.storeBytes(keyString(key), bytes.value());
 }
 
+bool DdcCache::get(std::uint64_t key, std::string& out) {
+    // Distinct key namespace from cooked output: the same 64-bit key must never name both a
+    // shape blob and a mesh blob.
+    if (!impl_->store.fetchBytes(keyString(key ^ 0x6d657368'00000000ULL), out)) {
+        ++impl_->misses;
+        return false;
+    }
+    ++impl_->hits;
+    return true;
+}
+
+void DdcCache::put(std::uint64_t key, const std::string& bytes) {
+    impl_->store.storeBytes(keyString(key ^ 0x6d657368'00000000ULL), bytes);
+}
+
+bool MemoryBlobStore::get(std::uint64_t key, std::string& out) {
+    const auto it = blobs_.find(key);
+    if (it == blobs_.end()) {
+        ++misses_;
+        return false;
+    }
+    ++hits_;
+    out = it->second;
+    return true;
+}
+
+void MemoryBlobStore::put(std::uint64_t key, const std::string& bytes) {
+    blobs_.emplace(key, bytes);
+}
+
 std::size_t DdcCache::hits() const { return impl_->hits; }
 std::size_t DdcCache::misses() const { return impl_->misses; }
 std::size_t DdcCache::unreadable() const { return impl_->unreadable; }
