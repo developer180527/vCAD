@@ -108,23 +108,36 @@ jobs:
         shell: bash
         run: mkdir -p "${{ github.workspace }}/.vcpkg-archives"
 
-      # restore/save split rather than actions/cache, so the archives are saved even when a
-      # LATER step fails. actions/cache only saves in a post step on success, which meant our
-      # three failed runs each rebuilt OCCT from scratch and banked nothing — the exact loop
-      # that made CI feel unusable. The dependencies are correct regardless of whether our own
-      # code compiles, so there is no reason to throw them away.
+      # ROLLING key: the save key ends in the run id, so it is always unique.
+      #
+      # This is not stylistic. With a fixed key, two runs I cancelled after five minutes saved
+      # 6 MB stubs under the exact key. Every later run then got a cache HIT on a nearly-empty
+      # archive, which made `cache-hit == 'true'`, which SKIPPED the save — so the real OCCT
+      # was never stored and every run rebuilt it. A poisoned key is unrecoverable without
+      # deleting the entry by hand, which is what we had to do.
+      #
+      # With a unique save key, a stale or partial entry can never block a save, and
+      # restore-keys returns the most recently created prefix match — so a more complete cache
+      # naturally supersedes a less complete one.
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          # The key covers everything that changes the built bytes: the runner image, the
-          # pinned vcpkg commit, the manifest, and our triplet overlays. Anything else
-          # changing must NOT invalidate an hour of OCCT.
-          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          # Prefix covers everything that changes the built bytes: runner image, pinned vcpkg
+          # commit, manifest, triplet overlays. Nothing else may invalidate an hour of OCCT.
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
           restore-keys: |
+            vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-
             vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
-            vcpkg-${{ matrix.os }}-
+
+      - name: Count cached packages before configure
+        id: pkgs-before
+        shell: bash
+        run: |
+          n=$(find "${{ github.workspace }}/.vcpkg-archives" -name '*.zip' 2>/dev/null | wc -l | tr -d ' ')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "restored $n cached packages"
 
       # OCCT needs X11/GL headers to configure even though we never link its visualisation
       # toolkits: its CMake probes for them unconditionally.
@@ -166,6 +179,7 @@ jobs:
           workspaces: tests-rs
 
       - name: Configure
+        id: configure
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
@@ -173,21 +187,30 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.preset }}
 
       - name: Binary cache report
-        # Prints after configure so a broken cache is obvious in the log rather than
-        # something you infer from the wall clock an hour later.
+        id: pkgs-after
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           dir="${{ github.workspace }}/.vcpkg-archives"
-          echo "archives: $(find "$dir" -name '*.zip' 2>/dev/null | wc -l) packages, $(du -sh "$dir" 2>/dev/null | cut -f1)"
+          n=$(find "$dir" -name '*.zip' 2>/dev/null | wc -l | tr -d ' ')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "archives: $n packages, $(du -sh "$dir" 2>/dev/null | cut -f1) (was ${{ steps.pkgs-before.outputs.count }})"
+          if [ "$n" -eq 0 ]; then
+            echo "::warning::vcpkg wrote no binary archives — the cache is not working"
+          fi
 
-      # Immediately after configure, which is when vcpkg has finished writing archives, and
-      # BEFORE our own build can fail. always() so a compile error still banks the hour.
+      # Save only when configure ADDED packages. Two guards, each earning its place:
+      #   * package count increased — otherwise a warm run re-uploads an identical archive
+      #     every time, churning the repo's 10 GB budget for nothing.
+      #   * !cancelled() — a cancelled run has a half-built archive, and saving those is what
+      #     poisoned the keys in the first place.
+      # Placed right after configure, so a later compile failure still banks the dependencies.
       - name: Save vcpkg binary cache
-        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.pkgs-after.outputs.count > steps.pkgs-before.outputs.count }}
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
 
       - name: Build
         run: cmake --build build -j
@@ -265,15 +288,22 @@ jobs:
 
       # Same triplet as the Linux test job, so this restores THAT job's archives rather than
       # building OCCT a second time for the same platform.
+      # Shares the Linux test job's archives — same triplet, same prefix.
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
           restore-keys: |
+            vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-
             vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-
-            vcpkg-ubuntu-24.04-
+
+      - name: Count cached packages before configure
+        id: pkgs-before
+        run: |
+          n=$(find "${{ github.workspace }}/.vcpkg-archives" -name '*.zip' 2>/dev/null | wc -l | tr -d ' ')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -290,12 +320,20 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=Debug -DCAD_ENABLE_ASAN=ON -DCAD_BUILD_SPIKES=OFF
+      - name: Count cached packages after configure
+        id: pkgs-after
+        if: ${{ !cancelled() }}
+        run: |
+          n=$(find "${{ github.workspace }}/.vcpkg-archives" -name '*.zip' 2>/dev/null | wc -l | tr -d ' ')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "archives: $n packages (was ${{ steps.pkgs-before.outputs.count }})"
+
       - name: Save vcpkg binary cache
-        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.pkgs-after.outputs.count > steps.pkgs-before.outputs.count }}
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
+          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
 
       - name: Build
         run: cmake --build build-asan -j
