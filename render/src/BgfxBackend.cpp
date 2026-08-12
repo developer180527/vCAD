@@ -1,5 +1,7 @@
 #include "cad/render/BgfxBackend.h"
 
+#include "cad/render/MetalSurface.h"
+
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <bx/math.h>
@@ -21,6 +23,9 @@ using kernel::ErrorCode;
 
 constexpr bgfx::ViewId kViewShaded = 0;
 constexpr bgfx::ViewId kViewPick = 1;
+/// Blits are submitted on their own view so they are ordered after both render passes. A blit on
+/// a view that also draws is not guaranteed to see that view's output.
+constexpr bgfx::ViewId kViewBlit = 2;
 
 /// bgfx has no integer vertex attributes, so the element index rides as four unnormalised
 /// uint8 channels and is reassembled in the vertex shader. Standard bgfx idiom.
@@ -80,14 +85,16 @@ bgfx::ShaderHandle loadShader(const std::string& name) {
     return h;
 }
 
-/// bgfx callback, implemented for one reason: `screenShot`.
+/// bgfx callback, implemented for one reason: `fatal`. Without it a fatal error inside bgfx is
+/// invisible, which is how "nothing draws and nothing is logged" happened repeatedly.
 ///
-/// Replaces a hand-rolled blit-into-a-READ_BACK-texture-then-readTexture dance. bgfx already has
-/// a documented path for "give me this framebuffer's pixels", its own tools use it, and it
-/// handles the frame timing and the y-flip. Every time in this file that I have preferred my own
-/// version of something bgfx already does, it has been wrong — bx::mtxOrtho, the frame contract,
-/// and this.
-class CaptureCallback final : public bgfx::CallbackI {
+/// It deliberately does NOT implement frame capture. `bgfx::requestScreenShot` looks like the
+/// documented way to read a framebuffer back, and it is — for the BACKBUFFER only. Metal's
+/// implementation does `BX_UNUSED(_handle)` and captures `m_screenshotTarget`, returning silently
+/// when that is null, which it always is when the backbuffer is 0x0 as headless mode requires.
+/// So an offscreen capture request produced no callback, no pixels and no error. Capture goes
+/// through blit + readTexture instead; see BgfxBackend::captureFrame.
+class DiagnosticCallback final : public bgfx::CallbackI {
 public:
     void fatal(const char* filePath, std::uint16_t line, bgfx::Fatal::Enum code,
                const char* str) override {
@@ -105,38 +112,10 @@ public:
     void captureEnd() override {}
     void captureFrame(const void*, std::uint32_t) override {}
 
-    void screenShot(const char*, std::uint32_t width, std::uint32_t height, std::uint32_t pitch,
-                    const void* data, std::uint32_t /*size*/, bool yflip) override {
-        // Called on the RENDER thread, so guard it: the requesting thread is pumping frames and
-        // will read this the moment we return.
-        std::lock_guard<std::mutex> lock(mutex_);
-        pixels_.resize(std::size_t(width) * height * 4);
-        const auto* src = static_cast<const std::uint8_t*>(data);
-        for (std::uint32_t y = 0; y < height; ++y) {
-            const std::uint32_t row = yflip ? (height - 1 - y) : y;
-            std::memcpy(pixels_.data() + std::size_t(y) * width * 4, src + std::size_t(row) * pitch,
-                        std::size_t(width) * 4);
-        }
-        width_ = width;
-        height_ = height;
-        ++count_;
-    }
-
-    [[nodiscard]] std::vector<std::uint8_t> take() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return pixels_;
-    }
-    [[nodiscard]] std::size_t count() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return count_;
-    }
-
-private:
-    std::mutex mutex_;
-    std::vector<std::uint8_t> pixels_;
-    std::uint32_t width_ = 0;
-    std::uint32_t height_ = 0;
-    std::size_t count_ = 0;
+    /// Unused — see the class comment. Left empty rather than wired to anything, so it cannot
+    /// look like a working capture path.
+    void screenShot(const char*, std::uint32_t, std::uint32_t, std::uint32_t, const void*,
+                    std::uint32_t, bool) override {}
 };
 
 }  // namespace
@@ -264,7 +243,11 @@ private:
 struct BgfxBackend::Impl {
     BgfxConfig config;
     bool initialised = false;
-    CaptureCallback callback;
+    DiagnosticCallback callback;
+
+    /// A CAMetalLayer we created because offscreen mode had no window. Null when the caller
+    /// supplied its own surface, in which case releasing it is the caller's business.
+    void* ownedSurface = nullptr;
 
     BgfxResources resources;
 
@@ -278,10 +261,26 @@ struct BgfxBackend::Impl {
     bgfx::UniformHandle uEdgeColor = BGFX_INVALID_HANDLE;
 
     // Offscreen / pick targets.
+    //
+    // Each render target has a matching readback texture. A render target cannot be read
+    // directly: bgfx::readTexture requires BGFX_TEXTURE_READ_BACK, which BGFX_TEXTURE_RT does not
+    // imply, and asking anyway asserts inside bgfx rather than returning an error. So the pattern
+    // is always blit RT -> readback, then readTexture the readback.
     bgfx::FrameBufferHandle colourFb = BGFX_INVALID_HANDLE;
+    bgfx::TextureHandle colourTarget = BGFX_INVALID_HANDLE;    ///< the RT the shaded pass writes
+    bgfx::TextureHandle colourReadback = BGFX_INVALID_HANDLE;  ///< BLIT_DST|READ_BACK copy
     bgfx::FrameBufferHandle pickFb = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle pickTarget = BGFX_INVALID_HANDLE;    ///< the RT the pick pass writes
     bgfx::TextureHandle pickReadback = BGFX_INVALID_HANDLE;  ///< BLIT_DST|READ_BACK copy
+
+    /// Blit a render target into its readback texture and pull the bytes back.
+    ///
+    /// Bounded frame pumping, because bgfx readback is asynchronous: readTexture reports the frame
+    /// number at which the data becomes valid, and the documented way to wait is to keep
+    /// submitting frames until we reach it.
+    kernel::Result<std::vector<std::uint8_t>> readTarget(bgfx::TextureHandle target,
+                                                        bgfx::TextureHandle readback,
+                                                        std::uint32_t w, std::uint32_t h);
 
     IFrameSink::Stats stats;
 
@@ -302,6 +301,36 @@ struct BgfxBackend::Impl {
     /// best-tested path; deviating from it cost two regressions and bought nothing.
     std::uint32_t advanceFrame() { return bgfx::frame(); }
 };
+
+kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readTarget(
+    bgfx::TextureHandle target, bgfx::TextureHandle readback, std::uint32_t w, std::uint32_t h) {
+    if (!bgfx::isValid(target) || !bgfx::isValid(readback) || w == 0 || h == 0) {
+        return Error{ErrorCode::InvalidInput, "There is nothing to read back."};
+    }
+    if ((bgfx::getCaps()->supported & BGFX_CAPS_TEXTURE_BLIT) == 0) {
+        return Error{ErrorCode::Unsupported,
+                     "This graphics device cannot copy textures.",
+                     "BGFX_CAPS_TEXTURE_BLIT is not supported by the active renderer"};
+    }
+    if ((bgfx::getCaps()->supported & BGFX_CAPS_TEXTURE_READ_BACK) == 0) {
+        return Error{ErrorCode::Unsupported,
+                     "This graphics device cannot read textures back.",
+                     "BGFX_CAPS_TEXTURE_READ_BACK is not supported by the active renderer"};
+    }
+
+    bgfx::blit(kViewBlit, readback, 0, 0, target);
+
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(w) * h * 4);
+    const std::uint32_t readyFrame = bgfx::readTexture(readback, pixels.data());
+
+    // advanceFrame returns the frame number just completed, so loop while we are behind. Bounded
+    // so a driver that never reports ready cannot hang the caller; the blit needs at least one
+    // frame, so this always runs at least once.
+    for (int guard = 0; guard < 16; ++guard) {
+        if (advanceFrame() >= readyFrame) break;
+    }
+    return pixels;
+}
 
 std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::ViewId view,
                                               bgfx::ProgramHandle program,
@@ -417,15 +446,18 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
             bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx}, batch.vertexOffset,
                                   batch.vertexCount);
             bgfx::setInstanceDataBuffer(&idb);
-            // PT_LINESTRIP, and depth-test but no depth-write: edges must not occlude each
-            // other, and writing depth from a biased primitive corrupts the depth buffer for
-            // anything drawn after.
+            // PT_LINES, not PT_LINESTRIP. The vertex buffer is a line list — see the edge loop in
+            // Tessellate.cpp — because one strip over a buffer holding every edge of the mesh
+            // connects unrelated edges to each other.
+            //
+            // Depth-test but no depth-write: edges must not occlude each other, and writing depth
+            // from a biased primitive corrupts the depth buffer for anything drawn after.
             bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
-                           | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINESTRIP
+                           | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES
                            | BGFX_STATE_MSAA);
             bgfx::submit(kViewShaded, impl_.edge);
             ++impl_.stats.drawCalls;
-            impl_.stats.lines += (batch.vertexCount - 1) * avail;
+            impl_.stats.lines += (batch.vertexCount / 2) * avail;
         }
     }
 
@@ -491,15 +523,11 @@ void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t
     // No MSAA on the pick target, deliberately: a resolved id is an averaged id, which decodes
     // to an element that was never under the pointer.
 
-    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(vw) * vh * 4);
-    const std::uint32_t readyFrame =
-        bgfx::readTexture(impl_.pickReadback, pixels.data());
-
-    // bgfx readback is asynchronous: it becomes valid at a frame number it tells us. Pumping
-    // frames until then is the documented pattern, and the reason a pick costs ~2 frames rather
-    // than being free. Bounded so a driver that never reports ready cannot hang the UI.
-    for (int guard = 0; impl_.advanceFrame() < readyFrame && guard < 8; ++guard) {
-    }
+    // The blit lives inside readTarget. It was missing here entirely: pickReadback was created
+    // and read but never written to, so every pick read an untouched texture and reported a miss.
+    auto read = impl_.readTarget(impl_.pickTarget, impl_.pickReadback, vw, vh);
+    if (!read) return;
+    const std::vector<std::uint8_t>& pixels = read.value();
 
     for (std::uint32_t row = 0; row < h; ++row) {
         for (std::uint32_t col = 0; col < w; ++col) {
@@ -525,15 +553,16 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     if (impl_->initialised) return Error{ErrorCode::InvalidInput, "The renderer is already running."};
     impl_->config = config;
 
-    if (config.nativeWindow == nullptr && config.rendererName != "noop") {
+    // A window is required for ON-SCREEN rendering only. Offscreen must NOT have one — see the
+    // platformData assignment below, where passing a window handle deadlocks Metal.
+    if (config.nativeWindow == nullptr && !config.offscreen && config.rendererName != "noop") {
         // Refused explicitly rather than left to bgfx, which would quietly fall back to Noop:
         // init succeeds, nothing draws, and the failure surfaces as a blank viewport with no
         // error anywhere. Better to say so here.
         return Error{ErrorCode::InvalidInput,
                      "The renderer needs a window handle.",
-                     "nativeWindow is null; offscreen mode still requires one because bgfx "
-                     "cannot create a Metal/Vulkan device without a surface. Pass a hidden "
-                     "window, or set rendererName=\"noop\" for validation only."};
+                     "nativeWindow is null and offscreen is false. Pass a native window handle, "
+                     "set offscreen=true, or set rendererName=\"noop\" for validation only."};
     }
 
     bgfx::Init init;
@@ -555,7 +584,33 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
         init.resolution.height = std::max(config.viewport.height, 1u);
     }
     init.resolution.reset = BGFX_RESET_NONE;
-    init.platformData.nwh = config.nativeWindow;
+
+    // NEVER pass an NSWindow or NSView here. Pass a CAMetalLayer.
+    //
+    // bgfx::init blocks the calling thread in renderSemWait waiting for the render thread. Given a
+    // window or a view, the render thread's SwapChainMtl::init must build the CAMetalLayer on the
+    // main thread, so it posts a block to the main run loop and waits for it — while the main
+    // thread is the one parked in renderSemWait. Both wait forever. Diagnosed from a stack sample
+    // and confirmed in renderer_mtl.mm at the `else` branch of `[NSThread isMainThread]`.
+    //
+    // Given a CAMetalLayer, SwapChainMtl::init assigns it directly and never touches another
+    // thread, so it cannot deadlock. And the layer needs no window, which is what makes headless
+    // rendering possible: Metal still refuses to initialise without one (line 557,
+    // `if (NULL == ...->m_metalLayer) return false;`) but it never asks who owns it.
+    void* surface = config.nativeWindow;
+#if defined(__APPLE__)
+    if (config.offscreen && surface == nullptr) {
+        surface = createOffscreenMetalLayer(std::max(config.viewport.width, 1u),
+                                           std::max(config.viewport.height, 1u));
+        if (surface == nullptr) {
+            return Error{ErrorCode::Internal,
+                         "The renderer could not create a drawing surface.",
+                         "createOffscreenMetalLayer returned null"};
+        }
+        impl_->ownedSurface = surface;   // released in shutdown()
+    }
+#endif
+    init.platformData.nwh = surface;
     init.platformData.ndt = config.nativeDisplay;
     init.callback = &impl_->callback;
 
@@ -610,6 +665,10 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
             w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
         bgfx::TextureHandle attachments[]{colour, depth};
         impl_->colourFb = bgfx::createFrameBuffer(2, attachments, true);
+        impl_->colourTarget = colour;   // owned by the framebuffer; do not destroy separately
+        impl_->colourReadback = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
     }
 
     if (bgfx::isValid(impl_->pick)) {
@@ -648,12 +707,26 @@ void BgfxBackend::shutdown() {
     drop(impl_->uHighlight);
     drop(impl_->uEdgeParams);
     drop(impl_->uEdgeColor);
+    // The framebuffers own their attachment textures (createFrameBuffer with destroyTextures =
+    // true), so colourTarget and pickTarget must NOT be destroyed here — only the readback copies,
+    // which we created standalone.
     drop(impl_->colourFb);
+    drop(impl_->colourReadback);
     drop(impl_->pickFb);
     drop(impl_->pickReadback);
+    impl_->colourTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
+    impl_->pickTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
     impl_->resources.releaseAll();
     bgfx::shutdown();
     impl_->initialised = false;
+#if defined(__APPLE__)
+    // After bgfx::shutdown, not before: bgfx releases its own reference during shutdown and
+    // dropping ours first would leave it presenting into freed memory.
+    if (impl_->ownedSurface != nullptr) {
+        destroyMetalLayer(impl_->ownedSurface);
+        impl_->ownedSurface = nullptr;
+    }
+#endif
 }
 
 bool BgfxBackend::ready() const noexcept { return impl_ && impl_->initialised; }
@@ -689,21 +762,10 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::captureFrame() {
         return Error{ErrorCode::Unsupported,
                      "Frame capture needs the renderer in offscreen mode."};
     }
-
-    const std::size_t before = impl_->callback.count();
-    bgfx::requestScreenShot(impl_->colourFb, "cad-capture");
-
-    // The screenshot arrives via the callback a frame or two later. Pump until it lands, bounded
-    // so a driver that never delivers cannot hang a caller.
-    for (int guard = 0; guard < 8 && impl_->callback.count() == before; ++guard) {
-        impl_->advanceFrame();
-    }
-    if (impl_->callback.count() == before) {
-        return Error{ErrorCode::Internal,
-                     "The renderer did not deliver a frame capture.",
-                     "requestScreenShot produced no callback within 8 frames"};
-    }
-    return impl_->callback.take();
+    // Not requestScreenShot: on Metal it ignores the framebuffer handle and captures the
+    // backbuffer, which headless mode deliberately sizes 0x0. See DiagnosticCallback.
+    return impl_->readTarget(impl_->colourTarget, impl_->colourReadback,
+                             impl_->config.viewport.width, impl_->config.viewport.height);
 }
 
 }  // namespace cad::render

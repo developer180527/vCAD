@@ -4,7 +4,7 @@
 # be a route for GPU types to reach core/ — that would end the iPad port.
 find_package(bgfx CONFIG REQUIRED)
 
-cad_core_library(cad_render
+set(CAD_RENDER_SOURCES
   src/Tessellate.cpp
   src/MeshCache.cpp
   src/Scene.cpp
@@ -12,6 +12,17 @@ cad_core_library(cad_render
   src/NullBackend.cpp
   src/BgfxBackend.cpp
 )
+# Objective-C++, and only on Apple platforms: bgfx's Metal backend cannot initialise without a
+# CAMetalLayer, so headless rendering has to create one. See src/MetalSurface.mm.
+if(APPLE)
+  list(APPEND CAD_RENDER_SOURCES src/MetalSurface.mm)
+endif()
+
+cad_core_library(cad_render ${CAD_RENDER_SOURCES})
+
+if(APPLE)
+  target_link_libraries(cad_render PRIVATE "-framework QuartzCore" "-framework Metal")
+endif()
 
 # Shaders land next to the build's binaries; BgfxBackend looks for them under CAD_SHADER_DIR,
 # defaulting to ./shaders relative to the working directory.

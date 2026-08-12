@@ -210,7 +210,25 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
             const Placement& p = placements[pi];
 
             Instance inst;
-            std::copy(p.transform, p.transform + 12, inst.transform);
+            // TRANSPOSE INTO THE SHADER'S LAYOUT. These two are not the same 12 floats.
+            //
+            // Placement::transform is a column-major 4x3 affine — four columns of three floats —
+            // which is what the C ABI documents and what expandBounds above reads. The instance
+            // stream is three vec4s, because bgfx hands i_data0..2 to the shader as vec4s and
+            // instanceTransform() rebuilds the matrix as
+            //     column N = i_dataN.xyz,  translation = (i_data0.w, i_data1.w, i_data2.w)
+            // so each slot is one basis column plus one translation component.
+            //
+            // A straight std::copy of the 12 floats regrouped them across column boundaries: an
+            // identity placement arrived as three identical (1,0,0,0) slots, giving a rank-1
+            // matrix that flattened every mesh onto the X axis. Draw calls were submitted,
+            // triangles had zero area, and the frame came back empty with no error anywhere.
+            for (int col = 0; col < 3; ++col) {
+                inst.transform[col * 4 + 0] = p.transform[col * 3 + 0];
+                inst.transform[col * 4 + 1] = p.transform[col * 3 + 1];
+                inst.transform[col * 4 + 2] = p.transform[col * 3 + 2];
+                inst.transform[col * 4 + 3] = p.transform[9 + col];   // translation component
+            }
             // Placement colour is RGBA8 for compactness in the document; instance data must be
             // floats because bgfx hands the slot to the shader as a vec4. See Instance.
             for (int c = 0; c < 3; ++c) inst.colour[c] = float(p.colour[c]) / 255.0f;

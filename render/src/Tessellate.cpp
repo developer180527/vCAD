@@ -225,13 +225,31 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output& output,
             EdgeRange range;
             range.vertexOffset = static_cast<std::uint32_t>(mesh->edgeVertices.size() / 3);
             range.element = element;
-            for (int p = 1; p <= sampler.NbPoints(); ++p) {
-                const gp_Pnt pt = sampler.Value(p);
-                expand(mesh->bounds, pt);
+
+            // A LINE LIST: every segment emits both endpoints, so interior points appear twice.
+            //
+            // Not a polyline. All of a mesh's edges share one vertex buffer and one draw call —
+            // which is what keeps 1M parts affordable — and a single PT_LINESTRIP over that
+            // buffer joins the last point of each edge to the first point of the next. On a box
+            // that drew 11 phantom diagonals across the faces, which reads as a triangulated
+            // mesh rather than a CAD model. Pairs cost one extra vertex per interior point and
+            // keep the one-draw-call property.
+            const int points = sampler.NbPoints();
+            const auto push = [&](const gp_Pnt& pt) {
                 mesh->edgeVertices.push_back(static_cast<float>(pt.X()));
                 mesh->edgeVertices.push_back(static_cast<float>(pt.Y()));
                 mesh->edgeVertices.push_back(static_cast<float>(pt.Z()));
+            };
+            gp_Pnt prev = sampler.Value(1);
+            expand(mesh->bounds, prev);
+            for (int p = 2; p <= points; ++p) {
+                const gp_Pnt cur = sampler.Value(p);
+                expand(mesh->bounds, cur);
+                push(prev);
+                push(cur);
+                prev = cur;
             }
+
             range.vertexCount = static_cast<std::uint32_t>(mesh->edgeVertices.size() / 3)
                                 - range.vertexOffset;
             mesh->edges.push_back(range);

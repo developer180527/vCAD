@@ -11,17 +11,6 @@
 #include "cad/render/Camera.h"
 #include "cad/render/Scene.h"
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-#if defined(__APPLE__)
-#  define GLFW_EXPOSE_NATIVE_COCOA
-#elif defined(_WIN32)
-#  define GLFW_EXPOSE_NATIVE_WIN32
-#else
-#  define GLFW_EXPOSE_NATIVE_X11
-#endif
-#include <GLFW/glfw3native.h>
-
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +23,13 @@ int main(int argc, char** argv) {
     // it had produced nothing at all, when in fact it had produced everything and then hung.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
+    // Staged progress markers. "The program printed nothing" is the least useful bug report
+    // possible, and it is what this spike produced twice: once because stdout was block-buffered
+    // into a pipe, and once because it hung before the first diagnostic. Every step that can
+    // block now announces itself BEFORE it runs, so the last line printed names the culprit.
+    const auto step = [](const char* what) { std::printf("[step] %s\n", what); };
+    step("start");
+
     const bool noop = argc > 1 && std::string(argv[1]) == "--noop";
 
     render::BgfxConfig config;
@@ -42,45 +38,19 @@ int main(int argc, char** argv) {
     config.offscreen = true;
     if (noop) config.rendererName = "noop";
 
-    // A HIDDEN window. Offscreen does not mean windowless: bgfx cannot create a Metal device on
-    // macOS without a CAMetalLayer, and given no window it silently picks Noop and rasterises
-    // nothing. This is the standard way to render headlessly on a machine with a GPU.
-    // Window creation BLOCKS FOREVER without a window-server connection — over ssh, in a
-    // container, or from a shell with no GUI session. There is no error and no timeout; the
-    // process simply never returns from glfwCreateWindow. Refuse up front instead, so this
-    // spike cannot hang an unattended run.
-    GLFWwindow* window = nullptr;
-    if (!noop) {
-#if defined(__APPLE__)
-        if (std::getenv("SSH_CONNECTION") != nullptr && std::getenv("CAD_FORCE_WINDOW") == nullptr) {
-            std::fprintf(stderr,
-                         "Refusing to create a window over ssh: glfwCreateWindow would hang.\n"
-                         "Run this from a local session, or set CAD_FORCE_WINDOW=1.\n");
-            return 2;
-        }
-#endif
-        if (glfwInit() != GLFW_TRUE) {
-            std::fprintf(stderr, "glfwInit failed\n");
-            return 1;
-        }
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);   // bgfx owns the context, not GLFW
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-        window = glfwCreateWindow(int(config.viewport.width), int(config.viewport.height),
-                                  "cad-offscreen", nullptr, nullptr);
-        if (window == nullptr) {
-            std::fprintf(stderr, "could not create a hidden window\n");
-            return 1;
-        }
-#if defined(__APPLE__)
-        config.nativeWindow = glfwGetCocoaWindow(window);
-#elif defined(_WIN32)
-        config.nativeWindow = glfwGetWin32Window(window);
-#else
-        config.nativeWindow = reinterpret_cast<void*>(glfwGetX11Window(window));
-        config.nativeDisplay = glfwGetX11Display();
-#endif
-    }
+    // NO WINDOW, deliberately, and this is load-bearing.
+    //
+    // The previous version created a hidden GLFW window because I believed bgfx could not make a
+    // Metal device without a surface. It can — MTLCreateSystemDefaultDevice() takes no surface —
+    // and passing a window handle here DEADLOCKED bgfx::init on macOS every time: the render
+    // thread tried to create the window's CAMetalLayer via the main run loop while the main
+    // thread was blocked inside bgfx::init waiting for the render thread. Diagnosed from a stack
+    // sample; see the platformData comment in render/src/BgfxBackend.cpp.
+    //
+    // Dropping the window also removes the ssh refusal that used to guard this spike, so it now
+    // runs anywhere with a GPU and no window server at all.
 
+    step("bgfx init");
     render::BgfxBackend backend;
     if (auto r = backend.initialise(config); !r) {
         std::fprintf(stderr, "init failed: %s (%s)\n", r.error().message.c_str(),
@@ -230,9 +200,5 @@ int main(int argc, char** argv) {
     }
     std::printf("OK\n");
     backend.shutdown();
-    if (window != nullptr) {
-        glfwDestroyWindow(window);
-        glfwTerminate();
-    }
     return 0;
 }

@@ -68,7 +68,12 @@ enum class Highlight : std::uint8_t { None = 0, Hovered, Selected, Error };
 /// `elementBase` as a float is safe: float32 represents integers exactly up to 2^24, which is
 /// 16.7M element slots — far beyond any assembly we intend to load.
 struct Instance {
-    float transform[12];              ///< column-major 4x3 -> i_data0..2
+    /// Three vec4 slots -> i_data0..2. Slot N is (basis column N .xyz, translation[N]).
+    ///
+    /// NOT the same layout as Placement::transform, which is a column-major 4x3 (four columns of
+    /// three). SceneBuilder transposes between them; see the comment there for what went wrong
+    /// when it did not.
+    float transform[12];
 
     /// -> i_data3.xyz. Linear 0..1.
     float colour[3]{0.75f, 0.76f, 0.78f};
