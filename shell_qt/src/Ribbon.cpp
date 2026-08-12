@@ -150,6 +150,15 @@ RibbonTab* Ribbon::addTab(const QString& title) {
 
 void Ribbon::setCurrentTab(int index) { tabs_->setCurrentIndex(index); }
 
+void Ribbon::clearTabs() {
+    while (tabs_->count() > 0) tabs_->removeTab(0);
+    while (pages_->count() > 0) {
+        QWidget* page = pages_->widget(0);
+        pages_->removeWidget(page);
+        page->deleteLater();   // deferred: a page may be mid-signal when tabs are rebuilt
+    }
+}
+
 void Ribbon::setCollapsed(bool collapsed) {
     collapsed_ = collapsed;
     pages_->setVisible(!collapsed);

@@ -7,8 +7,10 @@
 namespace cadqt {
 namespace {
 
-constexpr QColor kLine(0xdc, 0xdf, 0xe4);
-constexpr QColor kAccent(0x4d, 0x9e, 0xe8);
+// Dark strokes: the chrome is light now (Inventor's default), so light icons were
+// invisible on it — a straight consequence of the theme change.
+constexpr QColor kLine(0x3c, 0x40, 0x45);
+constexpr QColor kAccent(0x0a, 0x6c, 0xc4);
 
 void drawBox(QPainter& g, int s) {
     const qreal d = s * 0.22;   // isometric depth offset
@@ -78,6 +80,29 @@ QIcon icon(const QString& name, int size) {
     } else if (name == "ortho") {
         g.drawRect(QRectF(size * 0.24, size * 0.32, size * 0.36, size * 0.36));
         g.drawRect(QRectF(size * 0.40, size * 0.24, size * 0.36, size * 0.36));
+    } else if (name == "part") {
+        drawBox(g, size);
+    } else if (name == "assembly") {
+        // Two blocks, one offset: the universal "this is made of other things" glyph.
+        g.drawRect(QRectF(size * 0.14, size * 0.36, size * 0.40, size * 0.40));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.44, size * 0.20, size * 0.40, size * 0.40));
+    } else if (name == "drawing") {
+        g.drawRect(QRectF(size * 0.20, size * 0.14, size * 0.60, size * 0.72));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.28, size * 0.70), QPointF(size * 0.72, size * 0.70));
+        g.drawRect(QRectF(size * 0.30, size * 0.26, size * 0.34, size * 0.30));
+    } else if (name == "presentation") {
+        g.drawRect(QRectF(size * 0.16, size * 0.40, size * 0.30, size * 0.30));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.52, size * 0.55), QPointF(size * 0.82, size * 0.55));
+        g.drawLine(QPointF(size * 0.74, size * 0.47), QPointF(size * 0.82, size * 0.55));
+        g.drawLine(QPointF(size * 0.74, size * 0.63), QPointF(size * 0.82, size * 0.55));
+    } else if (name == "new" || name == "open" || name == "save") {
+        g.drawRect(QRectF(size * 0.24, size * 0.18, size * 0.48, size * 0.64));
+        if (name == "save") g.drawRect(QRectF(size * 0.34, size * 0.50, size * 0.28, size * 0.32));
+        if (name == "open") g.drawLine(QPointF(size * 0.24, size * 0.34),
+                                       QPointF(size * 0.72, size * 0.34));
     } else {
         g.drawRect(QRectF(size * 0.28, size * 0.28, size * 0.44, size * 0.44));
     }

@@ -1,23 +1,27 @@
 #pragma once
 
-#include "cad/app/Controller.h"
+#include "cad/app/Session.h"
 
 #include <QMainWindow>
-#include <QTreeWidget>
 
 #include <map>
-#include <memory>
+#include <vector>
 
 class QLabel;
+class QMenu;
+class QStackedWidget;
+class QTabBar;
 class QTableWidget;
+class QTreeWidget;
 
 namespace cadqt {
 
+class HomePage;
 class Ribbon;
 class ViewportPlaceholder;
 
-/// Inventor's layout: ribbon on top, model browser left, viewport centre, properties right,
-/// status bar bottom.
+/// Inventor's frame: quick access toolbar, ribbon, docks, stacked workspaces, document tabs at
+/// the bottom, status bar.
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -25,39 +29,49 @@ public:
     ~MainWindow() override;
 
 private:
-    void buildRibbon();
+    void buildTopArea();          ///< QAT + ribbon, in ONE menu widget
     void buildDocks();
+    void buildWorkspaces();
     void buildStatusBar();
 
-    /// Rebuilds the browser from `Controller::tree()`.
+    /// Rebuilds the ribbon's tabs for the active workspace.
     ///
-    /// Full rebuild rather than an incremental diff, and that is a considered choice: a feature
-    /// tree is tens to low thousands of rows, a rebuild is microseconds, and incremental tree
-    /// updates are a classic source of "the tree disagrees with the document" bugs. Revisit when
-    /// a profile says to, not before.
+    /// Ribbon tabs are DERIVED from what you are editing, not registered globally (ADR 0009).
+    /// That is the anti-workbench decision made concrete: a user never selects a command set,
+    /// they select a thing to edit and the commands follow.
+    void rebuildRibbon();
+
     void refreshTree();
     void refreshProperties();
     void refreshCommandStates();
     void refreshStatus();
+    void refreshDocumentTabs();
+    void syncWorkspace();
 
-    cad::app::Controller controller_;
+    void createDocument(cad::app::DocumentKind);
+
+    [[nodiscard]] cad::app::Controller* controller() noexcept { return session_.active(); }
+
+    cad::app::Session session_;
 
     Ribbon* ribbon_ = nullptr;
+    QMenu* fileMenu_ = nullptr;
     QTreeWidget* browser_ = nullptr;
     QTableWidget* properties_ = nullptr;
-    ViewportPlaceholder* viewport_ = nullptr;
+    QStackedWidget* workspaces_ = nullptr;
+    HomePage* home_ = nullptr;
+    QTabBar* documentTabs_ = nullptr;
+
+    /// One editor widget per open document, parallel to Session::documents(). Held rather than
+    /// recreated so switching tabs preserves camera and scroll position.
+    std::vector<QWidget*> editors_;
 
     QLabel* statusMessage_ = nullptr;
     QLabel* statusStats_ = nullptr;
     QLabel* statusUnits_ = nullptr;
 
-    /// Command id -> action, so the ribbon and the menus share one action per command and
-    /// enablement is applied in one place.
     std::map<std::string, QAction*> actions_;
-
-    /// Guards the tree's own selection signal while we are writing into it, so a programmatic
-    /// refresh cannot look like a user click and recurse.
-    bool updatingTree_ = false;
+    bool updatingUi_ = false;
 };
 
 }  // namespace cadqt

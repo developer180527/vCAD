@@ -7,27 +7,30 @@ namespace cadqt {
 void applyTheme(QApplication& app) {
     app.setStyle(QStringLiteral("Fusion"));
 
-    // Inventor's dark scheme: near-neutral greys with a cool cast, and a saturated blue for
-    // selection. Deliberately low-contrast for panels so the viewport is the brightest thing on
-    // screen — the model should draw the eye, not the chrome.
-    const QColor base(0x2b, 0x2d, 0x30);
-    const QColor panel(0x33, 0x36, 0x3a);
-    const QColor raised(0x3c, 0x40, 0x45);
-    const QColor text(0xdc, 0xdf, 0xe4);
-    const QColor dim(0x8b, 0x91, 0x9a);
-    const QColor accent(0x2f, 0x7f, 0xd1);
+    // LIGHT, because that is what Inventor actually looks like.
+    //
+    // An earlier version was dark, which was a guess dressed up as a decision — the reference
+    // screenshots are Inventor's default light scheme: warm-grey chrome, a pale blue-grey
+    // viewport, and a saturated blue for selection. The viewport being LIGHTER than the chrome is
+    // characteristic and worth matching; it makes the model the brightest thing on screen.
+    const QColor chrome(0xf0, 0xef, 0xed);
+    const QColor panel(0xfa, 0xfa, 0xf9);
+    const QColor line(0xcf, 0xcd, 0xc9);
+    const QColor text(0x1f, 0x21, 0x24);
+    const QColor dim(0x84, 0x88, 0x8d);
+    const QColor accent(0x0a, 0x6c, 0xc4);
 
     QPalette p;
-    p.setColor(QPalette::Window, panel);
+    p.setColor(QPalette::Window, chrome);
     p.setColor(QPalette::WindowText, text);
-    p.setColor(QPalette::Base, base);
-    p.setColor(QPalette::AlternateBase, panel);
+    p.setColor(QPalette::Base, panel);
+    p.setColor(QPalette::AlternateBase, chrome);
     p.setColor(QPalette::Text, text);
-    p.setColor(QPalette::Button, raised);
+    p.setColor(QPalette::Button, chrome);
     p.setColor(QPalette::ButtonText, text);
     p.setColor(QPalette::Highlight, accent);
     p.setColor(QPalette::HighlightedText, Qt::white);
-    p.setColor(QPalette::ToolTipBase, raised);
+    p.setColor(QPalette::ToolTipBase, QColor(0xff, 0xff, 0xe1));
     p.setColor(QPalette::ToolTipText, text);
     p.setColor(QPalette::Disabled, QPalette::Text, dim);
     p.setColor(QPalette::Disabled, QPalette::ButtonText, dim);
@@ -35,60 +38,86 @@ void applyTheme(QApplication& app) {
     app.setPalette(p);
 
     app.setStyleSheet(QStringLiteral(R"(
-        QWidget { font-size: 12px; }
+        QWidget { font-size: 12px; color: #1f2124; }
 
-        /* ── ribbon ─────────────────────────────────────────────────────────────── */
-        #ribbon { background: #33363a; border-bottom: 1px solid #23252a; }
-        #ribbonTabs { background: #2b2d30; }
+        /* ── quick access toolbar: the strip above the ribbon ──────────────────── */
+        #qat { background: #e9e8e5; border-bottom: 1px solid #cfcdc9; }
+        #qatButton { border: 1px solid transparent; border-radius: 3px; padding: 3px; }
+        #qatButton:hover { background: #d7e5f3; border-color: #a8c7e6; }
+        #qatButton:disabled { color: #a8abaf; }
+        #fileTab {
+            background: #0a6cc4; color: white; border: none;
+            padding: 5px 16px; font-weight: 600;
+        }
+        #fileTab:hover { background: #0b7ce0; }
+
+        /* ── ribbon ────────────────────────────────────────────────────────────── */
+        #ribbon { background: #f0efed; border-bottom: 1px solid #cfcdc9; }
+        #ribbonTabs { background: #e9e8e5; }
         #ribbonTabs::tab {
-            background: #2b2d30; color: #8b919a;
-            padding: 6px 16px; border: none; margin-right: 1px;
+            background: transparent; color: #3c4045;
+            padding: 5px 14px; border: none; border-bottom: 2px solid transparent;
         }
-        #ribbonTabs::tab:selected { background: #33363a; color: #dcdfe4; }
-        #ribbonTabs::tab:hover:!selected { color: #dcdfe4; }
-        #ribbonPages { background: #33363a; }
+        #ribbonTabs::tab:selected {
+            background: #f0efed; color: #0a6cc4; border-bottom-color: #0a6cc4;
+        }
+        #ribbonTabs::tab:hover:!selected { background: #dfdedb; }
+        #ribbonPages { background: #f0efed; }
 
-        /* The caption under each panel is what reads as "ribbon" rather than "toolbar". */
-        #ribbonPanelCaption { color: #767d87; font-size: 10px; padding-top: 1px; }
-        #ribbonPanelDivider, #ribbonSeparator { color: #43474d; }
-
+        /* The caption under each panel is what reads as "ribbon" not "toolbar". */
+        #ribbonPanelCaption { color: #6c7075; font-size: 10px; padding-top: 1px; }
+        #ribbonPanelDivider, #ribbonSeparator { color: #d9d7d3; }
         #ribbonLarge, #ribbonSmall {
-            color: #dcdfe4; border: 1px solid transparent; border-radius: 3px; padding: 3px;
+            border: 1px solid transparent; border-radius: 3px; padding: 3px;
         }
-        #ribbonLarge:hover, #ribbonSmall:hover { background: #43474d; border-color: #52575e; }
-        #ribbonLarge:pressed, #ribbonSmall:pressed { background: #2f7fd1; }
-        #ribbonLarge:disabled, #ribbonSmall:disabled { color: #5d636b; }
-        #ribbonCollapse { color: #8b919a; border: none; padding: 4px 8px; }
-        #ribbonCollapse:hover { color: #dcdfe4; }
+        #ribbonLarge:hover, #ribbonSmall:hover { background: #d7e5f3; border-color: #a8c7e6; }
+        #ribbonLarge:pressed, #ribbonSmall:pressed { background: #b9d4ee; }
+        #ribbonLarge:disabled, #ribbonSmall:disabled { color: #a8abaf; }
+        #ribbonCollapse { color: #6c7075; border: none; padding: 4px 8px; }
 
-        /* ── docks ──────────────────────────────────────────────────────────────── */
-        QDockWidget { titlebar-close-icon: none; titlebar-normal-icon: none; }
-        QDockWidget::title {
-            background: #2b2d30; color: #8b919a;
-            padding: 5px 8px; border-bottom: 1px solid #23252a;
+        /* ── document tabs along the bottom, as Inventor does ─────────────────── */
+        #docTabs { background: #e9e8e5; border-top: 1px solid #cfcdc9; }
+        #docTabs::tab {
+            background: #dfdedb; color: #3c4045; border: 1px solid #cfcdc9;
+            border-bottom: none; padding: 4px 12px; margin-right: 2px;
         }
-        QTreeView, QTableView {
-            background: #2b2d30; border: none; outline: none;
-            selection-background-color: #2f7fd1;
+        #docTabs::tab:selected { background: #fafaf9; color: #0a6cc4; }
+
+        /* ── docks ─────────────────────────────────────────────────────────────── */
+        QDockWidget::title {
+            background: #e9e8e5; color: #3c4045;
+            padding: 5px 8px; border-bottom: 1px solid #cfcdc9;
+        }
+        QTreeView, QTableView, QListWidget {
+            background: #fafaf9; border: none; outline: none;
+            selection-background-color: #cde3f7; selection-color: #1f2124;
         }
         QTreeView::item, QTableView::item { padding: 3px 2px; }
-        QTreeView::item:hover { background: #383b40; }
+        QTreeView::item:hover { background: #eaf2fb; }
         QHeaderView::section {
-            background: #33363a; color: #8b919a; border: none;
-            border-bottom: 1px solid #23252a; padding: 4px;
+            background: #f0efed; color: #6c7075; border: none;
+            border-bottom: 1px solid #cfcdc9; padding: 4px;
         }
-
-        QStatusBar { background: #23252a; color: #8b919a; }
+        QStatusBar { background: #e9e8e5; color: #3c4045; }
         QStatusBar::item { border: none; }
-        QSplitter::handle { background: #23252a; }
-        QScrollBar:vertical { background: #2b2d30; width: 10px; }
-        QScrollBar::handle:vertical { background: #4a4f56; border-radius: 5px; min-height: 20px; }
-        QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+        QSplitter::handle { background: #cfcdc9; }
         QLineEdit {
-            background: #23252a; border: 1px solid #43474d; border-radius: 2px;
-            padding: 2px 4px; color: #dcdfe4;
+            background: white; border: 1px solid #cfcdc9; border-radius: 2px;
+            padding: 2px 4px;
         }
-        QLineEdit:focus { border-color: #2f7fd1; }
+        QLineEdit:focus { border-color: #0a6cc4; }
+
+        /* ── home page ─────────────────────────────────────────────────────────── */
+        #homePage { background: #fafaf9; }
+        #homeTitle { font-size: 26px; font-weight: 300; color: #3c4045; }
+        #homeSection { font-size: 13px; font-weight: 600; color: #3c4045; }
+        #homeRule { color: #dfdedb; }
+        #homeTile {
+            background: white; border: 1px solid #cfcdc9; border-radius: 4px; color: #3c4045;
+        }
+        #homeTile:hover { background: #eaf2fb; border-color: #0a6cc4; }
+        #homeTile:disabled { background: #f4f3f1; color: #a8abaf; }
+        #homeRecent { background: #fafaf9; }
     )"));
 }
 

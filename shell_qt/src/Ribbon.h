@@ -64,6 +64,10 @@ public:
     RibbonTab* addTab(const QString& title);
     void setCurrentTab(int index);
 
+    /// Removes every tab. Ribbon tabs are derived from the active workspace rather than
+    /// registered once (ADR 0009), so this runs on every document switch.
+    void clearTabs();
+
     /// Collapse to just the tab strip. Inventor has this and users of small laptops rely on it;
     /// a ribbon that cannot get out of the way is a ribbon people resent.
     void setCollapsed(bool);

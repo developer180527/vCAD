@@ -27,6 +27,7 @@ qt_add_executable(vcad
   src/Theme.cpp
   src/Icons.cpp
   src/ViewportPlaceholder.cpp
+  src/HomePage.cpp
 )
 target_link_libraries(vcad PRIVATE cad::app Qt6::Widgets)
 cad_set_warnings(vcad)
