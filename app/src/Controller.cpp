@@ -288,7 +288,10 @@ Controller::Stats Controller::stats() const {
     s.instances = scene_->stats().instances;
     s.failed = failedCount_;
     for (const auto& batch : scene_->frame().batches) {
-        s.triangles += (batch.indexCount / 3) * batch.instances.size();
+        // instanceCount, not the visible ranges: this is the status bar's "how big is this
+        // model" figure, and a number that dropped every time the user orbited would read as
+        // geometry going missing.
+        s.triangles += (batch.indexCount / 3) * batch.instanceCount;
     }
     return s;
 }

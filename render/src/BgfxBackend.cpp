@@ -43,6 +43,26 @@ bgfx::VertexLayout& cadVertexLayout() {
     return layout;
 }
 
+/// Layout for a PERSISTENT instance buffer.
+///
+/// bgfx delivers instance data as `i_data0..N`, and when the data comes from a vertex buffer
+/// rather than the transient allocator it decides how many slots that is from the buffer's
+/// stride. TexCoord7 downwards is bgfx's own convention for those slots; four Float4s give the
+/// 64-byte stride `Instance` asserts.
+bgfx::VertexLayout& instanceLayout() {
+    static bgfx::VertexLayout layout = [] {
+        bgfx::VertexLayout l;
+        l.begin()
+            .add(bgfx::Attrib::TexCoord7, 4, bgfx::AttribType::Float)
+            .add(bgfx::Attrib::TexCoord6, 4, bgfx::AttribType::Float)
+            .add(bgfx::Attrib::TexCoord5, 4, bgfx::AttribType::Float)
+            .add(bgfx::Attrib::TexCoord4, 4, bgfx::AttribType::Float)
+            .end();
+        return l;
+    }();
+    return layout;
+}
+
 bgfx::VertexLayout& edgeVertexLayout() {
     static bgfx::VertexLayout layout = [] {
         bgfx::VertexLayout l;
@@ -161,6 +181,43 @@ public:
         });
     }
 
+    /// Persistent instance buffer, updated in place rather than refilled per frame.
+    ///
+    /// A DYNAMIC vertex buffer, not the transient instance allocator: transient has a fixed
+    /// 6 MB per-frame budget and TRUNCATES SILENTLY past it, which drew 98% of a 100k-part
+    /// assembly at a convincing frame rate. Dynamic buffers have no such cap and survive across
+    /// frames, so an orbit re-sends nothing.
+    BufferId uploadInstances(std::uint64_t key, std::uint64_t revision,
+                             std::span<const Instance> instances) override {
+        if (instances.empty()) return BufferId::None;
+        auto& slot = instanceBuffers_[key];
+
+        if (slot.id != BufferId::None && slot.revision == revision) return slot.id;
+
+        const bgfx::Memory* mem =
+            bgfx::copy(instances.data(), static_cast<std::uint32_t>(instances.size_bytes()));
+
+        if (slot.id == BufferId::None) {
+            // ALLOW_RESIZE: without it bgfx silently TRIMS an update larger than the original
+            // allocation — the same class of quiet truncation this whole change is here to kill.
+            const auto h = bgfx::createDynamicVertexBuffer(mem, instanceLayout(),
+                                                          BGFX_BUFFER_ALLOW_RESIZE);
+            if (!bgfx::isValid(h)) return BufferId::None;
+            slot.id = BufferId{next_++};
+            entries_.emplace(static_cast<std::uint64_t>(slot.id),
+                             Entry{h.idx, Kind::Instance, instances.size_bytes()});
+            resident_ += instances.size_bytes();
+        } else {
+            Entry& entry = entries_.at(static_cast<std::uint64_t>(slot.id));
+            bgfx::update(bgfx::DynamicVertexBufferHandle{entry.idx}, 0, mem);
+            resident_ -= entry.bytes;
+            entry.bytes = instances.size_bytes();
+            resident_ += entry.bytes;
+        }
+        slot.revision = revision;
+        return slot.id;
+    }
+
     void release(BufferId id) override {
         const auto it = entries_.find(static_cast<std::uint64_t>(id));
         if (it == entries_.end()) return;
@@ -172,17 +229,23 @@ public:
             case Kind::Index:
                 bgfx::destroy(bgfx::IndexBufferHandle{it->second.idx});
                 break;
+            case Kind::Instance:
+                bgfx::destroy(bgfx::DynamicVertexBufferHandle{it->second.idx});
+                break;
         }
         resident_ -= it->second.bytes;
         for (auto k = byContent_.begin(); k != byContent_.end(); ++k) {
             if (k->second == id) { byContent_.erase(k); break; }
+        }
+        for (auto k = instanceBuffers_.begin(); k != instanceBuffers_.end(); ++k) {
+            if (k->second.id == id) { instanceBuffers_.erase(k); break; }
         }
         entries_.erase(it);
     }
 
     [[nodiscard]] std::uint64_t residentBytes() const override { return resident_; }
 
-    enum class Kind : std::uint8_t { Vertex, Index, Edge };
+    enum class Kind : std::uint8_t { Vertex, Index, Edge, Instance };
     struct Entry {
         std::uint16_t idx = bgfx::kInvalidHandle;
         Kind kind = Kind::Vertex;
@@ -206,10 +269,14 @@ public:
                 case Kind::Index:
                     bgfx::destroy(bgfx::IndexBufferHandle{entry.idx});
                     break;
+                case Kind::Instance:
+                    bgfx::destroy(bgfx::DynamicVertexBufferHandle{entry.idx});
+                    break;
             }
         }
         entries_.clear();
         byContent_.clear();
+        instanceBuffers_.clear();
         resident_ = 0;
     }
 
@@ -232,8 +299,16 @@ private:
         return id;
     }
 
+    /// Instance buffers are keyed by BATCH, not by content hash: placement data is not shared
+    /// between batches, and it changes on every edit.
+    struct InstanceSlot {
+        BufferId id = BufferId::None;
+        std::uint64_t revision = 0;
+    };
+
     std::unordered_map<std::string, BufferId> byContent_;
     std::unordered_map<std::uint64_t, Entry> entries_;
+    std::unordered_map<std::uint64_t, InstanceSlot> instanceBuffers_;
     std::uint64_t next_ = 1;
     std::uint64_t resident_ = 0;
 };
@@ -337,36 +412,38 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
                                               std::uint64_t state) {
     std::uint32_t calls = 0;
     for (const Batch& batch : frame.batches) {
-        if (batch.indexCount == 0 || batch.instances.empty()) continue;
+        if (batch.indexCount == 0 || batch.instances == BufferId::None) continue;
         const auto* vb = resources.find(batch.vertices);
         const auto* ib = resources.find(batch.indices);
-        if (vb == nullptr || ib == nullptr) continue;
+        const auto* inst = resources.find(batch.instances);
+        if (vb == nullptr || ib == nullptr || inst == nullptr) continue;
 
-        const std::uint32_t stride = sizeof(Instance);
-        const std::uint32_t wanted = static_cast<std::uint32_t>(batch.instances.size());
-        stats.instancesRequested += wanted;
-        const std::uint32_t available =
-            bgfx::getAvailInstanceDataBuffer(wanted, static_cast<std::uint16_t>(stride));
-        if (available == 0) continue;
+        // One submit per visible run. bgfx cannot draw two disjoint runs of one buffer in a
+        // single call, and an entirely visible batch is one run, so this is one call per batch
+        // until culling actually fragments the assembly.
+        for (const DrawRange& range : batch.ranges) {
+            if (range.instanceCount == 0) continue;
+            stats.instancesRequested += range.instanceCount;
 
-        bgfx::InstanceDataBuffer idb;
-        bgfx::allocInstanceDataBuffer(&idb, available, static_cast<std::uint16_t>(stride));
-        std::memcpy(idb.data, batch.instances.data(), std::size_t(available) * stride);
+            bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx});
+            bgfx::setIndexBuffer(bgfx::IndexBufferHandle{ib->idx}, batch.indexOffset,
+                                 batch.indexCount);
+            // From the PERSISTENT buffer, at an offset. No copy, no per-frame budget, and
+            // therefore no silent truncation.
+            bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},
+                                        range.instanceOffset, range.instanceCount);
+            // No backface culling, deliberately. Imported CAD geometry has inconsistent face
+            // winding — foreign STEP and IGES routinely mix orientations — and the shader
+            // already lights both sides. Culling would buy nothing except a second silent way
+            // to render an empty frame. Revisit only with a measurement showing overdraw
+            // actually costs us.
+            bgfx::setState(state);
+            bgfx::submit(view, program);
 
-        bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx});
-        bgfx::setIndexBuffer(bgfx::IndexBufferHandle{ib->idx}, batch.indexOffset,
-                             batch.indexCount);
-        bgfx::setInstanceDataBuffer(&idb);
-        // No backface culling, deliberately. Imported CAD geometry has inconsistent face
-        // winding — foreign STEP and IGES routinely mix orientations — and the shader already
-        // lights both sides. Culling would buy nothing except a second silent way to render an
-        // empty frame. Revisit only with a measurement showing overdraw actually costs us.
-        bgfx::setState(state);
-        bgfx::submit(view, program);
-
-        ++calls;
-        stats.instances += available;
-        stats.triangles += (batch.indexCount / 3) * available;
+            ++calls;
+            stats.instances += range.instanceCount;
+            stats.triangles += (batch.indexCount / 3) * range.instanceCount;
+        }
     }
     return calls;
 }
@@ -426,39 +503,38 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
         bgfx::setUniform(impl_.uEdgeParams, edgeParams);
 
         for (const EdgeBatch& batch : frame.edgeBatches) {
-            if (batch.vertexCount == 0 || batch.instances.empty()) continue;
+            if (batch.vertexCount == 0 || batch.instances == BufferId::None) continue;
             const auto* vb = impl_.resources.find(batch.vertices);
-            if (vb == nullptr) continue;
+            const auto* inst = impl_.resources.find(batch.instances);
+            if (vb == nullptr || inst == nullptr) continue;
 
             const float colour[4]{float(batch.colour[0]) / 255.0f,
                                   float(batch.colour[1]) / 255.0f,
                                   float(batch.colour[2]) / 255.0f, 1.0f};
             bgfx::setUniform(impl_.uEdgeColor, colour);
 
-            const std::uint32_t stride = sizeof(Instance);
-            const std::uint32_t avail = bgfx::getAvailInstanceDataBuffer(
-                static_cast<std::uint32_t>(batch.instances.size()),
-                static_cast<std::uint16_t>(stride));
-            if (avail == 0) continue;
-            bgfx::InstanceDataBuffer idb;
-            bgfx::allocInstanceDataBuffer(&idb, avail, static_cast<std::uint16_t>(stride));
-            std::memcpy(idb.data, batch.instances.data(), std::size_t(avail) * stride);
-
-            bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx}, batch.vertexOffset,
-                                  batch.vertexCount);
-            bgfx::setInstanceDataBuffer(&idb);
-            // PT_LINES, not PT_LINESTRIP. The vertex buffer is a line list — see the edge loop in
-            // Tessellate.cpp — because one strip over a buffer holding every edge of the mesh
-            // connects unrelated edges to each other.
-            //
-            // Depth-test but no depth-write: edges must not occlude each other, and writing depth
-            // from a biased primitive corrupts the depth buffer for anything drawn after.
-            bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
-                           | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES
-                           | BGFX_STATE_MSAA);
-            bgfx::submit(kViewShaded, impl_.edge);
-            ++impl_.stats.drawCalls;
-            impl_.stats.lines += (batch.vertexCount / 2) * avail;
+            for (const DrawRange& range : batch.ranges) {
+                if (range.instanceCount == 0) continue;
+                bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx}, batch.vertexOffset,
+                                      batch.vertexCount);
+                // The SAME buffer the shaded pass used, at the same offsets. Edges used to
+                // carry their own copy of identical data, which doubled instance memory.
+                bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},
+                                            range.instanceOffset, range.instanceCount);
+                // PT_LINES, not PT_LINESTRIP. The vertex buffer is a line list — see the edge
+                // loop in Tessellate.cpp — because one strip over a buffer holding every edge of
+                // the mesh connects unrelated edges to each other.
+                //
+                // Depth-test but no depth-write: edges must not occlude each other, and writing
+                // depth from a biased primitive corrupts the depth buffer for anything drawn
+                // after.
+                bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
+                               | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES
+                               | BGFX_STATE_MSAA);
+                bgfx::submit(kViewShaded, impl_.edge);
+                ++impl_.stats.drawCalls;
+                impl_.stats.lines += (batch.vertexCount / 2) * range.instanceCount;
+            }
         }
     }
 

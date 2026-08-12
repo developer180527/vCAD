@@ -154,10 +154,14 @@ int main(int argc, char** argv) {
                 scene.stats().elementSlots);
 
     // An unchanged document must rebuild nothing. This is what makes an idle redraw free.
+    const std::size_t rebuildsBefore = scene.stats().rebuilds;
     auto rebuildStart = Clock::now();
     (void)scene.update(doc, placements);
     const double rebuildMs = msSince(rebuildStart);
-    std::printf("no-op update: %8.3f ms   (unchanged document must not rebuild)\n", rebuildMs);
+    const std::size_t noopRebuilds = scene.stats().rebuilds - rebuildsBefore;
+    std::printf("no-op update: %8.3f ms   (%zu rebuilds; the cost is the placement digest, which "
+                "is O(placements) and unavoidable)\n",
+                rebuildMs, noopRebuilds);
 
     render::CameraController camera;
     camera.setHomogeneousDepth(backend.homogeneousDepth());
@@ -173,7 +177,21 @@ int main(int argc, char** argv) {
         scene.setCamera(camera.matrices(config.viewport));
     }
     const double camMs = msSince(camStart) / 100.0;
-    std::printf("camera-only:  %8.4f ms/change (must be ~0: no instance rebuild)\n\n", camMs);
+    std::printf("camera-only:  %8.4f ms/change (must be ~0: no instance rebuild)\n", camMs);
+
+    // Culling, measured where it matters: zoomed IN, with most of the assembly off screen. With
+    // the whole model framed nothing should be culled, so a fitted camera proves nothing.
+    for (int i = 0; i < 60; ++i) camera.zoom(1.0f);
+    scene.setCamera(camera.matrices(config.viewport));
+    const auto zoomed = scene.cullStats();
+    std::printf("culled:       %8zu of %zu instances drawn, %zu of %zu cells, %zu ranges, "
+                "%.3f ms\n\n",
+                zoomed.instancesVisible, zoomed.instancesTotal, zoomed.cellsVisible,
+                zoomed.cells, zoomed.ranges, zoomed.lastCullMs);
+
+    // Back to the fitted camera for the frame timings below, so they measure the whole scene.
+    camera.fit(scene.bounds(), config.viewport);
+    scene.setCamera(camera.matrices(config.viewport));
 
     // ── Frames ───────────────────────────────────────────────────────────────────────────
     constexpr int kWarmup = 3;
@@ -246,17 +264,35 @@ int main(int argc, char** argv) {
         std::printf("PASS  camera-only change %.4f ms — no instance rebuild\n", camMs);
     }
 
-    // 4. An unchanged document must not rebuild. Allowed a little room for the digest compare
-    //    itself, which does walk the placement list.
-    if (rebuildMs > sceneMs * 0.25) {
+    // 4. An unchanged document must not rebuild.
+    //
+    //    Counted, not timed. This was a ratio against the build time, and it started failing the
+    //    moment the build got fast — 10 ms of unavoidable digest walk against a 41 ms build is
+    //    more than a quarter of it, and says nothing about whether the early-out fired. The
+    //    rebuild counter answers the actual question; the timing above is reported, not asserted.
+    if (noopRebuilds != 0) {
         std::fprintf(stderr,
-                     "FAIL: re-updating an unchanged document cost %.3f ms against a %.1f ms "
-                     "build. The early-out is not firing.\n",
-                     rebuildMs, sceneMs);
+                     "FAIL: re-updating an unchanged document performed %zu rebuild(s). The "
+                     "early-out is not firing.\n",
+                     noopRebuilds);
         ++failures;
     } else {
-        std::printf("PASS  no-op update %.3f ms vs %.1f ms build — early-out works\n", rebuildMs,
-                    sceneMs);
+        std::printf("PASS  no-op update rebuilt nothing (%.3f ms, all of it the digest compare)\n",
+                    rebuildMs);
+    }
+
+    // 5. Culling must actually cull. A zoomed-in camera sees a small fraction of a 100k-part
+    //    grid, and if the same instance count still reaches the GPU then the cell tests are
+    //    running and deciding nothing — which is worse than not culling, because it costs.
+    if (zoomed.instancesVisible >= zoomed.instancesTotal) {
+        std::fprintf(stderr,
+                     "FAIL: zoomed in, culling still drew all %zu instances. Frustum culling is "
+                     "not rejecting anything.\n",
+                     zoomed.instancesTotal);
+        ++failures;
+    } else {
+        std::printf("PASS  zoomed in, culling drew %zu of %zu instances in %zu draw ranges\n",
+                    zoomed.instancesVisible, zoomed.instancesTotal, zoomed.ranges);
     }
 
     backend.shutdown();

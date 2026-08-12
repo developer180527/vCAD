@@ -23,6 +23,8 @@ public:
     BufferId uploadVertices(const kernel::ShapeHash&, std::span<const CadVertex>) override;
     BufferId uploadIndices(const kernel::ShapeHash&, std::span<const std::uint32_t>) override;
     BufferId uploadEdgeVertices(const kernel::ShapeHash&, std::span<const float>) override;
+    BufferId uploadInstances(std::uint64_t key, std::uint64_t revision,
+                             std::span<const Instance>) override;
     void release(BufferId) override;
     [[nodiscard]] std::uint64_t residentBytes() const override { return residentBytes_; }
 
@@ -31,17 +33,36 @@ public:
     [[nodiscard]] std::size_t uploadCount() const noexcept { return uploads_; }
     [[nodiscard]] std::size_t dedupedCount() const noexcept { return deduped_; }
     [[nodiscard]] std::size_t liveBuffers() const noexcept { return sizes_.size(); }
-    void resetStats() noexcept { uploads_ = deduped_ = 0; }
+
+    /// Instance uploads that actually transferred bytes, counted separately from mesh uploads.
+    /// The number a scale test watches: it must stay at zero across an orbit, and rise by one
+    /// per EDITED batch rather than per batch in the document.
+    [[nodiscard]] std::size_t instanceUploadCount() const noexcept { return instanceUploads_; }
+    [[nodiscard]] std::size_t instanceSkipCount() const noexcept { return instanceSkips_; }
+    void resetStats() noexcept {
+        uploads_ = deduped_ = instanceUploads_ = instanceSkips_ = 0;
+    }
 
 private:
     BufferId intern(const kernel::ShapeHash&, int kind, std::uint64_t bytes);
 
+    /// A persistent instance buffer: the handle outlives the frame, and the revision is what
+    /// lets a repeat upload be skipped.
+    struct InstanceBuffer {
+        BufferId id = BufferId::None;
+        std::uint64_t revision = 0;
+        std::uint64_t bytes = 0;
+    };
+
     std::unordered_map<std::string, BufferId> byContent_;
+    std::unordered_map<std::uint64_t, InstanceBuffer> instanceBuffers_;   ///< keyed by batch key
     std::unordered_map<std::uint64_t, std::uint64_t> sizes_;
     std::uint64_t next_ = 1;
     std::uint64_t residentBytes_ = 0;
     std::size_t uploads_ = 0;
     std::size_t deduped_ = 0;
+    std::size_t instanceUploads_ = 0;
+    std::size_t instanceSkips_ = 0;
 };
 
 class NullFrameSink final : public IFrameSink {

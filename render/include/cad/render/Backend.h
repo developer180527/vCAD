@@ -90,7 +90,18 @@ struct Instance {
 // once at 56 — which reads fine and is rejected outright by bgfx's stride rule.
 static_assert(sizeof(Instance) == 64, "bgfx instance data stride must be a multiple of 16");
 
-/// One draw call, instanced across every part that uses this mesh.
+/// A contiguous run of instances to draw, after culling.
+///
+/// Instances in a batch are sorted into spatial cells at build time, so the visible subset is
+/// almost always a handful of contiguous runs rather than a scatter. That is what lets culling
+/// change what is drawn WITHOUT re-uploading instance data: the buffer is persistent and only
+/// the offsets move.
+struct DrawRange {
+    std::uint32_t instanceOffset = 0;
+    std::uint32_t instanceCount = 0;
+};
+
+/// One mesh, instanced across every part that uses it.
 ///
 /// NOT one item per part. 100k parts means 100k draw calls, which the CPU cannot submit at
 /// any framerate — see the scale amendment in ADR 0007. Content-addressed dedupe is what
@@ -100,17 +111,35 @@ struct Batch {
     BufferId indices = BufferId::None;
     std::uint32_t indexOffset = 0;
     std::uint32_t indexCount = 0;
-    std::span<const Instance> instances;
+
+    /// PERSISTENT instance buffer, not a per-frame span.
+    ///
+    /// It used to be a span that the backend copied into bgfx's transient instance buffer every
+    /// frame. That buffer has a fixed per-frame budget (6 MB by default, so 98304 of these), and
+    /// when it runs out bgfx TRUNCATES SILENTLY — a 100k-part assembly drew 98% of itself and
+    /// dropped every edge, at a frame rate that looked fine. Measured by spikes/scale.
+    BufferId instances = BufferId::None;
+    std::uint32_t instanceCount = 0;      ///< total resident in the buffer, before culling
+
+    /// The visible runs for this frame. Empty means nothing survived culling — draw nothing,
+    /// which is different from "no culling was done".
+    std::span<const DrawRange> ranges;
+
     bool doubleSided = false;
 };
 
 /// Edge batch. Separate stream: line primitives, own pass, own depth bias (ADR 0007
 /// decision 5).
+///
+/// Shares the shaded batch's instance buffer: the per-instance data is identical, and holding a
+/// second copy doubled instance memory for nothing (64 MB at 1M parts).
 struct EdgeBatch {
     BufferId vertices = BufferId::None;
     std::uint32_t vertexOffset = 0;
     std::uint32_t vertexCount = 0;
-    std::span<const Instance> instances;
+    BufferId instances = BufferId::None;
+    std::uint32_t instanceCount = 0;
+    std::span<const DrawRange> ranges;
     std::uint8_t colour[4]{38, 41, 46, 255};
     float widthPx = 1.5f;
 };
@@ -163,6 +192,21 @@ public:
                                    std::span<const std::uint32_t>) = 0;
     virtual BufferId uploadEdgeVertices(const kernel::ShapeHash& contentHash,
                                         std::span<const float>) = 0;
+
+    /// Uploads instance data into a buffer that PERSISTS across frames.
+    ///
+    /// Keyed by `key` (stable for a batch across rebuilds) and versioned by `revision`: when the
+    /// revision is unchanged the backend must skip the upload entirely and return the same
+    /// handle. That is what makes an orbit free — the camera moves, culling changes which ranges
+    /// are drawn, and not one byte of instance data is re-sent.
+    ///
+    /// `revision` is a digest of the data, not a counter, so an edit that touches one part
+    /// re-uploads one batch rather than every batch in the assembly.
+    ///
+    /// Not content-hashed like the mesh uploads, because instance data is placement data: it
+    /// changes whenever the assembly is edited and is not shared between batches.
+    virtual BufferId uploadInstances(std::uint64_t key, std::uint64_t revision,
+                                    std::span<const Instance>) = 0;
 
     virtual void release(BufferId) = 0;
 

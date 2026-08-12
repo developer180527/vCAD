@@ -46,6 +46,33 @@ BufferId NullGpuResources::uploadEdgeVertices(const kernel::ShapeHash& hash,
     return intern(hash, 2, f.size() * sizeof(float));
 }
 
+BufferId NullGpuResources::uploadInstances(std::uint64_t key, std::uint64_t revision,
+                                           std::span<const Instance> instances) {
+    if (instances.empty()) return BufferId::None;
+    const std::uint64_t bytes = instances.size() * sizeof(Instance);
+
+    auto& buffer = instanceBuffers_[key];
+    if (buffer.id != BufferId::None && buffer.revision == revision) {
+        // Same data. Skipping is not an optimisation here, it is the contract — an orbit must
+        // not re-send instance data, and that is only observable through this counter.
+        ++instanceSkips_;
+        return buffer.id;
+    }
+    if (buffer.id == BufferId::None) {
+        buffer.id = BufferId{next_++};
+        sizes_.emplace(static_cast<std::uint64_t>(buffer.id), 0);
+    }
+    // Reuse the handle across revisions: the buffer is persistent, so an edit resizes it rather
+    // than producing a new one, and nothing above the seam has to re-bind.
+    residentBytes_ -= buffer.bytes;
+    residentBytes_ += bytes;
+    sizes_[static_cast<std::uint64_t>(buffer.id)] = bytes;
+    buffer.bytes = bytes;
+    buffer.revision = revision;
+    ++instanceUploads_;
+    return buffer.id;
+}
+
 void NullGpuResources::release(BufferId id) {
     if (id == BufferId::None) return;
     const auto it = sizes_.find(static_cast<std::uint64_t>(id));
@@ -58,6 +85,12 @@ void NullGpuResources::release(BufferId id) {
             break;
         }
     }
+    for (auto i = instanceBuffers_.begin(); i != instanceBuffers_.end(); ++i) {
+        if (i->second.id == id) {
+            instanceBuffers_.erase(i);
+            break;
+        }
+    }
 }
 
 void NullFrameSink::submit(const SceneFrame& f) {
@@ -65,19 +98,35 @@ void NullFrameSink::submit(const SceneFrame& f) {
     stats_ = Stats{};
     recorded_ = Recorded{};
 
+    // One draw call PER RANGE, matching what a real backend must do: a range is a contiguous
+    // run of the persistent instance buffer, and a backend cannot submit two disjoint runs in
+    // one call. An entirely visible batch collapses to one range, so this stays at one call per
+    // batch until culling actually fragments it.
     for (const auto& b : f.batches) {
-        if (b.indexCount == 0 || b.instances.empty()) continue;
-        ++stats_.drawCalls;
-        stats_.instances += static_cast<std::uint32_t>(b.instances.size());
-        stats_.triangles +=
-            static_cast<std::uint32_t>((b.indexCount / 3) * b.instances.size());
+        if (b.indexCount == 0 || b.instances == BufferId::None) continue;
+        std::uint32_t visible = 0;
+        for (const DrawRange& r : b.ranges) {
+            if (r.instanceCount == 0) continue;
+            ++stats_.drawCalls;
+            visible += r.instanceCount;
+        }
+        if (visible == 0) continue;
+        stats_.instancesRequested += b.instanceCount;
+        stats_.instances += visible;
+        stats_.triangles += (b.indexCount / 3) * visible;
         recorded_.vertexBuffers.push_back(b.vertices);
-        recorded_.instanceCounts.push_back(static_cast<std::uint32_t>(b.instances.size()));
+        recorded_.instanceCounts.push_back(visible);
     }
     for (const auto& e : f.edgeBatches) {
-        if (e.vertexCount == 0 || e.instances.empty()) continue;
-        ++stats_.drawCalls;
-        stats_.lines += static_cast<std::uint32_t>((e.vertexCount - 1) * e.instances.size());
+        if (e.vertexCount == 0 || e.instances == BufferId::None) continue;
+        std::uint32_t visible = 0;
+        for (const DrawRange& r : e.ranges) {
+            if (r.instanceCount == 0) continue;
+            ++stats_.drawCalls;
+            visible += r.instanceCount;
+        }
+        if (visible == 0) continue;
+        stats_.lines += (e.vertexCount - 1) * visible;
         ++recorded_.edgeBatches;
     }
     for (const Highlight h : f.highlights) {
