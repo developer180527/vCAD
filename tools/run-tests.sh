@@ -43,15 +43,16 @@ else
 fi
 
 step "Rust acceptance tests (through the C ABI)"
+# --workspace, never a hand-maintained list of test names. The list drifted: m2_io_and_ddc and
+# m3_tessellation both existed for a while without being in the local gate, so only CI ran
+# them. A gate that silently omits tests is worse than no gate.
 export CAD_BUILD_DIR="$BUILD"
 cd tests-rs
-cargo test --test m2_recompute
-
-if [ "$QUICK" = 0 ]; then
-  step "Rust property tests"
-  cargo test --test prop_invariants
+if [ "$QUICK" = 1 ]; then
+  # Skip the property tier, which is the slow one, but still run every acceptance test.
+  cargo test --workspace -- --skip proptest
 else
-  echo "(skipped by --quick)"
+  cargo test --workspace
 fi
 
 cd "$ROOT"
