@@ -6,7 +6,14 @@
   "$comment-opencascade": "OCCT 8.0.1 (2026-07-30). C++17 minimum. DataExchange toolkits are TKDE*-prefixed since 7.8. VTK deliberately not requested; it is off by default in OCCT 8 anyway. The freetype default feature is kept: dropping it would shed fontconfig/gperf/brotli/libpng, but that is minutes against OCCT's own 30-60, and a USE_FREETYPE=OFF build is unverified \u2014 it would fail deep into the OCCT compile, costing a full CI cycle per attempt.",
   "dependencies": [
     "opencascade",
-    "eigen3"
+    "eigen3",
+    {
+      "name": "bgfx",
+      "features": [
+        "tools"
+      ]
+    },
+    "glfw3"
   ],
   "default-features": [
     "tests"
@@ -26,5 +33,6 @@
     }
   },
   "builtin-baseline": "dc31f86a441067d6c2e9e4ad52988eb41ef4f442",
-  "overrides": []
+  "overrides": [],
+  "$comment-bgfx": "bgfx 1.129 with [tools] for shaderc. The tools feature pulls glslang and spirv-tools -- a real but one-time build. Compiling shaders from source beats checking in per-platform binary blobs nobody can regenerate. glfw3 is for the dev viewer only."
 }

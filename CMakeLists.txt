@@ -42,6 +42,7 @@ add_subdirectory(modules/assetlib EXCLUDE_FROM_ALL)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CadWarnings)
 include(CadLayering)
+include(CadShaders)
 
 if(CAD_ENABLE_ASAN AND NOT MSVC)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)

@@ -181,13 +181,19 @@ category error — the CPU cannot submit them, let alone at 60fps.
 
 ```
 Batch { BufferId vertices, indices; uint32 indexOffset, indexCount; span<Instance> }
-Instance { float transform[12]; uint8 colour[4]; uint32 elementBase; }   // 56 bytes exactly
+Instance { float transform[12]; uint8 colour[4]; uint32 elementBase, instanceId, reserved; }
 ```
 
-One draw call per *unique mesh*, instanced across every part that uses it. `Instance` is
-deliberately 56 bytes with a 4x3 affine transform (the fourth row is always 0,0,0,1) and
-packed colour: at 1M instances that is the difference between 56 MB and 96 MB per frame of
-instance data.
+One draw call per *unique mesh*, instanced across every part that uses it. `Instance` carries a
+4x3 affine transform (the fourth row of a CAD placement is always 0,0,0,1) and packed RGBA8
+colour: at 1M instances that is 64 MB per frame rather than the 96 MB a Mat4-and-floats layout
+would cost.
+
+**Amended during M3.3:** the struct is **64 bytes, not 56**. bgfx requires instance data stride
+to be a multiple of 16, so 56 would not have uploaded at all. Rather than pad with filler, the
+space went to `instanceId` — which GPU ID-buffer picking turns out to need, because the element
+index arrives as a vertex attribute while the instance must come from instance data, and a pick
+needs both to tell which of 50,000 identical bolts was clicked.
 
 ### Why this works at all: content-addressed dedupe
 

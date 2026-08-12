@@ -54,16 +54,19 @@ struct Camera {
 /// per-element, not per-object, because a user selects a face and not a part.
 enum class Highlight : std::uint8_t { None = 0, Hovered, Selected, Error };
 
-/// One placement of a mesh.
+/// One placement of a mesh. 64 bytes.
 ///
-/// 56 bytes, and every byte is deliberate — at 1M instances this is the difference between
-/// 56 MB and 96 MB of per-frame instance data:
+/// The size is a per-frame bandwidth decision AND a hard API constraint:
 ///   * 4x3 affine transform, not Mat4. The fourth row of a CAD placement is always
-///     (0,0,0,1); storing it costs 16 MB per million instances to say nothing.
+///     (0,0,0,1); storing it would cost 16 MB per million instances to say nothing.
 ///   * packed RGBA8 colour, not four floats.
+///   * **bgfx requires instance data stride to be a multiple of 16 bytes.** An earlier draft
+///     was 56 and would simply not have uploaded. Padding to 64 is not optional, so the spare
+///     space is spent on something needed rather than left as filler.
 struct Instance {
     float transform[12];              ///< column-major 4x3
     std::uint8_t colour[4]{191, 194, 199, 255};
+
     /// Where this instance's element names start in the frame's element table.
     ///
     /// This exists because dedupe means one mesh is shared by many parts: 50,000 identical
@@ -71,11 +74,18 @@ struct Instance {
     /// stores element SLOTS; the instance stores its base. A GPU pick returns
     /// (instance, slot) and resolves through this.
     std::uint32_t elementBase = 0;
+
+    /// Index of this instance within its batch. Needed by the pick shader: the element index
+    /// arrives as a vertex attribute, but the *instance* has to come from instance data, and
+    /// without both an id-buffer pick cannot tell which of 50,000 identical bolts was clicked.
+    std::uint32_t instanceId = 0;
+
+    std::uint32_t reserved = 0;        ///< pad to the 16-byte stride bgfx requires
 };
-// The assert is here because I got this wrong once: 48 + 4 + 4 is 56, and an earlier draft
-// carried a speculative `flags` field that made it 60 while the comment still claimed 56.
-// At a million instances that unused field cost 4 MB per frame to say nothing.
-static_assert(sizeof(Instance) == 56, "Instance size is a per-frame bandwidth decision");
+// Asserted because I have got this wrong twice: once with a speculative `flags` field that made
+// the size 60 while the comment claimed 56, and once at 56 — which reads fine and is rejected
+// outright by bgfx's instance-stride rule.
+static_assert(sizeof(Instance) == 64, "bgfx instance data stride must be a multiple of 16");
 
 /// One draw call, instanced across every part that uses this mesh.
 ///
