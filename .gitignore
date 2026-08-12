@@ -139,3 +139,6 @@ DerivedData/
 .env.*
 !.env.example
 CMakeUserPresets.json    # per-developer; CMakePresets.json is shared
+
+# Release measurement build, configured against build/vcpkg_installed (see docs/M3.md)
+/build-release/

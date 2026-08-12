@@ -343,9 +343,10 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
         if (vb == nullptr || ib == nullptr) continue;
 
         const std::uint32_t stride = sizeof(Instance);
+        const std::uint32_t wanted = static_cast<std::uint32_t>(batch.instances.size());
+        stats.instancesRequested += wanted;
         const std::uint32_t available =
-            bgfx::getAvailInstanceDataBuffer(static_cast<std::uint32_t>(batch.instances.size()),
-                                             static_cast<std::uint16_t>(stride));
+            bgfx::getAvailInstanceDataBuffer(wanted, static_cast<std::uint16_t>(stride));
         if (available == 0) continue;
 
         bgfx::InstanceDataBuffer idb;
@@ -462,6 +463,20 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
     }
 
     impl_.advanceFrame();
+
+    // Read timings AFTER the frame: getStats reports the frame just completed. The GPU figure is
+    // the one that matters for a scale claim, and it is only meaningful with a real renderer —
+    // Noop reports a plausible-looking zero.
+    if (const bgfx::Stats* s = bgfx::getStats(); s != nullptr) {
+        const double cpuFreq = double(s->cpuTimerFreq);
+        const double gpuFreq = double(s->gpuTimerFreq);
+        if (cpuFreq > 0.0) {
+            impl_.stats.cpuFrameMs = 1000.0 * double(s->cpuTimeEnd - s->cpuTimeBegin) / cpuFreq;
+        }
+        if (gpuFreq > 0.0) {
+            impl_.stats.gpuFrameMs = 1000.0 * double(s->gpuTimeEnd - s->gpuTimeBegin) / gpuFreq;
+        }
+    }
 }
 
 // ── picking ─────────────────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 
 add_subdirectory(occt_smoke)
 add_subdirectory(bgfx_offscreen)
+add_subdirectory(scale)
 # add_subdirectory(rhi_triangle)          # 0.3 — bgfx
 # add_subdirectory(planegcs_standalone)   # 0.4
 # add_subdirectory(assetlib_standalone)   # 0.5

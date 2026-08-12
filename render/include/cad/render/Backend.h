@@ -188,6 +188,15 @@ public:
         /// If they are equal on a large assembly, something has defeated it.
         std::uint32_t triangles = 0;
         std::uint32_t lines = 0;
+
+        /// Instances the scene ASKED to draw, before the per-frame instance buffer ran out.
+        ///
+        /// Must be compared against `instances`. bgfx serves instance data from a transient
+        /// buffer with a fixed per-frame budget, and when it is exhausted the submission is
+        /// silently truncated — a large assembly then renders a plausible-looking fraction of
+        /// itself with no error. Any report that quotes `instances` without this is lying.
+        std::uint32_t instancesRequested = 0;
+
         double cpuFrameMs = 0.0;
         double gpuFrameMs = 0.0;
     };
