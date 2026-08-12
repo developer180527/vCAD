@@ -41,6 +41,15 @@ public:
     /// so every shell — Qt, SwiftUI — behaves identically without reimplementing the table.
     [[nodiscard]] Drag dragFor(int button, bool shift, bool ctrl) const;
 
+    /// NDC depth convention, from `bgfx::getCaps()->homogeneousDepth`.
+    ///
+    /// false ([0,1]) for Metal, D3D and Vulkan; true ([-1,1]) for OpenGL. Getting this wrong
+    /// depth-clips the entire scene and renders NOTHING, with no error and no warning — which is
+    /// exactly what happened: hand-rolled matrices assumed the OpenGL range and Metal silently
+    /// discarded every fragment. The backend sets this at init; the default matches Metal
+    /// because that is what ships first.
+    void setHomogeneousDepth(bool v) noexcept { homogeneousDepth_ = v; }
+
     void setOrthographic(bool v) noexcept { orthographic_ = v; }
     [[nodiscard]] bool orthographic() const noexcept { return orthographic_; }
     void setPreset(NavigationPreset p) noexcept { preset_ = p; }
@@ -56,6 +65,7 @@ private:
     /// Orthographic by default. Engineers check alignment in ortho, and perspective makes
     /// coincident faces ambiguous — the opposite default to a game engine.
     bool orthographic_ = true;
+    bool homogeneousDepth_ = false;
     NavigationPreset preset_ = NavigationPreset::Cad;
     float orthoHeight_ = 500.0f;
 };

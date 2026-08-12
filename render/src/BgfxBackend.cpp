@@ -254,7 +254,11 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
         bgfx::setIndexBuffer(bgfx::IndexBufferHandle{ib->idx}, batch.indexOffset,
                              batch.indexCount);
         bgfx::setInstanceDataBuffer(&idb);
-        bgfx::setState(state | (batch.doubleSided ? 0 : BGFX_STATE_CULL_CW));
+        // No backface culling, deliberately. Imported CAD geometry has inconsistent face
+        // winding — foreign STEP and IGES routinely mix orientations — and the shader already
+        // lights both sides. Culling would buy nothing except a second silent way to render an
+        // empty frame. Revisit only with a measurement showing overdraw actually costs us.
+        bgfx::setState(state);
         bgfx::submit(view, program);
 
         ++calls;
@@ -578,6 +582,16 @@ bool BgfxBackend::ready() const noexcept { return impl_ && impl_->initialised; }
 std::string BgfxBackend::rendererName() const {
     if (!ready()) return "uninitialised";
     return bgfx::getRendererName(bgfx::getRendererType());
+}
+
+bool BgfxBackend::homogeneousDepth() const {
+    if (!ready()) return false;
+    return bgfx::getCaps()->homogeneousDepth;
+}
+
+bool BgfxBackend::programsReady() const {
+    return ready() && bgfx::isValid(impl_->shaded) && bgfx::isValid(impl_->edge)
+           && bgfx::isValid(impl_->pick);
 }
 
 Backend BgfxBackend::handle() noexcept {

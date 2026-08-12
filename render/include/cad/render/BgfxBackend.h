@@ -69,8 +69,16 @@ public:
     [[nodiscard]] Backend handle() noexcept;
 
     /// Which renderer bgfx actually chose. Worth surfacing: "why is it slow" is usually
-    /// "it fell back to OpenGL".
+    /// "it fell back to OpenGL", and "why is it blank" was "it fell back to Noop".
     [[nodiscard]] std::string rendererName() const;
+
+    /// NDC depth convention of the chosen renderer. Feed this to CameraController — getting it
+    /// wrong depth-clips everything and draws nothing at all.
+    [[nodiscard]] bool homogeneousDepth() const;
+
+    /// Whether the shader programs actually loaded. A viewport that initialises and draws
+    /// nothing is the hardest thing to diagnose from a bug report, so make it queryable.
+    [[nodiscard]] bool programsReady() const;
 
     /// Reads the colour buffer back into RGBA8. Offscreen only. This is the golden-image hook
     /// and the reason the offscreen mode exists.

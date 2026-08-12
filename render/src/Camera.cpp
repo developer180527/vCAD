@@ -1,5 +1,7 @@
 #include "cad/render/Camera.h"
 
+#include <bx/math.h>
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -7,54 +9,16 @@
 namespace cad::render {
 namespace {
 
-void lookAt(const float eye[3], const float at[3], float out[16]) {
-    float f[3]{at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]};
-    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
-    if (fl > 1e-9f) { f[0] /= fl; f[1] /= fl; f[2] /= fl; }
-
-    // Z-up. CAD convention, unlike most game engines' Y-up: STEP, drawings and every
-    // manufacturing workflow treat Z as vertical, and fighting that makes every imported part
-    // arrive lying on its side.
-    const float up[3]{0.0f, 0.0f, 1.0f};
-    float s[3]{f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2],
-               f[0] * up[1] - f[1] * up[0]};
-    float sl = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
-    if (sl < 1e-6f) {
-        // Looking straight down the up axis: pick any perpendicular rather than emit NaNs.
-        s[0] = 1.0f; s[1] = 0.0f; s[2] = 0.0f; sl = 1.0f;
-    }
-    s[0] /= sl; s[1] /= sl; s[2] /= sl;
-    const float u[3]{s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2],
-                     s[0] * f[1] - s[1] * f[0]};
-
-    out[0] = s[0];  out[4] = s[1];  out[8]  = s[2];
-    out[1] = u[0];  out[5] = u[1];  out[9]  = u[2];
-    out[2] = -f[0]; out[6] = -f[1]; out[10] = -f[2];
-    out[3] = 0; out[7] = 0; out[11] = 0; out[15] = 1;
-    out[12] = -(s[0] * eye[0] + s[1] * eye[1] + s[2] * eye[2]);
-    out[13] = -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]);
-    out[14] = f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2];
-}
-
-void ortho(float halfH, float aspect, float zn, float zf, float out[16]) {
-    const float halfW = halfH * aspect;
-    std::fill(out, out + 16, 0.0f);
-    out[0] = 1.0f / halfW;
-    out[5] = 1.0f / halfH;
-    out[10] = -2.0f / (zf - zn);
-    out[14] = -(zf + zn) / (zf - zn);
-    out[15] = 1.0f;
-}
-
-void perspective(float fovY, float aspect, float zn, float zf, float out[16]) {
-    const float t = 1.0f / std::tan(fovY * 0.5f);
-    std::fill(out, out + 16, 0.0f);
-    out[0] = t / aspect;
-    out[5] = t;
-    out[10] = (zf + zn) / (zn - zf);
-    out[11] = -1.0f;
-    out[14] = (2.0f * zf * zn) / (zn - zf);
-}
+// No hand-rolled projection maths.
+//
+// The previous version built lookAt/ortho/perspective by hand and assumed OpenGL's [-1,1] NDC
+// depth. Metal, D3D and Vulkan use [0,1], so every fragment fell outside the depth range and the
+// scene rendered EMPTY — no error, no warning, nothing on screen. bx::mtxOrtho and bx::mtxProj
+// take the convention as a flag precisely because this is easy to get wrong and impossible to
+// see. Use them.
+//
+// Handedness is bx's default (left) for BOTH view and projection. Mixing them is the other
+// silent way to get a blank or inside-out scene.
 
 }  // namespace
 
@@ -63,11 +27,19 @@ render::Camera CameraController::matrices(const Viewport& vp) const {
     out.orthographic = orthographic_;
 
     const float cp = std::cos(pitch_);
-    const float eye[3]{target_[0] + distance_ * cp * std::cos(yaw_),
+    const bx::Vec3 eye{target_[0] + distance_ * cp * std::cos(yaw_),
                        target_[1] + distance_ * cp * std::sin(yaw_),
                        target_[2] + distance_ * std::sin(pitch_)};
-    for (int i = 0; i < 3; ++i) out.eye[i] = eye[i];
-    lookAt(eye, target_, out.view.m);
+    const bx::Vec3 at{target_[0], target_[1], target_[2]};
+    // Z-up. CAD convention, unlike most game engines' Y-up: STEP, drawings and every
+    // manufacturing workflow treat Z as vertical, and fighting it makes every imported part
+    // arrive lying on its side.
+    const bx::Vec3 up{0.0f, 0.0f, 1.0f};
+
+    out.eye[0] = eye.x;
+    out.eye[1] = eye.y;
+    out.eye[2] = eye.z;
+    bx::mtxLookAt(out.view.m, eye, at, up);
 
     const float aspect = vp.height == 0
         ? 1.0f
@@ -80,9 +52,14 @@ render::Camera CameraController::matrices(const Viewport& vp) const {
     const float zf = std::max(distance_ * 10.0f, zn * 100.0f);
 
     if (orthographic_) {
-        ortho(orthoHeight_ * 0.5f, aspect, -zf, zf, out.projection.m);
+        const float halfH = orthoHeight_ * 0.5f;
+        const float halfW = halfH * aspect;
+        // Symmetric depth range for ortho: a CAD user rotating a part must not have it clip
+        // through the near plane, and there is no perspective cost to being generous.
+        bx::mtxOrtho(out.projection.m, -halfW, halfW, -halfH, halfH, -zf, zf, 0.0f,
+                     homogeneousDepth_);
     } else {
-        perspective(0.7f, aspect, zn, zf, out.projection.m);
+        bx::mtxProj(out.projection.m, bx::toDeg(0.7f), aspect, zn, zf, homogeneousDepth_);
     }
     return out;
 }

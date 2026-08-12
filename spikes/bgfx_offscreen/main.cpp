@@ -81,7 +81,15 @@ int main(int argc, char** argv) {
                      r.error().detail.c_str());
         return 1;
     }
-    std::printf("renderer: %s\n", backend.rendererName().c_str());
+    std::printf("renderer: %s   homogeneousDepth: %s   programs: %s\n",
+                backend.rendererName().c_str(),
+                backend.homogeneousDepth() ? "true (OpenGL [-1,1])" : "false (Metal/D3D [0,1])",
+                backend.programsReady() ? "loaded" : "MISSING");
+    if (!noop && backend.rendererName() == "Noop") {
+        std::fprintf(stderr,
+                     "FAIL: bgfx fell back to Noop — it could not create a real device.\n");
+        return 1;
+    }
 
     // A box, recomputed, tessellated, batched, submitted.
     recompute::FeatureRegistry registry = recompute::FeatureRegistry::builtins();
@@ -113,10 +121,23 @@ int main(int argc, char** argv) {
     }
 
     render::CameraController camera;
+    // The depth convention MUST come from the renderer. Assuming OpenGL's [-1,1] on Metal
+    // depth-clips every fragment and the frame comes out empty with no error at all.
+    camera.setHomogeneousDepth(backend.homogeneousDepth());
     camera.fit(scene.bounds(), config.viewport);
     scene.setViewport(config.viewport);
     scene.setCamera(camera.matrices(config.viewport));
 
+    const auto b = scene.bounds();
+    std::printf("bounds: (%.1f %.1f %.1f) .. (%.1f %.1f %.1f)   camera distance %.1f\n",
+                b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2],
+                camera.distance());
+    std::printf("scene: %zu unique meshes, %zu instances, %zu element slots\n",
+                scene.stats().uniqueMeshes, scene.stats().instances, scene.stats().elementSlots);
+
+    // Two frames. The first lets bgfx create the framebuffer and flush its deferred resource
+    // creation; capturing after a single frame reads back an untouched texture.
+    gpu.frames->submit(scene.frame());
     gpu.frames->submit(scene.frame());
     const auto stats = gpu.frames->lastFrameStats();
     std::printf("draw calls: %u  instances: %u  triangles: %u  lines: %u\n", stats.drawCalls,
@@ -147,6 +168,19 @@ int main(int argc, char** argv) {
     const std::size_t total = pixels.value().size() / 4;
     std::printf("lit pixels: %zu / %zu (%.1f%%)\n", nonBackground, total,
                 100.0 * double(nonBackground) / double(total));
+
+    // Always write the image, pass or fail. A number saying "0 lit pixels" tells you it is
+    // broken; the picture tells you HOW — wrong camera, wrong winding, wrong clear colour.
+    if (FILE* f = std::fopen("frame.ppm", "wb")) {
+        std::fprintf(f, "P6\n%u %u\n255\n", config.viewport.width, config.viewport.height);
+        for (std::size_t i = 0; i + 3 < pixels.value().size(); i += 4) {
+            std::fputc(pixels.value()[i], f);
+            std::fputc(pixels.value()[i + 1], f);
+            std::fputc(pixels.value()[i + 2], f);
+        }
+        std::fclose(f);
+        std::printf("wrote frame.ppm (open it: any image viewer, or `open frame.ppm`)\n");
+    }
 
     if (nonBackground == 0) {
         std::fprintf(stderr, "FAIL: nothing rasterised\n");
