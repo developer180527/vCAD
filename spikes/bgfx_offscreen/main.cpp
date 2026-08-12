@@ -22,6 +22,7 @@
 #endif
 #include <GLFW/glfw3native.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -166,12 +167,43 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "capture failed: %s\n", pixels.error().message.c_str());
         return 1;
     }
+    // Distinguish the two ways this can read as "nothing": geometry that never drew, versus a
+    // readback that never happened. They look identical in a pixel count and need completely
+    // different fixes, so measure them apart.
+    //
+    //   background-coloured pixels  -> the clear reached the texture, so the readback works and
+    //                                  the geometry is the problem (camera, depth, shader).
+    //   all-zero pixels             -> we are reading an untouched texture; the blit or the
+    //                                  readback failed and the draw is unmeasured.
     std::size_t nonBackground = 0;
+    std::size_t backgroundish = 0;
+    std::size_t zero = 0;
+    std::uint8_t lo[3]{255, 255, 255};
+    std::uint8_t hi[3]{0, 0, 0};
     for (std::size_t i = 0; i + 3 < pixels.value().size(); i += 4) {
         const auto* p = &pixels.value()[i];
+        for (int c = 0; c < 3; ++c) {
+            lo[c] = std::min(lo[c], p[c]);
+            hi[c] = std::max(hi[c], p[c]);
+        }
+        if (p[0] == 0 && p[1] == 0 && p[2] == 0) ++zero;
+        else if (p[0] < 60 && p[1] < 60 && p[2] < 60) ++backgroundish;
         if (p[0] > 80 || p[1] > 80 || p[2] > 80) ++nonBackground;
     }
     const std::size_t total = pixels.value().size() / 4;
+    std::printf("pixel range: r %u..%u  g %u..%u  b %u..%u\n", lo[0], hi[0], lo[1], hi[1],
+                lo[2], hi[2]);
+    std::printf("all-zero: %zu   background-ish: %zu   lit: %zu   of %zu\n", zero, backgroundish,
+                nonBackground, total);
+    if (zero == total) {
+        std::fprintf(stderr,
+                     "DIAGNOSIS: every pixel is zero, so the clear never reached this texture.\n"
+                     "           The blit or the readback failed — not the geometry.\n");
+    } else if (nonBackground == 0 && backgroundish > 0) {
+        std::fprintf(stderr,
+                     "DIAGNOSIS: the clear colour is present but no geometry is.\n"
+                     "           Readback works; the draw is being lost (camera, depth or shader).\n");
+    }
     std::printf("lit pixels: %zu / %zu (%.1f%%)\n", nonBackground, total,
                 100.0 * double(nonBackground) / double(total));
 

@@ -229,6 +229,19 @@ struct BgfxBackend::Impl {
     /// because a pick that draws a different set of geometry than the view is a pick that lies.
     std::uint32_t submitBatches(const SceneFrame& frame, bgfx::ViewId view,
                                 bgfx::ProgramHandle program, std::uint64_t state);
+
+    /// End a frame. THE two halves of bgfx's frame contract, together.
+    ///
+    /// In single-threaded mode `bgfx::frame()` only QUEUES work — `bgfx::renderFrame()` is what
+    /// actually executes it. Calling frame() alone advances the frame counter and renders
+    /// nothing, which presents as: draw calls counted, geometry submitted, framebuffer
+    /// untouched, zero lit pixels, no error anywhere. Every frame boundary goes through here so
+    /// the pairing cannot be forgotten in one place and honoured in another.
+    std::uint32_t advanceFrame() {
+        const std::uint32_t number = bgfx::frame();
+        if (config.singleThreaded) bgfx::renderFrame();
+        return number;
+    }
 };
 
 std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::ViewId view,
@@ -357,7 +370,7 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
         }
     }
 
-    bgfx::frame();
+    impl_.advanceFrame();
 }
 
 // ── picking ─────────────────────────────────────────────────────────────────────────────
@@ -426,7 +439,7 @@ void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t
     // bgfx readback is asynchronous: it becomes valid at a frame number it tells us. Pumping
     // frames until then is the documented pattern, and the reason a pick costs ~2 frames rather
     // than being free. Bounded so a driver that never reports ready cannot hang the UI.
-    for (int guard = 0; bgfx::frame() < readyFrame && guard < 8; ++guard) {
+    for (int guard = 0; impl_.advanceFrame() < readyFrame && guard < 8; ++guard) {
     }
 
     for (std::uint32_t row = 0; row < h; ++row) {
@@ -633,7 +646,7 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::captureFrame() {
     bgfx::blit(kViewShaded, impl_->colourReadback, 0, 0,
                bgfx::getTexture(impl_->colourFb, 0));
     const std::uint32_t ready = bgfx::readTexture(impl_->colourReadback, pixels.data());
-    for (int guard = 0; bgfx::frame() < ready && guard < 8; ++guard) {
+    for (int guard = 0; impl_->advanceFrame() < ready && guard < 8; ++guard) {
     }
     return pixels;
 }
