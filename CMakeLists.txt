@@ -77,9 +77,12 @@ add_subdirectory(render)
 
 # abi/ is the application-facing facade over core AND render, so it sits above both —
 # it is deliberately NOT inside core/, which may not depend on the renderer.
+add_subdirectory(app)
 add_subdirectory(abi)
 
 add_subdirectory(bindings/python)
+
+add_subdirectory(shell_qt)
 
 if(CAD_BUILD_TESTS)
   enable_testing()
