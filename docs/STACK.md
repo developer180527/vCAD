@@ -120,6 +120,18 @@ service. The archive directory is also inspectable, so the workflow now prints p
 and size after configure — a silent regression here should be visible in the log rather than
 inferred from the wall clock an hour later.
 
+**Outcome** (run 31574520520, 2026-08-12): all four jobs green. Cold builds were 38–39
+minutes on Linux and Windows and banked 70 MB / 227 MB of archives; macOS ran warm in 1m52s
+off its existing 56 MB entry. Warm is the steady state.
+
+One further trap, found the hard way after the provider was already fixed: **a cancelled run
+saved a partial archive under the fixed cache key.** Later runs then hit that stub, which set
+`cache-hit=true`, which skipped the save — so the real OCCT was never stored and every run
+rebuilt it. A poisoned fixed key cannot recover on its own; the stubs had to be deleted
+through the API. The save key now ends in the run id so a stale entry can never block a save,
+`restore-keys` picks the newest prefix match, and the save is gated on the package count
+having increased and on the run not being cancelled.
+
 Three smaller levers, in descending order of value:
 
 1. **Release-only dependencies** (`cmake/triplets/`). vcpkg builds every port debug *and*

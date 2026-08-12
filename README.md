@@ -5,9 +5,9 @@
 Cross-platform parametric CAD. Desktop (Windows/macOS/Linux) is the full product; iPadOS is a
 stripped-down 3D-printing client on the same core, built later.
 
-**Current state: M1 and M2 complete.** Kernel, topological naming, units, document DAG,
-recompute engine, the assetlib DDC, file interchange, the C ABI and Python bindings are all
-implemented. Everything passes:
+**Current state: M1 and M2 complete, green on Linux, macOS and Windows.** Kernel,
+topological naming, units, document DAG, recompute engine, the assetlib DDC, file
+interchange, the C ABI and Python bindings are all implemented. Everything passes:
 
 ```bash
 tools/run-tests.sh
