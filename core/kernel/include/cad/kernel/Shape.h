@@ -26,6 +26,25 @@ struct ShapeHash {
     std::uint64_t lanes[4]{};
 
     [[nodiscard]] std::string hex() const;
+
+    /// A 64-bit key over ALL FOUR lanes.
+    ///
+    /// Use this, never `lanes[0]`. The lanes are not interchangeable: naming::contentHash mixes
+    /// element names into lane 0 and geometry (areas, centroids) into lanes 1-3, so keying on
+    /// lane 0 alone is keying on names only. That bug shipped briefly in the mesh cache: two
+    /// boxes with the same face names but different dimensions produced the same key, so
+    /// resizing a part served the mesh for its old size. Caught by an M3.2 scene test.
+    [[nodiscard]] std::uint64_t fold64() const noexcept {
+        std::uint64_t h = 1469598103934665603ULL;
+        for (const std::uint64_t lane : lanes) {
+            for (int i = 0; i < 8; ++i) {
+                h ^= (lane >> (i * 8)) & 0xFFu;
+                h *= 1099511628211ULL;
+            }
+        }
+        return h;
+    }
+
     friend bool operator==(const ShapeHash&, const ShapeHash&) = default;
 };
 

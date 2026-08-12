@@ -150,6 +150,48 @@ pub struct MeshInfo {
     pub bounds_max: [f32; 3],
 }
 
+/// What the scene layer and the null backend recorded. Counts, because counts are what say
+/// whether dedupe, diffing and instancing are working.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SceneStats {
+    pub rebuilds: u64,
+    pub uploads: u64,
+    pub gpu_uploads: u64,
+    pub gpu_deduped: u64,
+    pub unique_meshes: u64,
+    pub instances: u64,
+    pub element_slots: u64,
+    pub draw_calls: u64,
+    pub frame_instances: u64,
+    pub frame_triangles: u64,
+    pub frames: u64,
+    pub highlighted: u64,
+    pub orthographic: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drag {
+    None,
+    Orbit,
+    Pan,
+    Zoom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavPreset {
+    Cad,
+    Fusion,
+    Blender,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Highlight {
+    None,
+    Hovered,
+    Selected,
+    Error,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CacheStats {
     pub hits: u64,
@@ -279,6 +321,146 @@ impl Session {
     pub fn reset_mesh_cache_stats(&mut self) -> Result<()> {
         let st = unsafe { sys::cad_mesh_cache_reset_stats(self.handle) };
         self.check(st)
+    }
+
+    // ── scene ─────────────────────────────────────────────────────────────────────────
+
+    /// Adds a placement. `transform` is a column-major 4x3 affine; None means identity.
+    /// Placing one object many times is the normal case in an assembly.
+    pub fn add_placement(&mut self, o: Object, transform: Option<&[f32; 12]>) -> Result<()> {
+        let ptr = transform.map_or(std::ptr::null(), |t| t.as_ptr());
+        let st = unsafe { sys::cad_scene_add_placement(self.handle, o.0, ptr) };
+        self.check(st)
+    }
+
+    pub fn clear_placements(&mut self) -> Result<()> {
+        let st = unsafe { sys::cad_scene_clear_placements(self.handle) };
+        self.check(st)
+    }
+
+    pub fn scene_update(&mut self, deflection: f64, angular: f64) -> Result<()> {
+        let st = unsafe { sys::cad_scene_update(self.handle, deflection, angular) };
+        self.check(st)
+    }
+
+    pub fn scene_submit(&mut self) -> Result<()> {
+        let st = unsafe { sys::cad_scene_submit(self.handle) };
+        self.check(st)
+    }
+
+    pub fn scene_stats(&self) -> Result<SceneStats> {
+        let mut raw = sys::CadSceneStats::default();
+        let st = unsafe { sys::cad_scene_stats(self.handle, &mut raw) };
+        self.check(st)?;
+        Ok(SceneStats {
+            rebuilds: raw.rebuilds,
+            uploads: raw.uploads,
+            gpu_uploads: raw.gpu_uploads,
+            gpu_deduped: raw.gpu_deduped,
+            unique_meshes: raw.unique_meshes,
+            instances: raw.instances,
+            element_slots: raw.element_slots,
+            draw_calls: raw.draw_calls,
+            frame_instances: raw.frame_instances,
+            frame_triangles: raw.frame_triangles,
+            frames: raw.frames,
+            highlighted: raw.highlighted,
+            orthographic: raw.orthographic != 0,
+        })
+    }
+
+    pub fn scene_reset_stats(&mut self) -> Result<()> {
+        let st = unsafe { sys::cad_scene_reset_stats(self.handle) };
+        self.check(st)
+    }
+
+    pub fn orbit(&mut self, dx: f32, dy: f32) -> Result<()> {
+        self.check(unsafe { sys::cad_camera_orbit(self.handle, dx, dy) })
+    }
+    pub fn pan(&mut self, dx: f32, dy: f32) -> Result<()> {
+        self.check(unsafe { sys::cad_camera_pan(self.handle, dx, dy) })
+    }
+    pub fn zoom(&mut self, ticks: f32) -> Result<()> {
+        self.check(unsafe { sys::cad_camera_zoom(self.handle, ticks) })
+    }
+    pub fn fit(&mut self) -> Result<()> {
+        self.check(unsafe { sys::cad_camera_fit(self.handle) })
+    }
+    pub fn set_orthographic(&mut self, ortho: bool) -> Result<()> {
+        self.check(unsafe { sys::cad_camera_set_orthographic(self.handle, i32::from(ortho)) })
+    }
+    pub fn set_viewport(&mut self, w: u32, h: u32) -> Result<()> {
+        self.check(unsafe { sys::cad_camera_set_viewport(self.handle, w, h) })
+    }
+    pub fn camera_distance(&self) -> Result<f32> {
+        let mut out = 0f32;
+        self.check(unsafe { sys::cad_camera_distance(self.handle, &mut out) })?;
+        Ok(out)
+    }
+    pub fn set_nav_preset(&mut self, p: NavPreset) -> Result<()> {
+        let raw = match p {
+            NavPreset::Cad => sys::NAV_CAD,
+            NavPreset::Fusion => sys::NAV_FUSION,
+            NavPreset::Blender => sys::NAV_BLENDER,
+        };
+        self.check(unsafe { sys::cad_camera_set_preset(self.handle, raw) })
+    }
+
+    /// What a gesture means under the active preset. Lives in the core so every shell behaves
+    /// identically instead of each reimplementing the table.
+    pub fn drag_for(&self, button: i32, shift: bool, ctrl: bool) -> Result<Drag> {
+        let mut out = 0i32;
+        self.check(unsafe {
+            sys::cad_camera_drag_for(
+                self.handle,
+                button,
+                i32::from(shift),
+                i32::from(ctrl),
+                &mut out,
+            )
+        })?;
+        Ok(match out {
+            sys::DRAG_ORBIT => Drag::Orbit,
+            sys::DRAG_PAN => Drag::Pan,
+            sys::DRAG_ZOOM => Drag::Zoom,
+            _ => Drag::None,
+        })
+    }
+
+    pub fn set_highlight(&mut self, element: &str, h: Highlight) -> Result<()> {
+        let c = cstr(element)?;
+        let raw = match h {
+            Highlight::None => sys::HL_NONE,
+            Highlight::Hovered => sys::HL_HOVERED,
+            Highlight::Selected => sys::HL_SELECTED,
+            Highlight::Error => sys::HL_ERROR,
+        };
+        self.check(unsafe { sys::cad_scene_set_highlight(self.handle, c.as_ptr(), raw) })
+    }
+
+    pub fn clear_highlights(&mut self) -> Result<()> {
+        self.check(unsafe { sys::cad_scene_clear_highlights(self.handle) })
+    }
+
+    /// Scripts the null picker's next answer. What is under test is our (instance, slot) ->
+    /// ElementName mapping, not whether a GPU writes the right ids — that needs a GPU.
+    pub fn set_next_hit(&mut self, instance: u32, element: u32, valid: bool) -> Result<()> {
+        self.check(unsafe {
+            sys::cad_scene_set_next_hit(self.handle, instance, element, i32::from(valid))
+        })
+    }
+
+    /// Element name under a point. Empty when nothing is hit.
+    pub fn pick(&self, x: u32, y: u32) -> String {
+        self.take_str(unsafe { sys::cad_scene_pick(self.handle, x, y) })
+    }
+
+    /// Which document object owns the element under a point — what a shell needs to select a
+    /// part in the tree from a click in the viewport.
+    pub fn pick_owner(&self, x: u32, y: u32) -> Result<Object> {
+        let mut out: sys::CadObject = 0;
+        self.check(unsafe { sys::cad_scene_pick_owner(self.handle, x, y, &mut out) })?;
+        Ok(Object(out))
     }
 
     pub fn readable_extensions(&self) -> Vec<String> {

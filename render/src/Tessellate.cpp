@@ -243,9 +243,12 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output& output,
 
         // Key = source shape content hash, folded with the settings. Two shapes that hash
         // alike tessellate alike, which is exactly what makes dedupe across an assembly work.
-        const kernel::ShapeHash source = naming::contentHash(output.shape, output.map);
-        mesh->contentHash = source;
-        mesh->contentHash.lanes[0] ^= settings.digest();
+        // Settings mixed into EVERY lane, so no single lane can be mistaken for a
+        // settings-independent hash later.
+        mesh->contentHash = naming::contentHash(output.shape, output.map);
+        for (std::uint64_t& lane : mesh->contentHash.lanes) {
+            mix(lane, settings.digest());
+        }
         return mesh;
     });
 

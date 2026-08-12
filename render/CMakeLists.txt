@@ -5,6 +5,9 @@
 cad_core_library(cad_render
   src/Tessellate.cpp
   src/MeshCache.cpp
+  src/Scene.cpp
+  src/Camera.cpp
+  src/NullBackend.cpp
 )
 
 target_include_directories(cad_render PUBLIC include)

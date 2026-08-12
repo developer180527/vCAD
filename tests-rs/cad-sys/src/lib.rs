@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 3;
+pub const CAD_ABI_VERSION_MINOR: u32 = 4;
 
 pub type CadStatus = i32;
 
@@ -76,6 +76,41 @@ pub struct CadMeshInfo {
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
 }
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CadSceneStats {
+    pub rebuilds: u64,
+    pub uploads: u64,
+    pub gpu_uploads: u64,
+    pub gpu_deduped: u64,
+    pub unique_meshes: u64,
+    pub instances: u64,
+    pub element_slots: u64,
+    pub draw_calls: u64,
+    pub frame_instances: u64,
+    pub frame_triangles: u64,
+    pub frames: u64,
+    pub highlighted: u64,
+    pub orthographic: i32,
+}
+
+/// Mirrors `cad::render::Drag`.
+pub const DRAG_NONE: i32 = 0;
+pub const DRAG_ORBIT: i32 = 1;
+pub const DRAG_PAN: i32 = 2;
+pub const DRAG_ZOOM: i32 = 3;
+
+/// Mirrors `cad::render::NavigationPreset`.
+pub const NAV_CAD: i32 = 0;
+pub const NAV_FUSION: i32 = 1;
+pub const NAV_BLENDER: i32 = 2;
+
+/// Mirrors `cad::render::Highlight`.
+pub const HL_NONE: i32 = 0;
+pub const HL_HOVERED: i32 = 1;
+pub const HL_SELECTED: i32 = 2;
+pub const HL_ERROR: i32 = 3;
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +222,48 @@ extern "C" {
     pub fn cad_mesh_element_name(s: CadSession, id: CadObject, slot: u32) -> *const c_char;
     pub fn cad_mesh_cache_stats(s: CadSession, hits: *mut u64, misses: *mut u64) -> CadStatus;
     pub fn cad_mesh_cache_reset_stats(s: CadSession) -> CadStatus;
+
+    pub fn cad_scene_add_placement(
+        s: CadSession,
+        id: CadObject,
+        transform12: *const f32,
+    ) -> CadStatus;
+    pub fn cad_scene_clear_placements(s: CadSession) -> CadStatus;
+    pub fn cad_scene_update(s: CadSession, deflection: f64, angular: f64) -> CadStatus;
+    pub fn cad_scene_submit(s: CadSession) -> CadStatus;
+    pub fn cad_scene_stats(s: CadSession, out: *mut CadSceneStats) -> CadStatus;
+    pub fn cad_scene_reset_stats(s: CadSession) -> CadStatus;
+
+    pub fn cad_camera_orbit(s: CadSession, dx: f32, dy: f32) -> CadStatus;
+    pub fn cad_camera_pan(s: CadSession, dx: f32, dy: f32) -> CadStatus;
+    pub fn cad_camera_zoom(s: CadSession, ticks: f32) -> CadStatus;
+    pub fn cad_camera_fit(s: CadSession) -> CadStatus;
+    pub fn cad_camera_set_orthographic(s: CadSession, ortho: i32) -> CadStatus;
+    pub fn cad_camera_set_viewport(s: CadSession, w: u32, h: u32) -> CadStatus;
+    pub fn cad_camera_distance(s: CadSession, out: *mut f32) -> CadStatus;
+    pub fn cad_camera_set_preset(s: CadSession, preset: i32) -> CadStatus;
+    pub fn cad_camera_drag_for(
+        s: CadSession,
+        button: i32,
+        shift: i32,
+        ctrl: i32,
+        out: *mut i32,
+    ) -> CadStatus;
+
+    pub fn cad_scene_set_highlight(
+        s: CadSession,
+        element: *const c_char,
+        highlight: i32,
+    ) -> CadStatus;
+    pub fn cad_scene_clear_highlights(s: CadSession) -> CadStatus;
+    pub fn cad_scene_set_next_hit(
+        s: CadSession,
+        instance: u32,
+        element: u32,
+        valid: i32,
+    ) -> CadStatus;
+    pub fn cad_scene_pick(s: CadSession, x: u32, y: u32) -> *const c_char;
+    pub fn cad_scene_pick_owner(s: CadSession, x: u32, y: u32, out: *mut CadObject) -> CadStatus;
 
     pub fn cad_parse_length(text: *const c_char, system: c_int, out: *mut f64) -> CadStatus;
 }

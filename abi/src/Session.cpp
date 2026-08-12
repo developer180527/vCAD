@@ -12,6 +12,9 @@
 #include "cad/io/Format.h"
 #include "cad/recompute/DdcCache.h"
 #include "cad/recompute/Engine.h"
+#include "cad/render/Camera.h"
+#include "cad/render/NullBackend.h"
+#include "cad/render/Scene.h"
 #include "cad/render/Tessellate.h"
 #include "cad/units/Units.h"
 
@@ -49,6 +52,14 @@ struct Session {
     std::unique_ptr<cad::recompute::BlobStore> memoryBlobs;
     std::unique_ptr<cad::render::MeshCache> meshes;
 
+    /// A NullBackend, always. The session is the headless surface: shells create their own
+    /// real backend and drive the same SceneBuilder. This one exists so the scene layer is
+    /// exercisable — and tested — with no graphics stack at all.
+    cad::render::NullBackend backend;
+    std::unique_ptr<cad::render::SceneBuilder> scene;
+    cad::render::CameraController camera;
+    std::vector<cad::render::Placement> placements;
+
     History history{Document{}};
 
     explicit Session(const std::string& cacheDir) {
@@ -64,7 +75,15 @@ struct Session {
                                                                  std::move(owned));
             meshes = std::make_unique<cad::render::MeshCache>(*ddc);
         }
+        scene = std::make_unique<cad::render::SceneBuilder>(*meshes, backend.resources);
+        cad::render::Viewport vp;
+        vp.width = 1280;
+        vp.height = 800;
+        scene->setViewport(vp);
+        viewport = vp;
     }
+
+    cad::render::Viewport viewport;
 
     /// Returned strings live here. Valid until the next call on this session, exactly as
     /// the header promises — a single slot makes that promise impossible to accidentally
@@ -635,6 +654,201 @@ CadStatus cad_mesh_cache_stats(CadSession handle, uint64_t* hits, uint64_t* miss
 CadStatus cad_mesh_cache_reset_stats(CadSession handle) {
     return withSession(handle, [&](Session& s) {
         s.meshes->resetStats();
+        return CAD_OK;
+    });
+}
+
+// ── scene ───────────────────────────────────────────────────────────────────────────────
+
+CadStatus cad_scene_add_placement(CadSession handle, CadObject id, const float* transform12) {
+    return withSession(handle, [&](Session& s) {
+        if (!s.doc().contains(ObjectId{id})) {
+            return fail(s, CAD_ERR_BAD_HANDLE, "No such object.");
+        }
+        cad::render::Placement p;
+        p.object = ObjectId{id};
+        if (transform12 != nullptr) std::copy(transform12, transform12 + 12, p.transform);
+        s.placements.push_back(p);
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_clear_placements(CadSession handle) {
+    return withSession(handle, [&](Session& s) {
+        s.placements.clear();
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_update(CadSession handle, double deflection, double angular) {
+    return withSession(handle, [&](Session& s) {
+        cad::render::TessellationSettings settings;
+        if (deflection > 0.0) settings.deflection = deflection;
+        if (angular > 0.0) settings.angularDeflection = angular;
+
+        auto r = s.scene->update(s.doc(), s.placements, settings);
+        if (!r) {
+            s.lastError = r.error().message;
+            return toStatus(r.error().code);
+        }
+        s.scene->setCamera(s.camera.matrices(s.viewport));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_submit(CadSession handle) {
+    return withSession(handle, [&](Session& s) {
+        s.scene->setCamera(s.camera.matrices(s.viewport));
+        s.backend.frames.submit(s.scene->frame());
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_stats(CadSession handle, CadSceneStats* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        const auto& st = s.scene->stats();
+        const auto frame = s.backend.frames.lastFrameStats();
+        const auto& rec = s.backend.frames.recorded();
+        out->rebuilds = st.rebuilds;
+        out->uploads = st.uploads;
+        out->gpu_uploads = s.backend.resources.uploadCount();
+        out->gpu_deduped = s.backend.resources.dedupedCount();
+        out->unique_meshes = st.uniqueMeshes;
+        out->instances = st.instances;
+        out->element_slots = st.elementSlots;
+        out->draw_calls = frame.drawCalls;
+        out->frame_instances = frame.instances;
+        out->frame_triangles = frame.triangles;
+        out->frames = s.backend.frames.frameCount();
+        out->highlighted = rec.highlighted;
+        out->orthographic = rec.orthographic ? 1 : 0;
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_reset_stats(CadSession handle) {
+    return withSession(handle, [&](Session& s) {
+        s.scene->resetStats();
+        s.backend.resources.resetStats();
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_orbit(CadSession handle, float dx, float dy) {
+    return withSession(handle, [&](Session& s) { s.camera.orbit(dx, dy); return CAD_OK; });
+}
+
+CadStatus cad_camera_pan(CadSession handle, float dx, float dy) {
+    return withSession(handle, [&](Session& s) {
+        s.camera.pan(dx, dy, s.viewport);
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_zoom(CadSession handle, float ticks) {
+    return withSession(handle, [&](Session& s) { s.camera.zoom(ticks); return CAD_OK; });
+}
+
+CadStatus cad_camera_fit(CadSession handle) {
+    return withSession(handle, [&](Session& s) {
+        s.camera.fit(s.scene->bounds(), s.viewport);
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_set_orthographic(CadSession handle, int32_t ortho) {
+    return withSession(handle, [&](Session& s) {
+        s.camera.setOrthographic(ortho != 0);
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_set_viewport(CadSession handle, uint32_t w, uint32_t h) {
+    return withSession(handle, [&](Session& s) {
+        s.viewport.width = w;
+        s.viewport.height = h;
+        s.scene->setViewport(s.viewport);
+        s.backend.frames.resize(s.viewport);
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_distance(CadSession handle, float* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        *out = s.camera.distance();
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_set_preset(CadSession handle, int32_t preset) {
+    return withSession(handle, [&](Session& s) {
+        if (preset < 0 || preset > 2) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "Unknown navigation preset.");
+        }
+        s.camera.setPreset(static_cast<cad::render::NavigationPreset>(preset));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_camera_drag_for(CadSession handle, int32_t button, int32_t shift, int32_t ctrl,
+                              int32_t* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        *out = static_cast<int32_t>(s.camera.dragFor(button, shift != 0, ctrl != 0));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_set_highlight(CadSession handle, const char* name, int32_t highlight) {
+    return withSession(handle, [&](Session& s) {
+        if (name == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing element name.");
+        if (highlight < 0 || highlight > 3) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "Unknown highlight kind.");
+        }
+        const ElementName parsed = ElementName::parse(name);
+        if (parsed.isNull()) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "That is not a valid element name.");
+        }
+        s.scene->setHighlight(parsed, static_cast<cad::render::Highlight>(highlight));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_clear_highlights(CadSession handle) {
+    return withSession(handle, [&](Session& s) {
+        s.scene->clearHighlights();
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_scene_set_next_hit(CadSession handle, uint32_t instance, uint32_t element,
+                                 int32_t valid) {
+    return withSession(handle, [&](Session& s) {
+        cad::render::IPicker::Hit hit;
+        hit.instance = instance;
+        hit.element = element;
+        hit.valid = valid != 0;
+        s.backend.picker.setNextHit(hit);
+        return CAD_OK;
+    });
+}
+
+const char* cad_scene_pick(CadSession handle, uint32_t x, uint32_t y) {
+    return withSessionStr(handle, [&](Session& s) {
+        const auto hit = s.backend.picker.pick(s.scene->frame(), x, y);
+        if (const auto name = s.scene->resolve(hit)) s.scratch = name->toString();
+    });
+}
+
+CadStatus cad_scene_pick_owner(CadSession handle, uint32_t x, uint32_t y, CadObject* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        const auto hit = s.backend.picker.pick(s.scene->frame(), x, y);
+        const auto owner = s.scene->objectOf(hit.element);
+        if (!owner) return fail(s, CAD_ERR_NOT_DONE, "Nothing under the pointer.");
+        *out = owner->value;
         return CAD_OK;
     });
 }

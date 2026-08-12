@@ -139,10 +139,12 @@ std::shared_ptr<RenderMesh> decode(const std::string& in) {
 }
 
 std::uint64_t cacheKey(const document::Output& output, const TessellationSettings& s) {
-    const kernel::ShapeHash shape = naming::contentHash(output.shape, output.map);
+    // fold64, not lanes[0]. contentHash puts names in lane 0 and geometry in lanes 1-3, so
+    // keying on lane 0 would make two same-named parts of different sizes share a mesh.
+    const std::uint64_t shape = naming::contentHash(output.shape, output.map).fold64();
     // Distinct namespace from cooked feature output, and the blob version participates so a
     // format change cannot resurrect an unreadable blob.
-    return shape.lanes[0] ^ s.digest() ^ (0x6d657368ULL * (kMeshBlobVersion + 1));
+    return shape ^ s.digest() ^ (0x6d657368ULL * (kMeshBlobVersion + 1));
 }
 
 }  // namespace

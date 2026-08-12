@@ -253,3 +253,31 @@ fn a_filleted_part_tessellates_with_named_elements() {
         assert!(!s.mesh_element_name(f, slot).is_empty());
     }
 }
+
+/// Resizing the SAME object must produce a different mesh.
+///
+/// Regression test for a real bug: the mesh key was `contentHash.lanes[0]`, and
+/// `naming::contentHash` puts element names in lane 0 with geometry in lanes 1-3. Same object
+/// means same face names, so a resized box hashed identically and the cache served the mesh for
+/// its OLD size — the part would render at the wrong dimensions with no error anywhere. Fixed by
+/// keying on `ShapeHash::fold64()`, which covers all four lanes.
+#[test]
+fn resizing_the_same_object_changes_its_mesh() {
+    let width = |m: &MeshInfo| m.bounds_max[0] - m.bounds_min[0];
+
+    let mut s = session();
+    let b = s.add_box(20.0, 20.0, 20.0).unwrap();
+    recompute_ok(&mut s);
+    let small = s.tessellate(b, 0.05, 0.35).unwrap();
+    assert!((width(&small) - 20.0).abs() < 1e-3);
+
+    s.set_length(b, "dx", 200.0).unwrap();
+    recompute_ok(&mut s);
+    let large = s.tessellate(b, 0.05, 0.35).unwrap();
+
+    assert!(
+        (width(&large) - 200.0).abs() < 1e-3,
+        "the resized box must measure 200mm, got {} — the cache served a stale mesh",
+        width(&large)
+    );
+}

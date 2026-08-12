@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 3
+#define CAD_ABI_VERSION_MINOR 4
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -287,6 +287,69 @@ CAD_API const char* cad_mesh_element_name(CadSession, CadObject, uint32_t slot);
  * tessellate ONCE. */
 CAD_API CadStatus cad_mesh_cache_stats(CadSession, uint64_t* out_hits, uint64_t* out_misses);
 CAD_API CadStatus cad_mesh_cache_reset_stats(CadSession);
+
+/* --- scene assembly (M3.2) ---
+ *
+ * The session owns a SceneBuilder over a NullBackend. That is what makes the scene layer
+ * testable with no GPU: the interesting bugs here are wrong instance counts, uploads that
+ * should have deduped, and element slots that map to the wrong name — none of which need a
+ * rasteriser to catch.
+ */
+
+/* Adds a placement of an object. `transform` is a column-major 4x3 affine, or NULL for
+ * identity. Many placements of one object is the normal case in an assembly. */
+CAD_API CadStatus cad_scene_add_placement(CadSession, CadObject, const float* transform12);
+CAD_API CadStatus cad_scene_clear_placements(CadSession);
+
+/* Rebuilds batches if anything changed. Idempotent and cheap when nothing has. */
+CAD_API CadStatus cad_scene_update(CadSession, double deflection, double angular_deflection);
+
+/* Submits one frame to the backend. */
+CAD_API CadStatus cad_scene_submit(CadSession);
+
+typedef struct {
+    uint64_t rebuilds;        /* times update() did real work */
+    uint64_t uploads;         /* buffer uploads issued by the scene layer */
+    uint64_t gpu_uploads;     /* uploads the backend actually transferred */
+    uint64_t gpu_deduped;     /* uploads collapsed onto an existing content hash */
+    uint64_t unique_meshes;
+    uint64_t instances;
+    uint64_t element_slots;
+    uint64_t draw_calls;      /* from the last submitted frame */
+    uint64_t frame_instances;
+    uint64_t frame_triangles;
+    uint64_t frames;
+    uint64_t highlighted;
+    int32_t  orthographic;
+} CadSceneStats;
+
+CAD_API CadStatus cad_scene_stats(CadSession, CadSceneStats* out);
+CAD_API CadStatus cad_scene_reset_stats(CadSession);
+
+/* Camera. Mirrors CameraController so a shell never reimplements navigation. */
+CAD_API CadStatus cad_camera_orbit(CadSession, float dx, float dy);
+CAD_API CadStatus cad_camera_pan(CadSession, float dx, float dy);
+CAD_API CadStatus cad_camera_zoom(CadSession, float ticks);
+CAD_API CadStatus cad_camera_fit(CadSession);
+CAD_API CadStatus cad_camera_set_orthographic(CadSession, int32_t ortho);
+CAD_API CadStatus cad_camera_set_viewport(CadSession, uint32_t width, uint32_t height);
+CAD_API CadStatus cad_camera_distance(CadSession, float* out);
+
+/* Gesture mapping under the active navigation preset. 0=none 1=orbit 2=pan 3=zoom. */
+CAD_API CadStatus cad_camera_set_preset(CadSession, int32_t preset);
+CAD_API CadStatus cad_camera_drag_for(CadSession, int32_t button, int32_t shift, int32_t ctrl,
+                                      int32_t* out_action);
+
+/* Highlighting, by element name. Cheap — one byte, because hover fires on every mouse move. */
+CAD_API CadStatus cad_scene_set_highlight(CadSession, const char* element_name, int32_t highlight);
+CAD_API CadStatus cad_scene_clear_highlights(CadSession);
+
+/* Picking. Scripts the null picker's next answer, then resolves it the way a real pick would:
+ * (instance, slot) -> ElementName. What is under test is OUR mapping, not the GPU's. */
+CAD_API CadStatus cad_scene_set_next_hit(CadSession, uint32_t instance, uint32_t element,
+                                         int32_t valid);
+CAD_API const char* cad_scene_pick(CadSession, uint32_t x, uint32_t y);
+CAD_API CadStatus cad_scene_pick_owner(CadSession, uint32_t x, uint32_t y, CadObject* out);
 
 /* --- units, exposed so bindings do not reimplement parsing --- */
 CAD_API CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);
