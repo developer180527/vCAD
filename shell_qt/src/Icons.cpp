@@ -1,5 +1,6 @@
 #include "Icons.h"
 
+#include <QGuiApplication>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -47,7 +48,15 @@ void drawArrow(QPainter& g, int s, bool clockwise) {
 }  // namespace
 
 QIcon icon(const QString& name, int size) {
-    QPixmap pm(size, size);
+    // Allocate in DEVICE pixels, then tell Qt the ratio so it treats the pixmap as `size`
+    // logical points. Allocating `size x size` on a 2x display gives Qt half the pixels it
+    // needs and it upscales — which is exactly what "the buttons look blurry" was.
+    //
+    // The painter still works in logical coordinates after setDevicePixelRatio, so every
+    // draw* helper below is unchanged; they just land on a finer grid.
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    QPixmap pm(QSize(size, size) * dpr);
+    pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
     QPainter g(&pm);
     g.setRenderHint(QPainter::Antialiasing, true);
