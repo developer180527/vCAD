@@ -211,8 +211,10 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
 
             Instance inst;
             std::copy(p.transform, p.transform + 12, inst.transform);
-            std::copy(p.colour, p.colour + 4, inst.colour);
-            inst.elementBase = static_cast<std::uint32_t>(elementTable_.size());
+            // Placement colour is RGBA8 for compactness in the document; instance data must be
+            // floats because bgfx hands the slot to the shader as a vec4. See Instance.
+            for (int c = 0; c < 3; ++c) inst.colour[c] = float(p.colour[c]) / 255.0f;
+            inst.elementBase = static_cast<float>(elementTable_.size());
 
             // Each placement gets its OWN slice of the element table, even though it shares a
             // mesh. That is what lets 50,000 identical bolts each resolve to their own faces.

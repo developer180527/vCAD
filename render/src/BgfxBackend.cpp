@@ -219,7 +219,8 @@ struct BgfxBackend::Impl {
     // Offscreen / pick targets.
     bgfx::FrameBufferHandle colourFb = BGFX_INVALID_HANDLE;
     bgfx::FrameBufferHandle pickFb = BGFX_INVALID_HANDLE;
-    bgfx::TextureHandle pickReadback = BGFX_INVALID_HANDLE;
+    bgfx::TextureHandle pickTarget = BGFX_INVALID_HANDLE;    ///< the RT the pick pass writes
+    bgfx::TextureHandle pickReadback = BGFX_INVALID_HANDLE;  ///< BLIT_DST|READ_BACK copy
     bgfx::TextureHandle colourReadback = BGFX_INVALID_HANDLE;
 
     IFrameSink::Stats stats;
@@ -327,8 +328,9 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
             const auto* vb = impl_.resources.find(batch.vertices);
             if (vb == nullptr) continue;
 
-            const float colour[4]{batch.colour[0] / 255.0f, batch.colour[1] / 255.0f,
-                                  batch.colour[2] / 255.0f, 1.0f};
+            const float colour[4]{float(batch.colour[0]) / 255.0f,
+                                  float(batch.colour[1]) / 255.0f,
+                                  float(batch.colour[2]) / 255.0f, 1.0f};
             bgfx::setUniform(impl_.uEdgeColor, colour);
 
             const std::uint32_t stride = sizeof(Instance);
@@ -462,6 +464,12 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
                      "window, or set rendererName=\"noop\" for validation only."};
     }
 
+    // Single-threaded when asked. Calling renderFrame() BEFORE init is bgfx's documented way to
+    // opt out of the render thread. Worth it for headless tools: it removes an entire class of
+    // deadlock between the submitting thread and a render thread waiting on a drawable, and it
+    // makes a hang a stack trace you can read rather than two threads blaming each other.
+    if (config.singleThreaded) bgfx::renderFrame();
+
     bgfx::Init init;
     init.type = bgfx::RendererType::Count;      // let bgfx choose
     if (config.rendererName == "noop") init.type = bgfx::RendererType::Noop;
@@ -548,7 +556,14 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
             w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
         bgfx::TextureHandle attachments[]{ids, depth};
         impl_->pickFb = bgfx::createFrameBuffer(2, attachments, true);
-        impl_->pickReadback = ids;
+        impl_->pickTarget = ids;
+
+        // A SEPARATE readback texture, blitted into. readTexture requires BGFX_TEXTURE_READ_BACK,
+        // which a render target does not have — reading the RT directly asserts inside bgfx
+        // rather than returning an error.
+        impl_->pickReadback = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
     }
     return {};
 }
@@ -572,6 +587,7 @@ void BgfxBackend::shutdown() {
     drop(impl_->colourFb);
     drop(impl_->pickFb);
     drop(impl_->colourReadback);
+    drop(impl_->pickReadback);
     impl_->resources.releaseAll();
     bgfx::shutdown();
     impl_->initialised = false;

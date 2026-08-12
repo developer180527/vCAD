@@ -28,12 +28,18 @@
 using namespace cad;
 
 int main(int argc, char** argv) {
+    // Unbuffered stdout. Diagnostics that vanish when the process hangs are worse than no
+    // diagnostics: a block-buffered pipe swallowed every printf below and the run looked like
+    // it had produced nothing at all, when in fact it had produced everything and then hung.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     const bool noop = argc > 1 && std::string(argv[1]) == "--noop";
 
     render::BgfxConfig config;
     config.viewport.width = 512;
     config.viewport.height = 384;
     config.offscreen = true;
+    config.singleThreaded = true;   // headless: no render thread, so a hang is debuggable
     if (noop) config.rendererName = "noop";
 
     // A HIDDEN window. Offscreen does not mean windowless: bgfx cannot create a Metal device on

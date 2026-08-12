@@ -54,37 +54,35 @@ struct Camera {
 /// per-element, not per-object, because a user selects a face and not a part.
 enum class Highlight : std::uint8_t { None = 0, Hovered, Selected, Error };
 
-/// One placement of a mesh. 64 bytes.
+/// One placement of a mesh. 64 bytes, and every field is a FLOAT for a reason.
 ///
-/// The size is a per-frame bandwidth decision AND a hard API constraint:
-///   * 4x3 affine transform, not Mat4. The fourth row of a CAD placement is always
-///     (0,0,0,1); storing it would cost 16 MB per million instances to say nothing.
-///   * packed RGBA8 colour, not four floats.
-///   * **bgfx requires instance data stride to be a multiple of 16 bytes.** An earlier draft
-///     was 56 and would simply not have uploaded. Padding to 64 is not optional, so the spare
-///     space is spent on something needed rather than left as filler.
+/// bgfx instance data is delivered to the shader as `vec4`s — always. An earlier version packed
+/// an RGBA8 colour and two `uint32`s into the last 16 bytes, which is tighter and completely
+/// wrong: the shader reads that slot as `vec4`, so the packed colour bytes and the integer bit
+/// patterns arrive reinterpreted as floats. The result is garbage colours and garbage element
+/// ids — geometry in the right place, nonsense everywhere else, and nothing to indicate why.
+///
+/// Since bgfx also requires the stride to be a multiple of 16, packing bought nothing anyway:
+/// 12 + 3 + 1 floats is exactly 64 bytes either way.
+///
+/// `elementBase` as a float is safe: float32 represents integers exactly up to 2^24, which is
+/// 16.7M element slots — far beyond any assembly we intend to load.
 struct Instance {
-    float transform[12];              ///< column-major 4x3
-    std::uint8_t colour[4]{191, 194, 199, 255};
+    float transform[12];              ///< column-major 4x3 -> i_data0..2
 
-    /// Where this instance's element names start in the frame's element table.
+    /// -> i_data3.xyz. Linear 0..1.
+    float colour[3]{0.75f, 0.76f, 0.78f};
+
+    /// -> i_data3.w. Where this instance's element names start in the frame's element table.
     ///
-    /// This exists because dedupe means one mesh is shared by many parts: 50,000 identical
-    /// bolts are one mesh, and that mesh cannot carry 50,000 sets of element names. The mesh
-    /// stores element SLOTS; the instance stores its base. A GPU pick returns
-    /// (instance, slot) and resolves through this.
-    std::uint32_t elementBase = 0;
-
-    /// Index of this instance within its batch. Needed by the pick shader: the element index
-    /// arrives as a vertex attribute, but the *instance* has to come from instance data, and
-    /// without both an id-buffer pick cannot tell which of 50,000 identical bolts was clicked.
-    std::uint32_t instanceId = 0;
-
-    std::uint32_t reserved = 0;        ///< pad to the 16-byte stride bgfx requires
+    /// Dedupe means one mesh is shared by many parts: 50,000 identical bolts are one mesh, and
+    /// that mesh cannot carry 50,000 sets of element names. The mesh stores element SLOTS; the
+    /// instance stores its base. The pick shader adds the two to get an absolute slot, which is
+    /// why no separate instance id is needed.
+    float elementBase = 0.0f;
 };
-// Asserted because I have got this wrong twice: once with a speculative `flags` field that made
-// the size 60 while the comment claimed 56, and once at 56 — which reads fine and is rejected
-// outright by bgfx's instance-stride rule.
+// Asserted because this has been wrong twice: once at 60 bytes with a speculative field, and
+// once at 56 — which reads fine and is rejected outright by bgfx's stride rule.
 static_assert(sizeof(Instance) == 64, "bgfx instance data stride must be a multiple of 16");
 
 /// One draw call, instanced across every part that uses this mesh.
@@ -201,8 +199,11 @@ public:
     virtual ~IPicker() = default;
 
     struct Hit {
-        std::uint32_t instance = 0;    ///< index into the batch's instance span
-        std::uint32_t element = 0;     ///< absolute slot: instance.elementBase + local
+        /// Not filled by the GPU picker: the id buffer encodes the ABSOLUTE element slot
+        /// (elementBase + local), which is all `SceneBuilder::resolve` needs. Kept for the null
+        /// picker and for a future backend that can report it cheaply.
+        std::uint32_t instance = 0;
+        std::uint32_t element = 0;     ///< absolute slot: elementBase + local element
         float depth = 1.0f;
         bool valid = false;
     };

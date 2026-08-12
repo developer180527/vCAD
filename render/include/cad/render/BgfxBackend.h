@@ -14,9 +14,10 @@
 // name. Offscreen means "draw into my framebuffer instead of the swap chain", NOT "no window".
 // Use a hidden window; see spikes/bgfx_offscreen.
 //
-// Also: in offscreen mode the BACKBUFFER resolution must be 0x0, or bgfx refuses to init with
-// "resolution of non-existing backbuffer can't be larger than 0x0". Our real resolution lives on
-// the framebuffer we create, not on the swap chain that does not exist.
+// Backbuffer sizing follows the WINDOW, not the offscreen flag: windowless init needs 0x0 (and
+// only ever yields Noop), while a hidden window needs its REAL size even when rendering
+// offscreen — Metal's render thread blocks forever acquiring a drawable from a zero-sized layer,
+// which looks like a hang with no error at all.
 
 #include "cad/kernel/Result.h"
 #include "cad/render/Backend.h"
@@ -49,6 +50,11 @@ struct BgfxConfig {
     /// Ambient floor. CAD models are untextured, so this is most of what stops unlit faces
     /// reading as holes.
     float ambient = 0.35f;
+
+    /// Run bgfx without its render thread. Removes a class of deadlock between the submitting
+    /// thread and a render thread waiting on a drawable, and turns a hang into a readable stack
+    /// trace. Recommended for headless and offscreen use; a real viewport wants the thread.
+    bool singleThreaded = false;
 };
 
 /// Owns the bgfx context. One per process — bgfx is a singleton, which is a real constraint
