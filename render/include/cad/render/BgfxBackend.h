@@ -51,10 +51,6 @@ struct BgfxConfig {
     /// reading as holes.
     float ambient = 0.35f;
 
-    /// Run bgfx without its render thread. Removes a class of deadlock between the submitting
-    /// thread and a render thread waiting on a drawable, and turns a hang into a readable stack
-    /// trace. Recommended for headless and offscreen use; a real viewport wants the thread.
-    bool singleThreaded = false;
 };
 
 /// Owns the bgfx context. One per process — bgfx is a singleton, which is a real constraint

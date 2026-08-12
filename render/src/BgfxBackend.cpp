@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -78,6 +79,65 @@ bgfx::ShaderHandle loadShader(const std::string& name) {
     if (bgfx::isValid(h)) bgfx::setName(h, name.c_str());
     return h;
 }
+
+/// bgfx callback, implemented for one reason: `screenShot`.
+///
+/// Replaces a hand-rolled blit-into-a-READ_BACK-texture-then-readTexture dance. bgfx already has
+/// a documented path for "give me this framebuffer's pixels", its own tools use it, and it
+/// handles the frame timing and the y-flip. Every time in this file that I have preferred my own
+/// version of something bgfx already does, it has been wrong — bx::mtxOrtho, the frame contract,
+/// and this.
+class CaptureCallback final : public bgfx::CallbackI {
+public:
+    void fatal(const char* filePath, std::uint16_t line, bgfx::Fatal::Enum code,
+               const char* str) override {
+        std::fprintf(stderr, "bgfx fatal [%d] %s:%u: %s\n", int(code), filePath, line, str);
+    }
+    void traceVargs(const char*, std::uint16_t, const char*, va_list) override {}
+    void profilerBegin(const char*, std::uint32_t, const char*, std::uint16_t) override {}
+    void profilerBeginLiteral(const char*, std::uint32_t, const char*, std::uint16_t) override {}
+    void profilerEnd() override {}
+    std::uint32_t cacheReadSize(std::uint64_t) override { return 0; }
+    bool cacheRead(std::uint64_t, void*, std::uint32_t) override { return false; }
+    void cacheWrite(std::uint64_t, const void*, std::uint32_t) override {}
+    void captureBegin(std::uint32_t, std::uint32_t, std::uint32_t, bgfx::TextureFormat::Enum,
+                      bool) override {}
+    void captureEnd() override {}
+    void captureFrame(const void*, std::uint32_t) override {}
+
+    void screenShot(const char*, std::uint32_t width, std::uint32_t height, std::uint32_t pitch,
+                    const void* data, std::uint32_t /*size*/, bool yflip) override {
+        // Called on the RENDER thread, so guard it: the requesting thread is pumping frames and
+        // will read this the moment we return.
+        std::lock_guard<std::mutex> lock(mutex_);
+        pixels_.resize(std::size_t(width) * height * 4);
+        const auto* src = static_cast<const std::uint8_t*>(data);
+        for (std::uint32_t y = 0; y < height; ++y) {
+            const std::uint32_t row = yflip ? (height - 1 - y) : y;
+            std::memcpy(pixels_.data() + std::size_t(y) * width * 4, src + std::size_t(row) * pitch,
+                        std::size_t(width) * 4);
+        }
+        width_ = width;
+        height_ = height;
+        ++count_;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> take() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pixels_;
+    }
+    [[nodiscard]] std::size_t count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return count_;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<std::uint8_t> pixels_;
+    std::uint32_t width_ = 0;
+    std::uint32_t height_ = 0;
+    std::size_t count_ = 0;
+};
 
 }  // namespace
 
@@ -204,6 +264,7 @@ private:
 struct BgfxBackend::Impl {
     BgfxConfig config;
     bool initialised = false;
+    CaptureCallback callback;
 
     BgfxResources resources;
 
@@ -221,7 +282,6 @@ struct BgfxBackend::Impl {
     bgfx::FrameBufferHandle pickFb = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle pickTarget = BGFX_INVALID_HANDLE;    ///< the RT the pick pass writes
     bgfx::TextureHandle pickReadback = BGFX_INVALID_HANDLE;  ///< BLIT_DST|READ_BACK copy
-    bgfx::TextureHandle colourReadback = BGFX_INVALID_HANDLE;
 
     IFrameSink::Stats stats;
 
@@ -230,18 +290,17 @@ struct BgfxBackend::Impl {
     std::uint32_t submitBatches(const SceneFrame& frame, bgfx::ViewId view,
                                 bgfx::ProgramHandle program, std::uint64_t state);
 
-    /// End a frame. THE two halves of bgfx's frame contract, together.
+    /// End a frame.
     ///
-    /// In single-threaded mode `bgfx::frame()` only QUEUES work — `bgfx::renderFrame()` is what
-    /// actually executes it. Calling frame() alone advances the frame counter and renders
-    /// nothing, which presents as: draw calls counted, geometry submitted, framebuffer
-    /// untouched, zero lit pixels, no error anywhere. Every frame boundary goes through here so
-    /// the pairing cannot be forgotten in one place and honoured in another.
-    std::uint32_t advanceFrame() {
-        const std::uint32_t number = bgfx::frame();
-        if (config.singleThreaded) bgfx::renderFrame();
-        return number;
-    }
+    /// Just `bgfx::frame()`. An earlier version also called `bgfx::renderFrame()` here, on the
+    /// theory that single-threaded mode splits queue from execute. That is backwards: calling
+    /// renderFrame() before init selects single-threaded mode, and thereafter `frame()` renders
+    /// by itself. The extra call rendered a second, empty frame and then segfaulted.
+    ///
+    /// Single-threaded mode is gone too — it was a speculative fix for a hang whose actual cause
+    /// (a 0x0 backbuffer with a live window) is fixed. Multi-threaded is bgfx's default and
+    /// best-tested path; deviating from it cost two regressions and bought nothing.
+    std::uint32_t advanceFrame() { return bgfx::frame(); }
 };
 
 std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::ViewId view,
@@ -477,12 +536,6 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
                      "window, or set rendererName=\"noop\" for validation only."};
     }
 
-    // Single-threaded when asked. Calling renderFrame() BEFORE init is bgfx's documented way to
-    // opt out of the render thread. Worth it for headless tools: it removes an entire class of
-    // deadlock between the submitting thread and a render thread waiting on a drawable, and it
-    // makes a hang a stack trace you can read rather than two threads blaming each other.
-    if (config.singleThreaded) bgfx::renderFrame();
-
     bgfx::Init init;
     init.type = bgfx::RendererType::Count;      // let bgfx choose
     if (config.rendererName == "noop") init.type = bgfx::RendererType::Noop;
@@ -504,6 +557,7 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     init.resolution.reset = BGFX_RESET_NONE;
     init.platformData.nwh = config.nativeWindow;
     init.platformData.ndt = config.nativeDisplay;
+    init.callback = &impl_->callback;
 
     if (!bgfx::init(init)) {
         return Error{ErrorCode::Internal,
@@ -556,9 +610,6 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
             w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
         bgfx::TextureHandle attachments[]{colour, depth};
         impl_->colourFb = bgfx::createFrameBuffer(2, attachments, true);
-        impl_->colourReadback = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_BLIT_DST
-                | BGFX_TEXTURE_READ_BACK);
     }
 
     if (bgfx::isValid(impl_->pick)) {
@@ -599,7 +650,6 @@ void BgfxBackend::shutdown() {
     drop(impl_->uEdgeColor);
     drop(impl_->colourFb);
     drop(impl_->pickFb);
-    drop(impl_->colourReadback);
     drop(impl_->pickReadback);
     impl_->resources.releaseAll();
     bgfx::shutdown();
@@ -635,20 +685,25 @@ Backend BgfxBackend::handle() noexcept {
 }
 
 kernel::Result<std::vector<std::uint8_t>> BgfxBackend::captureFrame() {
-    if (!ready() || !bgfx::isValid(impl_->colourReadback)) {
+    if (!ready() || !bgfx::isValid(impl_->colourFb)) {
         return Error{ErrorCode::Unsupported,
                      "Frame capture needs the renderer in offscreen mode."};
     }
-    const std::uint32_t w = impl_->config.viewport.width;
-    const std::uint32_t h = impl_->config.viewport.height;
-    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(w) * h * 4);
 
-    bgfx::blit(kViewShaded, impl_->colourReadback, 0, 0,
-               bgfx::getTexture(impl_->colourFb, 0));
-    const std::uint32_t ready = bgfx::readTexture(impl_->colourReadback, pixels.data());
-    for (int guard = 0; impl_->advanceFrame() < ready && guard < 8; ++guard) {
+    const std::size_t before = impl_->callback.count();
+    bgfx::requestScreenShot(impl_->colourFb, "cad-capture");
+
+    // The screenshot arrives via the callback a frame or two later. Pump until it lands, bounded
+    // so a driver that never delivers cannot hang a caller.
+    for (int guard = 0; guard < 8 && impl_->callback.count() == before; ++guard) {
+        impl_->advanceFrame();
     }
-    return pixels;
+    if (impl_->callback.count() == before) {
+        return Error{ErrorCode::Internal,
+                     "The renderer did not deliver a frame capture.",
+                     "requestScreenShot produced no callback within 8 frames"};
+    }
+    return impl_->callback.take();
 }
 
 }  // namespace cad::render

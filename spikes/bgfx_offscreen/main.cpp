@@ -40,7 +40,6 @@ int main(int argc, char** argv) {
     config.viewport.width = 512;
     config.viewport.height = 384;
     config.offscreen = true;
-    config.singleThreaded = true;   // headless: no render thread, so a hang is debuggable
     if (noop) config.rendererName = "noop";
 
     // A HIDDEN window. Offscreen does not mean windowless: bgfx cannot create a Metal device on
