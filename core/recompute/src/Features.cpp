@@ -4,6 +4,7 @@
 #include "cad/kernel/Fillet.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/kernel/Transform.h"
+#include "cad/sketch/Sketch.h"
 #include "cad/io/Format.h"
 
 namespace cad::recompute {
@@ -159,6 +160,93 @@ kernel::Result<Output> computeBoolean(const ComputeContext& ctx) {
     return nameResult(op.value(), ctx.inputs, ctx.namingSerial);
 }
 
+/// A sketch as a document feature.
+///
+/// The sketch itself lives in a TEXT property, serialised by cad::sketch::Sketch. That is why the
+/// document format needed no schema change to store sketches: a sketch is a string as far as
+/// persistence is concerned, and the format already round-trips those exactly (ADR 0003).
+///
+/// The output is the profile FACE, not the wire, because that is what an extrude consumes. A sketch
+/// whose curves do not close therefore fails HERE, with a message about the profile, rather than
+/// inside a modelling operation two features later.
+kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
+    const auto* text = ctx.object.find("sketch");
+    if (text == nullptr) {
+        return Error{ErrorCode::InvalidInput, "This sketch has no geometry yet."};
+    }
+    const auto* serialized = std::get_if<std::string>(text);
+    if (serialized == nullptr) {
+        return Error{ErrorCode::InvalidInput, "'sketch' must be the serialised sketch text."};
+    }
+
+    auto sketch = sketch::Sketch::deserialize(*serialized);
+    if (!sketch) return sketch.error();
+
+    // Solved on every recompute rather than trusting the stored coordinates. The stored positions
+    // are a starting point; the CONSTRAINTS are the definition. If a dimension was edited, this is
+    // where the geometry catches up -- and it is why a sketch is parametric at all.
+    const auto report = sketch.value().solve();
+    if (!report.solved) {
+        return Error{ErrorCode::NotDone, "This sketch could not be solved.", report.message};
+    }
+    if (!report.conflicting.empty()) {
+        return Error{ErrorCode::InvalidInput,
+                     "This sketch is over-constrained.", report.message};
+    }
+
+    auto face = sketch.value().toFace();
+    if (!face) return face.error();
+
+    // nameprimitive, not propagate: a sketch has no input shape to inherit provenance from, exactly
+    // like a Box. Its faces and edges are primitives of this feature.
+    naming::NamingContext naming(ctx.namingSerial, 0);
+    auto map = naming.nameprimitive(face.value(), {});
+    if (!map) return map.error();
+
+    Output out;
+    out.shape = face.value();
+    out.map = std::move(map.value());
+    return out;
+}
+
+/// Extrude: a profile swept into a solid.
+///
+/// Takes its direction from the sketch's PLANE normal rather than a user-supplied vector. An
+/// extrude perpendicular to its profile is what the command means in every CAD application, and
+/// letting the two disagree produces a sheared solid nobody asked for.
+kernel::Result<Output> computeExtrude(const ComputeContext& ctx) {
+    if (ctx.inputs.size() != 1) {
+        return Error{ErrorCode::InvalidInput, "An extrude needs exactly one profile."};
+    }
+    auto distance = require<Length>(ctx.object, "distance");
+    if (!distance) return distance.error();
+    if (distance.value().base() == 0.0) {
+        return Error{ErrorCode::InvalidInput, "An extrude needs a non-zero distance."};
+    }
+
+    // The plane is recorded on the extrude so it does not have to re-parse the sketch text. Defaults
+    // to XY, which matches Sketch's own default.
+    std::int64_t plane = 0;
+    if (const auto* stored = ctx.object.find("plane")) {
+        if (const auto* v = std::get_if<std::int64_t>(stored)) plane = *v;
+    }
+    const double d = distance.value().base();
+    double dx = 0.0;
+    double dy = 0.0;
+    double dz = d;
+    if (plane == 1) {        // XZ: the sketch spans x and z, so it grows along y
+        dy = d;
+        dz = 0.0;
+    } else if (plane == 2) { // YZ
+        dx = d;
+        dz = 0.0;
+    }
+
+    auto op = kernel::extrude(ctx.inputs[0]->shape, dx, dy, dz);
+    if (!op) return op.error();
+    return nameResult(op.value(), ctx.inputs, ctx.namingSerial);
+}
+
 kernel::Result<Output> computeTranslate(const ComputeContext& ctx) {
     if (ctx.inputs.size() != 1) {
         return Error{ErrorCode::InvalidInput, "A move needs exactly one input shape."};
@@ -220,6 +308,8 @@ FeatureRegistry FeatureRegistry::builtins() {
     r.add({"Cut", 1, computeBoolean<&kernel::booleanCut>});
     r.add({"Fuse", 1, computeBoolean<&kernel::booleanFuse>});
     r.add({"Common", 1, computeBoolean<&kernel::booleanCommon>});
+    r.add({"Sketch", 1, computeSketch});
+    r.add({"Extrude", 1, computeExtrude});
     r.add({"Translate", 1, computeTranslate});
     r.add({"Import", 1, computeImport});
     return r;

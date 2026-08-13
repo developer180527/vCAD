@@ -307,3 +307,109 @@ fn exporting_an_empty_sketch_is_refused() {
     assert!(!err.message.is_empty());
     assert!(!path.exists(), "a file was left behind by a refused export");
 }
+
+
+/// The whole point of a sketcher: a constrained profile becomes a solid, and editing the
+/// CONSTRAINT changes the solid. This is the first test in the suite where a dimension drives
+/// geometry through the full stack -- solver, document, kernel.
+#[test]
+fn sketch_feature_extrudes_to_a_solid() {
+    let mut s = session();
+
+    // A 40 x 25 rectangle, closed and fully constrained.
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+    let bottom = s.add_line(sk, (0.0, 0.0), (40.0, 0.0)).unwrap();
+    let right = s.add_line(sk, (40.0, 0.0), (40.0, 25.0)).unwrap();
+    let top = s.add_line(sk, (40.0, 25.0), (0.0, 25.0)).unwrap();
+    let left = s.add_line(sk, (0.0, 25.0), (0.0, 0.0)).unwrap();
+    for (a, b) in [(bottom, right), (right, top), (top, left), (left, bottom)] {
+        s.constrain(sk, Con::Coincident(a, Pt::End, b, Pt::Start)).unwrap();
+    }
+    s.constrain(sk, Con::Horizontal(bottom)).unwrap();
+    s.constrain(sk, Con::Horizontal(top)).unwrap();
+    s.constrain(sk, Con::Vertical(right)).unwrap();
+    s.constrain(sk, Con::Vertical(left)).unwrap();
+    s.constrain(sk, Con::LockX(bottom, Pt::Start, 0.0)).unwrap();
+    s.constrain(sk, Con::LockY(bottom, Pt::Start, 0.0)).unwrap();
+    s.constrain(sk, Con::Distance(bottom, Pt::Start, bottom, Pt::End, 40.0)).unwrap();
+    s.constrain(sk, Con::Distance(right, Pt::Start, right, Pt::End, 25.0)).unwrap();
+    assert_eq!(s.solve(sk).unwrap().dofs, 0);
+
+    let text = s.sketch_text(sk);
+    let profile = s.add_sketch_feature(&text).unwrap();
+    let solid = s.add_extrude(profile, 10.0, Plane::Xy).unwrap();
+    recompute_ok(&mut s);
+
+    assert_eq!(s.state(solid).unwrap(), State::Clean, "{}", s.object_error(solid));
+    assert!(s.is_valid_shape(solid).unwrap());
+    // 40 x 25 x 10.
+    let volume = s.volume(solid).unwrap();
+    assert!((volume - 10_000.0).abs() < 1e-6, "volume {volume} should be 10000");
+    assert_eq!(s.face_count(solid).unwrap(), 6, "a rectangular prism has six faces");
+}
+
+/// Editing a DIMENSION in the sketch must change the solid. Without this, the pipeline is a
+/// one-way import rather than a parametric model.
+#[test]
+fn editing_a_sketch_dimension_changes_the_solid() {
+    let mut s = session();
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+    let bottom = s.add_line(sk, (0.0, 0.0), (40.0, 0.0)).unwrap();
+    let right = s.add_line(sk, (40.0, 0.0), (40.0, 25.0)).unwrap();
+    let top = s.add_line(sk, (40.0, 25.0), (0.0, 25.0)).unwrap();
+    let left = s.add_line(sk, (0.0, 25.0), (0.0, 0.0)).unwrap();
+    for (a, b) in [(bottom, right), (right, top), (top, left), (left, bottom)] {
+        s.constrain(sk, Con::Coincident(a, Pt::End, b, Pt::Start)).unwrap();
+    }
+    s.constrain(sk, Con::Horizontal(bottom)).unwrap();
+    s.constrain(sk, Con::Horizontal(top)).unwrap();
+    s.constrain(sk, Con::Vertical(right)).unwrap();
+    s.constrain(sk, Con::Vertical(left)).unwrap();
+    s.constrain(sk, Con::LockX(bottom, Pt::Start, 0.0)).unwrap();
+    s.constrain(sk, Con::LockY(bottom, Pt::Start, 0.0)).unwrap();
+    s.constrain(sk, Con::Distance(bottom, Pt::Start, bottom, Pt::End, 40.0)).unwrap();
+    s.constrain(sk, Con::Distance(right, Pt::Start, right, Pt::End, 25.0)).unwrap();
+    s.solve(sk).unwrap();
+
+    let profile = s.add_sketch_feature(&s.sketch_text(sk)).unwrap();
+    let solid = s.add_extrude(profile, 10.0, Plane::Xy).unwrap();
+    recompute_ok(&mut s);
+    let before = s.volume(solid).unwrap();
+
+    // Widen the rectangle to 80 by editing the sketch's own constraint, then re-store the text.
+    // Deliberately NOT by moving coordinates: the constraint is the definition, and the solver has
+    // to produce the new geometry from it.
+    let wider = s.new_sketch(Plane::Xy).unwrap();
+    let _ = wider; // the edit path below goes through the stored text, as the UI will
+    let text = s.sketch_text(sk).replace("distance 0 0 0 1 40", "distance 0 0 0 1 80");
+    assert!(text.contains("80"), "the dimension edit did not apply to the text");
+    s.set_text(profile, "sketch", &text).unwrap();
+    recompute_ok(&mut s);
+
+    let after = s.volume(solid).unwrap();
+    assert!(
+        (after - before * 2.0).abs() < 1e-6,
+        "doubling the width should double the volume: {before} -> {after}"
+    );
+}
+
+/// An unclosed profile must fail at the SKETCH, naming the profile — not deep inside the extrude.
+#[test]
+fn an_open_profile_fails_at_the_sketch_feature() {
+    let mut s = session();
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+    let _ = s.add_line(sk, (0.0, 0.0), (10.0, 0.0)).unwrap();
+    let _ = s.add_line(sk, (10.0, 0.0), (10.0, 10.0)).unwrap();
+    s.solve(sk).unwrap();
+
+    let profile = s.add_sketch_feature(&s.sketch_text(sk)).unwrap();
+    let solid = s.add_extrude(profile, 5.0, Plane::Xy).unwrap();
+    // recompute reports failure rather than erroring: partial failure is the engine's contract.
+    let _ = s.recompute();
+
+    assert_eq!(s.state(profile).unwrap(), State::Failed, "an open profile was accepted");
+    let message = s.object_error(profile);
+    assert!(message.contains("profile") || message.contains("open"), "unhelpful: {message}");
+    // The extrude is blocked by its failed input rather than failing on its own terms.
+    assert_eq!(s.state(solid).unwrap(), State::Blocked);
+}

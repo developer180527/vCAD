@@ -973,6 +973,24 @@ impl Session {
         Ok(o)
     }
 
+    /// A sketch as a document feature. The sketch lives in a Text property, which is why
+    /// persistence needed no schema change to store one.
+    pub fn add_sketch_feature(&mut self, text: &str) -> Result<Object> {
+        let o = self.add("Sketch")?;
+        self.set_text(o, "sketch", text)?;
+        Ok(o)
+    }
+
+    /// Extrude a sketch feature into a solid. `plane` must match the sketch's own, since the
+    /// direction is the plane normal.
+    pub fn add_extrude(&mut self, profile: Object, distance: f64, plane: Plane) -> Result<Object> {
+        let o = self.add("Extrude")?;
+        self.set_input(o, "a_profile", profile)?;
+        self.set_length(o, "distance", distance)?;
+        self.set_int(o, "plane", plane as i64)?;
+        Ok(o)
+    }
+
     pub fn add_fillet(&mut self, base: Object, edge: &str, radius: f64) -> Result<Object> {
         let o = self.add("Fillet")?;
         self.set_input(o, "base", base)?;

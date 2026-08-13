@@ -7,10 +7,12 @@ add_subdirectory(naming)
 add_subdirectory(units)
 add_subdirectory(document)
 add_subdirectory(io)
-add_subdirectory(recompute)
 
 # Sketch: 2D constraint solving, on planegcs (modules/planegcs).
 add_subdirectory(sketch)
+
+# After sketch: the Sketch feature computes through the solver.
+add_subdirectory(recompute)
 # add_subdirectory(features)
 
 add_library(cad_core INTERFACE)
