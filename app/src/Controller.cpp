@@ -91,6 +91,15 @@ void Controller::clearSelection() {
     notifyDocument();
 }
 
+void Controller::setPreferences(const Preferences& next) {
+    preferences_ = next;
+    // Pushed into the camera here rather than read by it: the camera is below app/ and must not
+    // depend on a preferences type it cannot see.
+    camera_.setPreset(preferences_.navigation);
+    notifyDocument();   // property rows are formatted in the new units
+    notifyView();
+}
+
 void Controller::rename(ObjectId id, const std::string& label) {
     const auto object = history_.current().find(id);
     if (!object || label.empty() || object->label() == label) return;
@@ -206,7 +215,7 @@ std::vector<Controller::PropertyRow> Controller::properties(ObjectId id) const {
         // Formatted for a human, units included. The shell must not have to know that a Length
         // is stored in millimetres.
         if (const auto* length = std::get_if<units::Length>(&p.value)) {
-            row.value = units::format(*length, units::UnitSystem::Millimetre);
+            row.value = units::format(*length, preferences_.displayUnits);
         } else if (const auto* angle = std::get_if<units::Angle>(&p.value)) {
             row.value = units::format(*angle);
         } else {
@@ -231,7 +240,9 @@ bool Controller::setProperty(ObjectId id, const std::string& name, const std::st
     document::PropertyValue value;
     switch (document::typeOf(*existing)) {
         case document::PropertyType::Length: {
-            auto parsed = units::parseLength(text, units::UnitSystem::Millimetre);
+            // A bare number is read in the DISPLAY units, so what you type back matches what you
+        // just read. Typing "2" into a field showing inches must mean two inches.
+        auto parsed = units::parseLength(text, preferences_.displayUnits);
             if (!parsed) {
                 status(parsed.error().message);   // "'10 furlongs' is not a unit I recognise."
                 return false;
@@ -553,21 +564,21 @@ bool Controller::beginCommand(const std::string& id) {
         }
         commandParameters_.push_back(
             {"distance", "Distance", CommandParameter::Kind::Length,
-             units::format(units::millimetres(10.0), units::UnitSystem::Millimetre)});
+             units::format(units::millimetres(10.0), preferences_.displayUnits)});
     } else if (id == "feature.box") {
         for (const auto& [name, label, mm] : {std::tuple{"dx", "Length", 100.0},
                                               std::tuple{"dy", "Width", 60.0},
                                               std::tuple{"dz", "Height", 40.0}}) {
             commandParameters_.push_back(
                 {name, label, CommandParameter::Kind::Length,
-                 units::format(units::millimetres(mm), units::UnitSystem::Millimetre)});
+                 units::format(units::millimetres(mm), preferences_.displayUnits)});
         }
     } else if (id == "feature.cylinder") {
         for (const auto& [name, label, mm] : {std::tuple{"radius", "Radius", 25.0},
                                               std::tuple{"height", "Height", 80.0}}) {
             commandParameters_.push_back(
                 {name, label, CommandParameter::Kind::Length,
-                 units::format(units::millimetres(mm), units::UnitSystem::Millimetre)});
+                 units::format(units::millimetres(mm), preferences_.displayUnits)});
         }
     } else {
         return false;   // no parameters: the shell invokes it directly, as before
@@ -585,7 +596,9 @@ bool Controller::setCommandParameter(const std::string& name, const std::string&
         // Validated by PARSING it, not by pattern-matching the text: the unit grammar lives in one
         // place and this must accept exactly what a property field accepts, including "2 in".
         if (p.kind == CommandParameter::Kind::Length) {
-            const auto parsed = units::parseLength(text, units::UnitSystem::Millimetre);
+            const // A bare number is read in the DISPLAY units, so what you type back matches what you
+        // just read. Typing "2" into a field showing inches must mean two inches.
+        auto parsed = units::parseLength(text, preferences_.displayUnits);
             if (!parsed) {
                 // The old value is kept. A field that blanks itself on a typo loses work the user
                 // has already done in the other fields.
@@ -607,7 +620,7 @@ bool Controller::commitCommand() {
     const auto lengthOf = [this](const char* name) -> double {
         for (const auto& p : commandParameters_) {
             if (p.name != name) continue;
-            if (const auto parsed = units::parseLength(p.value, units::UnitSystem::Millimetre)) {
+            if (const auto parsed = units::parseLength(p.value, preferences_.displayUnits)) {
                 return parsed.value().base();
             }
         }

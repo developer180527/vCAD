@@ -16,6 +16,7 @@
 #include "cad/render/NullBackend.h"
 #include "cad/render/Scene.h"
 #include "cad/sketch/Sketch.h"
+#include "cad/units/Units.h"
 
 #include <functional>
 #include <optional>
@@ -83,6 +84,30 @@ struct CommandParameter {
     std::string value;     ///< current text, already formatted with units
 };
 
+/// User preferences that change how the application behaves, not what the model is.
+///
+/// In `app/` rather than the shell because every one of these is consumed BELOW the shell: display
+/// units decide how Controller formats a property, the navigation preset is read by the camera, and
+/// the sketch tolerances are passed to inference. A shell that owned them would have to push each
+/// one down on every change, and the iPad shell would have to do it again.
+///
+/// Deliberately NOT part of the document. A colleague opening your file should get their own units
+/// and their own mouse, not yours.
+struct Preferences {
+    /// How lengths are SHOWN and how a bare number is READ. Storage is always millimetres; this
+    /// never changes what is in the file.
+    units::UnitSystem displayUnits = units::UnitSystem::Millimetre;
+
+    /// Which mouse button orbits. The single most personal setting in any CAD application, and the
+    /// first thing someone changes when the app does not match the one they came from.
+    render::NavigationPreset navigation = render::NavigationPreset::Cad;
+
+    /// Sketch constraint inference, in document units and degrees. Exposed because the right value
+    /// depends on the drawings a user actually receives — see Infer.h on why guessing is unsafe.
+    double snapTolerance = 0.01;
+    double angleTolerance = 0.5;
+};
+
 /// The application. One per open document.
 class Controller {
 public:
@@ -113,6 +138,11 @@ public:
     [[nodiscard]] const std::vector<document::ObjectId>& selection() const noexcept {
         return selection_;
     }
+
+    [[nodiscard]] const Preferences& preferences() const noexcept { return preferences_; }
+    /// Applies preferences and notifies. Everything derived from them — property formatting, the
+    /// camera's gesture mapping — updates from this one call rather than each shell remembering.
+    void setPreferences(const Preferences&);
 
     /// Renames a feature. Cosmetic to the geometry, but NOT to the file: labels are saved, and
     /// Controller::saveDigest folds them in so a rename marks the document modified.
@@ -371,6 +401,7 @@ private:
     sketch::SolveReport lastSketchSolve_;
     std::vector<sketch::GeoId> sketchSelection_;
 
+    Preferences preferences_;
     std::string activeCommand_;
     std::vector<CommandParameter> commandParameters_;
 

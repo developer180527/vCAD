@@ -12,6 +12,10 @@
 #include <QButtonGroup>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <algorithm>
 #include <set>
@@ -240,6 +244,9 @@ void MainWindow::buildTopArea() {
                          [this] { saveDocument(true); });
     fileMenu_->addSeparator();
     fileMenu_->addAction(tr("Home"), this, [this] { session_.activateHome(); });
+    fileMenu_->addSeparator();
+    fileMenu_->addAction(tr("Options..."), QKeySequence::Preferences, this,
+                         [this] { showOptions(); });
     fileMenu_->addSeparator();
     fileMenu_->addAction(tr("Exit"), QKeySequence::Quit, this, &QWidget::close);
 }
@@ -1112,6 +1119,74 @@ void MainWindow::buildStatusBar() {
 }
 
 // ── refresh ─────────────────────────────────────────────────────────────────────────────
+
+void MainWindow::showOptions() {
+    auto* c = controller();
+    if (c == nullptr) {
+        statusMessage_->setText(tr("Open a document to change options"));
+        return;
+    }
+    const auto current = c->preferences();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Options"));
+    auto* form = new QFormLayout(&dialog);
+
+    auto* units = new QComboBox(&dialog);
+    // Order matches units::UnitSystem so the index IS the enum value. Kept adjacent to the enum
+    // rather than mapped, because a mapping table is one more thing to forget to update.
+    units->addItems({tr("Millimetres"), tr("Centimetres"), tr("Metres"), tr("Inches"), tr("Feet")});
+    units->setCurrentIndex(static_cast<int>(current.displayUnits));
+    form->addRow(tr("Display units"), units);
+
+    auto* navigation = new QComboBox(&dialog);
+    navigation->addItems({tr("CAD (middle drag orbits)"), tr("Fusion (middle drag pans)"),
+                          tr("Blender")});
+    navigation->setCurrentIndex(static_cast<int>(current.navigation));
+    navigation->setToolTip(tr("Which mouse button orbits. Match whichever application you came "
+                              "from — this is muscle memory, not preference."));
+    form->addRow(tr("Navigation"), navigation);
+
+    auto* snap = new QDoubleSpinBox(&dialog);
+    snap->setRange(0.0001, 100.0);
+    snap->setDecimals(4);
+    snap->setValue(current.snapTolerance);
+    snap->setToolTip(tr("Endpoints closer than this are treated as one point when inferring "
+                        "constraints from an imported file."));
+    form->addRow(tr("Snap tolerance"), snap);
+
+    auto* angle = new QDoubleSpinBox(&dialog);
+    angle->setRange(0.0, 45.0);
+    angle->setDecimals(2);
+    angle->setValue(current.angleTolerance);
+    angle->setSuffix(tr("°"));
+    angle->setToolTip(tr("A line within this of an axis is inferred horizontal or vertical. Keep "
+                         "it small: a 2° taper is design intent, not a drafting error."));
+    form->addRow(tr("Angle tolerance"), angle);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    cad::app::Preferences next = current;
+    next.displayUnits = static_cast<cad::units::UnitSystem>(units->currentIndex());
+    next.navigation = static_cast<cad::render::NavigationPreset>(navigation->currentIndex());
+    next.snapTolerance = snap->value();
+    next.angleTolerance = angle->value();
+
+    // Applied to EVERY open document, not just the active one. Units are a property of the user,
+    // not of a file, and having the tab you switch to still show millimetres would read as a bug.
+    for (std::size_t i = 0; i < session_.count(); ++i) {
+        session_.activate(i);
+        if (auto* ctl = session_.active()) ctl->setPreferences(next);
+    }
+    refreshProperties();
+    refreshStatus();
+    statusMessage_->setText(tr("Options applied"));
+}
 
 void MainWindow::showBrowserMenu(const QPoint& at) {
     auto* c = controller();

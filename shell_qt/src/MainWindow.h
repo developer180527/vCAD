@@ -91,6 +91,7 @@ private:
 
     void refreshTree();
     void showBrowserMenu(const QPoint&);
+    void showOptions();
     void refreshProperties();
     void refreshCommandStates();
     void refreshStatus();
