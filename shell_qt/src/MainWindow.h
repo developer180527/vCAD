@@ -9,6 +9,7 @@
 
 class QButtonGroup;
 class QDockWidget;
+class QFormLayout;
 class QLabel;
 class QMenu;
 class QSplitter;
@@ -69,6 +70,14 @@ private:
     void syncTitle();
     /// Greys the Constrain buttons that do not suit the current sketch selection.
     void refreshSketchConstraintStates();
+    /// The left dock's command panel: OK/Cancel plus a field per parameter.
+    [[nodiscard]] QWidget* buildCommandPanel();
+    /// Swaps the left dock between the tree and the running command, rebuilding its fields.
+    void syncCommandPanel();
+    /// A ribbon action that opens the command panel when the command has parameters, and invokes
+    /// directly when it does not.
+    [[nodiscard]] QAction* parameterised(const char* id, const QString& label,
+                                         const QString& iconName);
 
     /// The action for a real command from `Controller::commands()`, or null if it has none.
     [[nodiscard]] QAction* command(const char* id);
@@ -120,6 +129,17 @@ private:
         bool linesOnly = true;
     };
     std::vector<SketchConstraintAction> sketchConstraintActions_;
+
+    QStackedWidget* leftStack_ = nullptr;
+    QWidget* commandPanel_ = nullptr;
+    QLabel* commandTitle_ = nullptr;
+    QFormLayout* commandFields_ = nullptr;
+    /// Panel-opening actions paired with the real command, so enablement stays in step.
+    struct ParameterisedAction {
+        QAction* action = nullptr;
+        QAction* real = nullptr;
+    };
+    std::vector<ParameterisedAction> parameterisedActions_;
     /// Last seen environment, so a change can be detected from a document notification. See the
     /// comment at the observer.
     cad::app::Environment lastEnvironment_ = cad::app::Environment::Model;

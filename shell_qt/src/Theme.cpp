@@ -132,6 +132,17 @@ void applyTheme(QApplication& app) {
         #homeTile:disabled { background: #f4f3f1; color: #a8abaf; }
         #homeRecent { background: #fafaf9; }
 
+        /* ── command property panel: the left dock while a command runs ─────────── */
+        #commandPanel { background: #fafaf9; }
+        #commandTitle { font-weight: 600; color: #1f2124; }
+        #commandOk, #commandCancel {
+            border: 1px solid #cfcdc9; border-radius: 3px; padding: 4px 16px;
+            background: #f0efed;
+        }
+        #commandOk { background: #0a6cc4; color: white; border-color: #085aa3; }
+        #commandOk:hover { background: #0b7ce0; }
+        #commandCancel:hover { background: #d7e5f3; border-color: #a8c7e6; }
+
         /* ── home, Inventor layout ─────────────────────────────────────────────── */
         #homeSidebar { background: #f1f0ee; border-right: 1px solid #dfdedb; }
 

@@ -12,7 +12,9 @@
 #include <QButtonGroup>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -247,6 +249,30 @@ QAction* MainWindow::planned(const QString& label, const QString& iconName) {
     return action;
 }
 
+QAction* MainWindow::parameterised(const char* id, const QString& label,
+                                   const QString& iconName) {
+    // Try beginCommand first; if the command has no parameters it returns false and we fall back to
+    // invoking it directly, so a command gains a panel the day app/ gives it parameters with no
+    // edit here. Same principle as commandOr.
+    auto* real = command(id);
+    if (real == nullptr) return planned(label, iconName);
+
+    auto* action = new QAction(icon(iconName), label, this);
+    action->setToolTip(real->toolTip());
+    connect(action, &QAction::triggered, this, [this, id, real] {
+        auto* c = controller();
+        if (c != nullptr && c->beginCommand(id)) {
+            syncCommandPanel();
+        } else {
+            real->trigger();
+        }
+    });
+    // Enablement follows the real command's, so the two cannot disagree.
+    action->setEnabled(real->isEnabled());
+    parameterisedActions_.push_back({action, real});
+    return action;
+}
+
 QAction* MainWindow::commandOr(const char* id, const QString& label, const QString& iconName) {
     if (auto* existing = command(id)) return existing;
     return planned(label, iconName);
@@ -389,6 +415,7 @@ void MainWindow::rebuildRibbon() {
     ribbon_->clearTabs();
     actions_.clear();
     sketchConstraintActions_.clear();
+    parameterisedActions_.clear();
 
     auto* c = controller();
     if (c == nullptr) {
@@ -536,7 +563,7 @@ void MainWindow::rebuildRibbon() {
     // for, so nothing moves when the commands arrive. Inventor's own layout is the specification
     // here — we are not designing a ribbon, we are copying one people already know.
     auto* create = model->addPanel(tr("Create"));
-    create->addLarge(commandOr("feature.extrude", tr("Extrude"), QStringLiteral("extrude")));
+    create->addLarge(parameterised("feature.extrude", tr("Extrude"), QStringLiteral("extrude")));
     create->addLarge(planned(tr("Revolve"), QStringLiteral("revolve")));
     create->addSmall(planned(tr("Sweep"), QStringLiteral("sweep")));
     create->addSmall(planned(tr("Loft"), QStringLiteral("loft")));
@@ -567,8 +594,9 @@ void MainWindow::rebuildRibbon() {
     // reference exactly, and this panel disappears the day Sketch + Extrude work rather than
     // leaving a permanent wart inside a panel we are supposed to be copying.
     auto* primitives = model->addPanel(tr("Primitives"));
-    primitives->addLarge(commandOr("feature.box", tr("Box"), QStringLiteral("box")));
-    primitives->addLarge(commandOr("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
+    primitives->addLarge(parameterised("feature.box", tr("Box"), QStringLiteral("box")));
+    primitives->addLarge(
+        parameterised("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
 
     auto* modify = model->addPanel(tr("Modify"));
     modify->addLarge(planned(tr("Hole"), QStringLiteral("hole")));
@@ -807,6 +835,7 @@ void MainWindow::createDocument(DocumentKind kind) {
         refreshProperties();
         refreshCommandStates();
         refreshSketchConstraintStates();
+        syncCommandPanel();
         refreshStatus();
         // The title's dirty marker is derived from the document, so it has to be refreshed on
         // every edit — not only when the active document changes.
@@ -896,6 +925,97 @@ void MainWindow::refreshDocumentTabs() {
 
 // ── docks ───────────────────────────────────────────────────────────────────────────────
 
+QWidget* MainWindow::buildCommandPanel() {
+    auto* panel = new QWidget(this);
+    panel->setObjectName(QStringLiteral("commandPanel"));
+    auto* column = new QVBoxLayout(panel);
+    column->setContentsMargins(10, 10, 10, 10);
+    column->setSpacing(8);
+
+    commandTitle_ = new QLabel(panel);
+    commandTitle_->setObjectName(QStringLiteral("commandTitle"));
+    column->addWidget(commandTitle_);
+
+    // OK and Cancel at the TOP, which is where SolidWorks puts them. Unfamiliar next to a desktop
+    // dialog's bottom-right buttons, but this is a panel the user's eye enters from the top, and it
+    // is the convention the reference application established.
+    auto* buttons = new QHBoxLayout;
+    buttons->setSpacing(6);
+    auto* ok = new QToolButton(panel);
+    ok->setText(tr("OK"));
+    ok->setObjectName(QStringLiteral("commandOk"));
+    connect(ok, &QToolButton::clicked, this, [this] {
+        if (auto* c = controller()) c->commitCommand();
+        syncCommandPanel();
+    });
+    auto* cancel = new QToolButton(panel);
+    cancel->setText(tr("Cancel"));
+    cancel->setObjectName(QStringLiteral("commandCancel"));
+    connect(cancel, &QToolButton::clicked, this, [this] {
+        if (auto* c = controller()) c->cancelCommand();
+        syncCommandPanel();
+    });
+    buttons->addWidget(ok);
+    buttons->addWidget(cancel);
+    buttons->addStretch(1);
+    column->addLayout(buttons);
+
+    commandFields_ = new QFormLayout;
+    commandFields_->setContentsMargins(0, 6, 0, 0);
+    commandFields_->setSpacing(6);
+    column->addLayout(commandFields_);
+    column->addStretch(1);
+    return panel;
+}
+
+void MainWindow::syncCommandPanel() {
+    auto* c = controller();
+    const bool running = c != nullptr && !c->activeCommand().empty();
+
+    if (!running) {
+        leftStack_->setCurrentIndex(0);
+        browserDock_->setWindowTitle(tr("Model"));
+        return;
+    }
+
+    // Rebuilt each time rather than diffed: a command has a handful of fields, and reusing widgets
+    // across different commands is how a stale editor from the last command ends up bound to this
+    // one's parameter.
+    while (commandFields_->rowCount() > 0) commandFields_->removeRow(0);
+
+    for (const auto& p : c->commandParameters()) {
+        auto* edit = new QLineEdit(QString::fromStdString(p.value), commandPanel_);
+        const std::string name = p.name;
+        // editingFinished, not textChanged: parsing every keystroke rejects "2 i" on the way to
+        // "2 in" and fights the user as they type.
+        connect(edit, &QLineEdit::editingFinished, this, [this, name, edit] {
+            auto* ctl = controller();
+            if (ctl == nullptr) return;
+            if (!ctl->setCommandParameter(name, edit->text().toStdString())) {
+                // Rejected: put the accepted value back, so the field never shows something the
+                // model did not take.
+                for (const auto& q : ctl->commandParameters()) {
+                    if (q.name == name) edit->setText(QString::fromStdString(q.value));
+                }
+            }
+            refreshStatus();
+        });
+        commandFields_->addRow(QString::fromStdString(p.label), edit);
+    }
+
+    commandTitle_->setText(QString::fromStdString(c->activeCommand()));
+    browserDock_->setWindowTitle(tr("Properties"));
+    leftStack_->setCurrentIndex(1);
+
+    // Focus the first field so a command can be driven from the keyboard without reaching for the
+    // mouse, which is how anyone fast actually works.
+    if (commandFields_->rowCount() > 0) {
+        if (auto* first = commandFields_->itemAt(0, QFormLayout::FieldRole)) {
+            if (auto* w = first->widget()) w->setFocus();
+        }
+    }
+}
+
 void MainWindow::buildDocks() {
     browserDock_ = new QDockWidget(tr("Model"), this);
     auto* browserDock = browserDock_;
@@ -904,7 +1024,18 @@ void MainWindow::buildDocks() {
     browser_->setHeaderHidden(true);
     browser_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     browser_->setIndentation(14);
-    browserDock->setWidget(browser_);
+
+    // The left dock holds EITHER the tree or the running command, never both.
+    //
+    // SolidWorks' PropertyManager takes over this space rather than floating over the model
+    // (UI_RESEARCH.md), and DESKTOP_UX 3.2 was corrected to match. A stack rather than a splitter:
+    // the two are alternatives, and showing a squeezed tree beside a squeezed command panel gives
+    // the worst of both.
+    leftStack_ = new QStackedWidget(browserDock);
+    leftStack_->addWidget(browser_);          // index 0
+    commandPanel_ = buildCommandPanel();
+    leftStack_->addWidget(commandPanel_);     // index 1
+    browserDock->setWidget(leftStack_);
     addDockWidget(Qt::LeftDockWidgetArea, browserDock);
     resizeDocks({browserDock}, {290}, Qt::Horizontal);
 
