@@ -4,7 +4,7 @@
 #include "Icons.h"
 #include "Ribbon.h"
 #include "SketchCanvas.h"
-#include "ViewportPlaceholder.h"
+#include "Viewport.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -221,6 +221,22 @@ void MainWindow::buildTopArea() {
 
     ribbon_ = new Ribbon(top);
     topLayout->addWidget(ribbon_);
+
+    // A hairline closing the ribbon off from the workspace below. Both Inventor and SolidWorks
+    // separate the command area from the graphics area this way, and without it the ribbon and
+    // the viewport read as one undifferentiated surface. QFrame::HLine is not used: it draws a
+    // two-tone bevel that looks like a 1990s group box. This is one device pixel of the theme's
+    // own line colour.
+    auto* rule = new QWidget(top);
+    rule->setFixedHeight(1);
+    rule->setAutoFillBackground(true);
+    {
+        QPalette rulePalette = rule->palette();
+        rulePalette.setColor(QPalette::Window, QColor(0xcf, 0xcd, 0xc9));
+        rule->setPalette(rulePalette);
+    }
+    topLayout->addWidget(rule);
+
     setMenuWidget(top);
 
     // File menu, on the File tab rather than a menu bar.
@@ -840,7 +856,13 @@ void MainWindow::createDocument(DocumentKind kind) {
     const std::size_t index = session_.create(kind);
     auto* c = session_.documents()[index].controller.get();
 
-    auto* editor = new ViewportPlaceholder(*c, workspaces_);
+    auto* editor = new Viewport(*c, workspaces_);
+    // Bring the GPU up on the first viewport. Idempotent -- bgfx is a process singleton, so the
+    // second document shares the backend -- and a failure is reported rather than fatal: the
+    // wireframe fallback keeps the shell fully usable on a machine with no usable device.
+    if (!editor->attachRenderer()) {
+        statusBar()->showMessage(tr("Viewport: %1").arg(editor->rendererError()));
+    }
     // The sketch surface is a SIBLING in the stack, not an overlay on the viewport. A sketch is
     // edited face-on in its own 2D coordinate system; sharing the 3D camera would mean unprojecting
     // every click onto a plane before it meant anything.
@@ -878,7 +900,15 @@ void MainWindow::createDocument(DocumentKind kind) {
     });
     c->onViewChanged([this, c] {
         if (controller() != c) return;
-        if (auto* w = workspaces_->currentWidget()) w->update();
+        if (auto* w = workspaces_->currentWidget()) {
+            // markDirty, not update: the viewport caches its rendered frame and a plain repaint
+            // deliberately reuses it. This is the signal that the scene itself moved.
+            if (auto* view = qobject_cast<Viewport*>(w)) {
+                view->markDirty();
+            } else {
+                w->update();
+            }
+        }
         refreshStatus();
     });
     c->onStatus([this, c](const std::string& text) {
@@ -1379,6 +1409,20 @@ void MainWindow::refreshStatus() {
                     .arg(s.triangles);
     }
     if (s.failed > 0) text += tr("  ·  %1 failed").arg(s.failed);
+
+    // Frame cost, split into its two halves. Shown because "the viewport feels slow" is not a
+    // number, and the two halves have entirely different fixes: submit is the scene, capture is
+    // the price of the offscreen readback path.
+    if (c->rendererAttached()) {
+        const auto t = c->lastRenderTiming();
+        const double total = t.submitMs + t.captureMs;
+        if (total > 0.0) {
+            text += tr("  ·  %1 ms/frame (submit %2, readback %3)")
+                        .arg(total, 0, 'f', 1)
+                        .arg(t.submitMs, 0, 'f', 1)
+                        .arg(t.captureMs, 0, 'f', 1);
+        }
+    }
     statusStats_->setText(text);
 }
 

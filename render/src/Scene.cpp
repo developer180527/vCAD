@@ -151,6 +151,13 @@ void SceneBuilder::setCullSettings(const CullSettings& s) noexcept {
     cull();
 }
 
+void SceneBuilder::setBackground(float r, float g, float b) noexcept {
+    frame_.background[0] = r;
+    frame_.background[1] = g;
+    frame_.background[2] = b;
+    frame_.background[3] = 1.0f;
+}
+
 void SceneBuilder::setSectionPlanes(std::span<const SectionPlane> planes) {
     sections_.assign(planes.begin(), planes.end());
     frame_.sections = sections_;

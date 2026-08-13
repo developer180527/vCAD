@@ -53,6 +53,10 @@ struct BgfxConfig {
 
 };
 
+/// Where to load compiled shader binaries from. The shell sets this to the directory beside its
+/// own executable; $CAD_SHADER_DIR still overrides it. Call before initialise().
+void setShaderDirectory(std::string);
+
 /// Owns the bgfx context. One per process — bgfx is a singleton, which is a real constraint
 /// rather than an implementation detail: two viewports share one backend and differ by view id.
 class BgfxBackend {

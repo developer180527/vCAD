@@ -1,7 +1,9 @@
-#include "ViewportPlaceholder.h"
+#include "Viewport.h"
 
+#include <QImage>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPalette>
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +23,7 @@ void transform4(const float m[16], const float in[4], float out[4]) {
 
 }  // namespace
 
-ViewportPlaceholder::ViewportPlaceholder(cad::app::Controller& controller, QWidget* parent)
+Viewport::Viewport(cad::app::Controller& controller, QWidget* parent)
     : QWidget(parent), controller_(controller) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
@@ -29,7 +31,7 @@ ViewportPlaceholder::ViewportPlaceholder(cad::app::Controller& controller, QWidg
     setMinimumSize(320, 240);
 }
 
-QPointF ViewportPlaceholder::project(const float world[3], bool& visible) const {
+QPointF Viewport::project(const float world[3], bool& visible) const {
     const auto& camera = controller_.frame().camera;
     const float p[4]{world[0], world[1], world[2], 1.0f};
     float eye[4];
@@ -48,10 +50,83 @@ QPointF ViewportPlaceholder::project(const float world[3], bool& visible) const 
     return QPointF((ndcX * 0.5f + 0.5f) * width(), (1.0f - (ndcY * 0.5f + 0.5f)) * height());
 }
 
-void ViewportPlaceholder::paintEvent(QPaintEvent*) {
+bool Viewport::attachRenderer() {
+    if (attached_) return true;
+    syncViewportSize();
+    const auto dpr = devicePixelRatioF();
+    auto r = controller_.attachRenderer(
+        static_cast<std::uint32_t>(std::max(1.0, width() * dpr)),
+        static_cast<std::uint32_t>(std::max(1.0, height() * dpr)));
+    if (!r) {
+        rendererError_ = QString::fromStdString(r.error().message);
+        return false;
+    }
+    attached_ = true;
+    rendererError_.clear();
+    // Clear to the theme's own surface colour, read from the palette rather than restated as a
+    // literal, so the viewport cannot drift away from the rest of the window.
+    const QColor paper = palette().color(QPalette::Base);
+    controller_.setViewportBackground(paper.red(), paper.green(), paper.blue());
+    update();
+    return true;
+}
+
+void Viewport::markDirty() {
+    dirty_ = true;
+    update();
+}
+
+void Viewport::syncViewportSize() {
+    // DEVICE pixels, not logical ones. Getting this wrong renders a half-resolution frame and
+    // stretches it over a Retina widget, which reads as "the renderer is blurry" rather than as
+    // a units mistake -- the same class of bug as the blurry ribbon icons.
+    const auto dpr = devicePixelRatioF();
+    controller_.setViewportSize(static_cast<std::uint32_t>(std::max(1.0, width() * dpr)),
+                                static_cast<std::uint32_t>(std::max(1.0, height() * dpr)));
+}
+
+void Viewport::paintEvent(QPaintEvent*) {
     QPainter g(this);
     g.setRenderHint(QPainter::Antialiasing, true);
-    g.fillRect(rect(), QColor(0x1e, 0x20, 0x24));
+    g.fillRect(rect(), palette().color(QPalette::Base));
+
+    if (attached_) {
+        if (dirty_ || frame_.isNull()) {
+            auto rendered = controller_.renderFrame();
+            if (rendered) {
+                // The renderer's OWN dimensions, never the widget's. The two disagree for a
+                // moment after a resize, and a stride computed from the wrong one skews rows.
+                const int w = static_cast<int>(rendered.value().width);
+                const int h = static_cast<int>(rendered.value().height);
+                pixels_ = std::move(rendered.value().pixels);
+                const auto need = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
+                if (w > 0 && h > 0 && pixels_.size() >= need) {
+                    // RGBA8888 rather than ARGB32: the backend reads back RGBA8, and
+                    // Format_ARGB32 is BGRA in memory on a little-endian machine. That
+                    // difference is a red/blue swap, which looks like a plausible shading
+                    // choice rather than a bug.
+                    frame_ = QImage(pixels_.data(), w, h, w * 4, QImage::Format_RGBA8888);
+                    // The image is in DEVICE pixels. Without this Qt treats it as logical and
+                    // rescales it on the CPU every paint -- on a Retina display that is a
+                    // 4x-too-large image resampled per frame, and it was most of the cost that
+                    // made this feel like 15fps.
+                    frame_.setDevicePixelRatio(devicePixelRatioF());
+                    dirty_ = false;
+                }
+            }
+        }
+        if (!frame_.isNull()) {
+            g.drawImage(QPoint(0, 0), frame_);
+            return;
+        }
+        // A failed capture falls through to the wireframe rather than painting nothing, so a
+        // renderer that stops working is visible as a downgrade instead of a black rectangle.
+    }
+
+    paintFallback(g);
+}
+
+void Viewport::paintFallback(QPainter& g) {
 
     const auto stats = controller_.stats();
     if (stats.objects == 0) {
@@ -114,7 +189,7 @@ void ViewportPlaceholder::paintEvent(QPaintEvent*) {
 
     g.setPen(QColor(0x76, 0x7d, 0x87));
     g.drawText(12, height() - 14,
-               tr("placeholder view — %1 object(s), %2 unique mesh(es), %3 triangles")
+               tr("wireframe fallback — no GPU renderer — %1 object(s), %2 mesh(es), %3 triangles")
                    .arg(stats.objects)
                    .arg(stats.uniqueMeshes)
                    .arg(stats.triangles));
@@ -129,12 +204,12 @@ void ViewportPlaceholder::paintEvent(QPaintEvent*) {
                                                                         : tr("PERSP"));
 }
 
-void ViewportPlaceholder::resizeEvent(QResizeEvent*) {
-    controller_.setViewportSize(static_cast<std::uint32_t>(std::max(1, width())),
-                               static_cast<std::uint32_t>(std::max(1, height())));
+void Viewport::resizeEvent(QResizeEvent*) {
+    syncViewportSize();
+    markDirty();   // the cached frame is the wrong size now
 }
 
-void ViewportPlaceholder::mousePressEvent(QMouseEvent* event) {
+void Viewport::mousePressEvent(QMouseEvent* event) {
     lastMouse_ = event->pos();
     const int button = event->button() == Qt::LeftButton ? 0
                        : event->button() == Qt::MiddleButton ? 1 : 2;
@@ -145,7 +220,7 @@ void ViewportPlaceholder::mousePressEvent(QMouseEvent* event) {
                                         event->modifiers().testFlag(Qt::ControlModifier));
 }
 
-void ViewportPlaceholder::mouseMoveEvent(QMouseEvent* event) {
+void Viewport::mouseMoveEvent(QMouseEvent* event) {
     if (drag_ == cad::render::Drag::None) return;
     const QPoint delta = event->pos() - lastMouse_;
     lastMouse_ = event->pos();
@@ -165,16 +240,19 @@ void ViewportPlaceholder::mouseMoveEvent(QMouseEvent* event) {
         case cad::render::Drag::None:
             break;
     }
-    controller_.setViewportSize(std::uint32_t(width()), std::uint32_t(height()));
-    update();
+    // cameraChanged, not setViewportSize: the widget did not resize, and the full size path ran
+    // two culls to deliver one camera update. It is still REQUIRED to call something here --
+    // mutating the camera does not move the scene's copy of the matrices.
+    controller_.cameraChanged();
+    markDirty();
 }
 
-void ViewportPlaceholder::mouseReleaseEvent(QMouseEvent*) { drag_ = cad::render::Drag::None; }
+void Viewport::mouseReleaseEvent(QMouseEvent*) { drag_ = cad::render::Drag::None; }
 
-void ViewportPlaceholder::wheelEvent(QWheelEvent* event) {
+void Viewport::wheelEvent(QWheelEvent* event) {
     controller_.camera().zoom(float(event->angleDelta().y()) / 120.0f);
-    controller_.setViewportSize(std::uint32_t(width()), std::uint32_t(height()));
-    update();
+    controller_.cameraChanged();
+    markDirty();
 }
 
 }  // namespace cadqt

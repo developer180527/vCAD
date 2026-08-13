@@ -23,7 +23,7 @@ namespace cadqt {
 class HomePage;
 class SketchCanvas;
 class Ribbon;
-class ViewportPlaceholder;
+class Viewport;
 
 /// Inventor's frame: quick access toolbar, ribbon, docks, stacked workspaces, document tabs at
 /// the bottom, status bar.

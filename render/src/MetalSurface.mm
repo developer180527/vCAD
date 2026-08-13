@@ -38,6 +38,19 @@ void* createOffscreenMetalLayer(std::uint32_t width, std::uint32_t height) {
     // bgfx assigns .device and .pixelFormat itself during init, and resets drawableSize on
     // reset(); setting the size here only matters for the frames before the first reset.
     layer.drawableSize = CGSizeMake(width, height);
+
+    // THE reason the offscreen path was slow. A CAMetalLayer paces nextDrawable to the display's
+    // refresh by default, so every bgfx::frame() blocked for up to a vsync interval — and a
+    // readback has to pump at least two frames before the pixels are valid. That put a hard
+    // ceiling of about 30ms on a capture and measured at 41.5 ms/frame, of which submit was
+    // 0.0 ms: the entire cost was waiting for a display that never shows this layer to anyone.
+    //
+    // Nothing composites this surface. Every view renders into an offscreen framebuffer and we
+    // read that back; the layer exists only because bgfx refuses to create a Metal device
+    // without one. Pacing it to the screen buys nothing and costs everything.
+    if ([layer respondsToSelector:@selector(setDisplaySyncEnabled:)]) {
+        layer.displaySyncEnabled = NO;
+    }
     return static_cast<void*>(layer);
 }
 

@@ -13,6 +13,7 @@
 #include "cad/recompute/DdcCache.h"
 #include "cad/recompute/Engine.h"
 #include "cad/render/Camera.h"
+#include "cad/render/BgfxBackend.h"
 #include "cad/render/NullBackend.h"
 #include "cad/render/Scene.h"
 #include "cad/sketch/Sketch.h"
@@ -211,6 +212,73 @@ public:
     void setViewportSize(std::uint32_t width, std::uint32_t height);
     void fitView();
 
+    /// Pushes the camera's current matrices into the scene and requests a repaint.
+    ///
+    /// Call after orbit/pan/zoom. Mutating the CameraController alone changes nothing on screen:
+    /// the scene holds its own copy of the matrices, and until they are pushed the frame renders
+    /// from the old ones. This used to happen as a side effect of setViewportSize, which meant
+    /// every mouse-move ran two culls to deliver one camera update -- and removing that call as
+    /// waste silently disabled orbiting altogether.
+    void cameraChanged();
+
+    /// Viewport background, 0..255 per channel. The shell passes its theme colour down so the
+    /// GPU clears to the same paper the rest of the window is painted on.
+    void setViewportBackground(int r, int g, int b);
+
+    // ── the GPU renderer ──────────────────────────────────────────────────────────────────
+    //
+    // Off by default. Everything above works against the null backend, and a shell that never
+    // calls attachRenderer() behaves exactly as it did before this existed — which is what keeps
+    // the headless tests and the CI build honest.
+
+    /// Brings up bgfx and rebuilds the scene against it. Offscreen: the frame is rendered into a
+    /// framebuffer and read back, rather than drawn into a native surface owned by the shell.
+    ///
+    /// That is a deliberate first step, not the endgame. It composites with the Qt widgets we
+    /// already have (marking menu, context toolbar, ViewCube when it lands) because they paint
+    /// over an ordinary QWidget, and it is identical on all three platforms. It costs a full
+    /// framebuffer readback per frame, which is why renderFrame() is honest about its cost and
+    /// why this is not yet a claim about interactive performance on large assemblies.
+    ///
+    /// "Offscreen" does NOT mean "no window" — bgfx still needs a Metal device, and on macOS
+    /// render/src/MetalSurface.mm creates a standalone CAMetalLayer for exactly this case.
+    kernel::Result<void> attachRenderer(std::uint32_t width, std::uint32_t height);
+
+    [[nodiscard]] bool rendererAttached() const noexcept { return gpu_ != nullptr; }
+
+    /// Which renderer bgfx chose, or "null". Worth showing: "why is it blank" has twice been
+    /// "it fell back to Noop", and the name is the only clue.
+    [[nodiscard]] std::string rendererName() const;
+
+    /// One rendered frame, WITH the dimensions it was actually rendered at.
+    ///
+    /// The size is returned rather than left for the caller to recompute from its own widget,
+    /// because those two can disagree — a resize reaches the widget and the backend at different
+    /// moments — and when they do, every row of the image starts at the wrong offset and the
+    /// frame arrives skewed into diagonal streaks. Returning them together makes that
+    /// unrepresentable.
+    struct RenderedFrame {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::vector<std::uint8_t> pixels;   ///< tightly packed RGBA8, width * height * 4
+    };
+
+    /// Renders one frame. Fails rather than returning an empty frame when no renderer is
+    /// attached, because a blank image and a broken renderer must not look the same.
+    kernel::Result<RenderedFrame> renderFrame();
+
+    /// Where the last frame's time went, in milliseconds.
+    ///
+    /// Split into submit and readback because the two have completely different fixes: submit
+    /// time is the scene and the draw calls, readback is the price of the offscreen path and is
+    /// only removed by rendering to a native surface. Guessing which one dominates is how a day
+    /// gets spent on the wrong half.
+    struct RenderTiming {
+        double submitMs = 0.0;    ///< building and submitting the frame
+        double captureMs = 0.0;   ///< blit + readTexture + the frames pumped waiting for it
+    };
+    [[nodiscard]] RenderTiming lastRenderTiming() const noexcept { return timing_; }
+
     /// Statistics for the status bar. Users of large assemblies watch these.
     struct Stats {
         std::size_t objects = 0;
@@ -381,10 +449,20 @@ private:
     recompute::MemoryBlobStore blobs_;
     std::unique_ptr<render::MeshCache> meshes_;
 
-    /// A null backend until the real one is wired in. The scene layer is complete and tested
-    /// either way, so the shell can be built and used against this — which is the whole point
-    /// of the seam being three narrow interfaces.
+    /// The fallback, and still the default. The scene layer is complete and tested against it,
+    /// so a shell that never attaches a GPU is fully functional — which is the whole point of
+    /// the seam being three narrow interfaces, and is what CI runs.
     render::NullBackend backend_;
+
+    /// Non-null once attachRenderer() succeeds. Held by pointer because bgfx is a process
+    /// singleton with a real lifetime, unlike the null backend which is just memory.
+    std::unique_ptr<render::BgfxBackend> gpu_;
+
+    /// Whichever of the two the scene is currently built against. Nothing above the seam knows
+    /// which one it holds.
+    render::Backend active_;
+    RenderTiming timing_;
+
     std::unique_ptr<render::SceneBuilder> scene_;
     render::CameraController camera_;
     render::Viewport viewport_;

@@ -3,6 +3,7 @@
 
 #include "cad/kernel/Diagnostics.h"
 #include "cad/log/Log.h"
+#include "cad/render/BgfxBackend.h"
 
 #include <QDateTime>
 #include <filesystem>
@@ -126,13 +127,19 @@ std::string startLogging(const char* argv0) {
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
                bool home) {
-    // A populated document, because an empty Home page says nothing about the ribbon and the
-    // docks, which is the part being reviewed. `--home` skips it to shoot Home itself.
-    if (!home) window.openDemoDocument();
     window.show();
-    if (tab >= 0) window.selectRibbonTab(tab);
 
-    QTimer::singleShot(0, &app, [&app, &window, path] {
+    // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
+    // bgfx's Metal backend initialises by handing work to the main run loop and waiting for it:
+    // do that on the main thread before app.exec() and the run loop is not being serviced, so the
+    // two wait on each other forever. No output, no error, no window -- which is what this mode
+    // did when the viewport started rendering for real.
+    QTimer::singleShot(0, &app, [&app, &window, path, tab, home] {
+        // A populated document, because an empty Home page says nothing about the ribbon and the
+        // docks, which is the part being reviewed. `--home` skips it to shoot Home itself.
+        if (!home) window.openDemoDocument();
+        if (tab >= 0) window.selectRibbonTab(tab);
+
         QTimer::singleShot(0, &app, [&app, &window, path] {
             const QPixmap shot = window.grab();
             if (!shot.save(path)) {
@@ -153,6 +160,18 @@ int main(int argc, char** argv) {
     // Before QApplication, so a failure constructing it is still recorded. Nothing here touches
     // Qt, which is the point: logging is live from the first statement of main.
     const std::string logPath = startLogging(argc > 0 ? argv[0] : nullptr);
+
+    // Shaders sit beside the executable, the same reasoning as the log file above: vCAD ships as
+    // a bare binary, and resolving them against the working directory means the viewport draws
+    // nothing whenever the app is launched from anywhere but the build directory.
+    if (argc > 0 && argv[0] != nullptr && *argv[0] != '\0') {
+        std::error_code ec;
+        const std::filesystem::path exe =
+            std::filesystem::weakly_canonical(std::filesystem::path(argv[0]), ec);
+        if (!ec && exe.has_parent_path()) {
+            cad::render::setShaderDirectory((exe.parent_path() / "shaders").string());
+        }
+    }
     CAD_INFO(cad::log::Category::Shell) << "vCAD 0.0.1 starting";
     // Printed to stdout as well, once, because a log nobody can find is a log nobody sends. This is
     // the one line that makes "attach your log" an answerable request.

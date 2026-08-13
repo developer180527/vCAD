@@ -72,11 +72,30 @@ bgfx::VertexLayout& edgeVertexLayout() {
     return layout;
 }
 
+/// Set by the shell to the directory beside its executable. Empty until then.
+std::string& shaderDirectory() {
+    static std::string dir;
+    return dir;
+}
+
 /// Shader binaries live next to the executable, produced by shaderc at build time. Loaded
 /// rather than embedded so a shader edit does not require relinking the whole application.
+///
+/// Order of preference, first that is set:
+///   1. $CAD_SHADER_DIR                 -- explicit always wins
+///   2. whatever the shell registered   -- beside the executable, normally
+///   3. "shaders", relative to the CWD  -- the spikes, which are run from the build directory
+///
+/// Step 2 exists because this used to be steps 1 and 3 only, while the comment above claimed
+/// shaders were loaded from beside the executable. They were loaded from beside the WORKING
+/// DIRECTORY, so launching the shell from anywhere else found no shaders and drew nothing. Same
+/// mistake as the log file, which was resolved against the platform's app-data directory for an
+/// application that ships as a bare executable.
 std::string shaderPath(const std::string& name) {
-    const char* dir = std::getenv("CAD_SHADER_DIR");
-    const std::string base = dir != nullptr ? dir : "shaders";
+    const char* env = std::getenv("CAD_SHADER_DIR");
+    const std::string base = (env != nullptr && *env != '\0') ? std::string(env)
+                             : !shaderDirectory().empty() ? shaderDirectory()
+                                                          : std::string("shaders");
     std::string profile;
     switch (bgfx::getRendererType()) {
         case bgfx::RendererType::Metal:     profile = "metal"; break;
@@ -341,6 +360,14 @@ struct BgfxBackend::Impl {
     // directly: bgfx::readTexture requires BGFX_TEXTURE_READ_BACK, which BGFX_TEXTURE_RT does not
     // imply, and asking anyway asserts inside bgfx rather than returning an error. So the pattern
     // is always blit RT -> readback, then readTexture the readback.
+    /// Creates the offscreen colour and pick targets at this size. Split out of initialise()
+    /// so resize() can rebuild them: in offscreen mode the textures ARE the framebuffer, and a
+    /// resize that only updated config.viewport left captureFrame reading back at the new
+    /// dimensions from a texture still sized at attach time. Each row then started at the wrong
+    /// offset and the image arrived skewed into diagonal streaks.
+    void createTargets(std::uint16_t w, std::uint16_t h);
+    void destroyTargets();
+
     bgfx::FrameBufferHandle colourFb = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle colourTarget = BGFX_INVALID_HANDLE;    ///< the RT the shaded pass writes
     bgfx::TextureHandle colourReadback = BGFX_INVALID_HANDLE;  ///< BLIT_DST|READ_BACK copy
@@ -471,10 +498,19 @@ public:
     explicit BgfxFrameSink(BgfxBackend::Impl& impl) : impl_(impl) {}
 
     void resize(const Viewport& v) override {
+        const Viewport was = impl_.config.viewport;
         impl_.config.viewport = v;
         if (!impl_.config.offscreen) {
             bgfx::reset(v.width, v.height, BGFX_RESET_NONE);
+            return;
         }
+        // Offscreen: the textures ARE the framebuffer, so they have to be rebuilt at the new
+        // size. Updating config alone left captureFrame reading back at the new dimensions from
+        // a texture still sized at init, which skewed every row and produced diagonal streaks.
+        if (!impl_.initialised || (was.width == v.width && was.height == v.height)) return;
+        impl_.destroyTargets();
+        impl_.createTargets(static_cast<std::uint16_t>(std::max(v.width, 1u)),
+                            static_cast<std::uint16_t>(std::max(v.height, 1u)));
     }
 
     void submit(const SceneFrame& frame) override;
@@ -763,37 +799,7 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     const std::uint16_t w = static_cast<std::uint16_t>(std::max(config.viewport.width, 1u));
     const std::uint16_t h = static_cast<std::uint16_t>(std::max(config.viewport.height, 1u));
 
-    if (config.offscreen) {
-        bgfx::TextureHandle colour = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::RGBA8,
-            BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
-        bgfx::TextureHandle depth = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
-        bgfx::TextureHandle attachments[]{colour, depth};
-        impl_->colourFb = bgfx::createFrameBuffer(2, attachments, true);
-        impl_->colourTarget = colour;   // owned by the framebuffer; do not destroy separately
-        impl_->colourReadback = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::RGBA8,
-            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
-    }
-
-    if (bgfx::isValid(impl_->pick)) {
-        bgfx::TextureHandle ids = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::RGBA8,
-            BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT);
-        bgfx::TextureHandle depth = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
-        bgfx::TextureHandle attachments[]{ids, depth};
-        impl_->pickFb = bgfx::createFrameBuffer(2, attachments, true);
-        impl_->pickTarget = ids;
-
-        // A SEPARATE readback texture, blitted into. readTexture requires BGFX_TEXTURE_READ_BACK,
-        // which a render target does not have — reading the RT directly asserts inside bgfx
-        // rather than returning an error.
-        impl_->pickReadback = bgfx::createTexture2D(
-            w, h, false, 1, bgfx::TextureFormat::RGBA8,
-            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
-    }
+    impl_->createTargets(w, h);
     return {};
 }
 
@@ -862,6 +868,58 @@ Backend BgfxBackend::handle() noexcept {
     b.name = std::string("bgfx-") + rendererName();
     return b;
 }
+
+void BgfxBackend::Impl::createTargets(std::uint16_t w, std::uint16_t h) {
+    if (config.offscreen) {
+        bgfx::TextureHandle colour = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+        bgfx::TextureHandle depth = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
+        bgfx::TextureHandle attachments[]{colour, depth};
+        colourFb = bgfx::createFrameBuffer(2, attachments, true);
+        colourTarget = colour;   // owned by the framebuffer; do not destroy separately
+        colourReadback = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+    }
+
+    if (bgfx::isValid(pick)) {
+        bgfx::TextureHandle ids = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT);
+        bgfx::TextureHandle depth = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT_WRITE_ONLY);
+        bgfx::TextureHandle attachments[]{ids, depth};
+        pickFb = bgfx::createFrameBuffer(2, attachments, true);
+        pickTarget = ids;
+
+        // A SEPARATE readback texture, blitted into. readTexture requires BGFX_TEXTURE_READ_BACK,
+        // which a render target does not have — reading the RT directly asserts inside bgfx
+        // rather than returning an error.
+        pickReadback = bgfx::createTexture2D(
+            w, h, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+    }
+}
+
+void BgfxBackend::Impl::destroyTargets() {
+    // The framebuffers were created with destroyTextures=true, so they own their attachments and
+    // colourTarget/pickTarget must NOT be destroyed here — only the readback copies, which are
+    // standalone. Same ownership rule as shutdown().
+    const auto drop = [](auto& handle) {
+        if (bgfx::isValid(handle)) bgfx::destroy(handle);
+        handle = {bgfx::kInvalidHandle};
+    };
+    drop(colourFb);
+    drop(colourReadback);
+    drop(pickFb);
+    drop(pickReadback);
+    colourTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
+    pickTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
+}
+
+void setShaderDirectory(std::string dir) { shaderDirectory() = std::move(dir); }
 
 kernel::Result<std::vector<std::uint8_t>> BgfxBackend::captureFrame() {
     if (!ready() || !bgfx::isValid(impl_->colourFb)) {

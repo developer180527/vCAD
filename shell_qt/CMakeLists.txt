@@ -26,13 +26,24 @@ qt_add_executable(vcad
   src/Ribbon.cpp
   src/Theme.cpp
   src/Icons.cpp
-  src/ViewportPlaceholder.cpp
+  src/Viewport.cpp
   src/SketchCanvas.cpp
   src/MarkingMenu.cpp
   src/HomePage.cpp
 )
 target_link_libraries(vcad PRIVATE cad::app Qt6::Widgets)
 cad_set_warnings(vcad)
+
+# The shader binaries have to sit beside the binary, because that is where main.cpp now tells
+# the renderer to look. cad_shaders writes them to ${CMAKE_BINARY_DIR}/shaders, which is beside
+# the SPIKES, not beside the shell.
+if(TARGET cad_shaders)
+  add_dependencies(vcad cad_shaders)
+  add_custom_command(TARGET vcad POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:vcad>/shaders"
+    COMMENT "Copying shader binaries beside vcad")
+endif()
 
 set_target_properties(vcad PROPERTIES
   MACOSX_BUNDLE FALSE          # a plain binary for now; bundling comes with signing at M4

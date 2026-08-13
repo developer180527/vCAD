@@ -14,7 +14,10 @@ void applyTheme(QApplication& app) {
     // viewport, and a saturated blue for selection. The viewport being LIGHTER than the chrome is
     // characteristic and worth matching; it makes the model the brightest thing on screen.
     const QColor chrome(0xf0, 0xef, 0xed);
-    const QColor panel(0xfa, 0xfa, 0xf9);
+    // Deliberately the same paper as `chrome`, not a lighter one. A near-white work surface
+    // beside a warm-grey ribbon reads as a glaring panel rather than as one continuous sheet,
+    // and this theme's whole character is that nothing on it is stark.
+    const QColor panel(0xf0, 0xef, 0xed);
     const QColor line(0xcf, 0xcd, 0xc9);
     const QColor text(0x1f, 0x21, 0x24);
     const QColor dim(0x84, 0x88, 0x8d);
@@ -38,6 +41,12 @@ void applyTheme(QApplication& app) {
     app.setPalette(p);
 
     app.setStyleSheet(QStringLiteral(R"(
+        /* Hairlines between the docks and the workspace. Needed now that the panels and the
+           viewport are the same paper: without them the window is one undivided sheet and the
+           eye cannot find the edge of the model tree. One device pixel of the theme's own line
+           colour, matching the rule under the ribbon. */
+        QMainWindow::separator { background: #cfcdc9; width: 1px; height: 1px; }
+        QMainWindow::separator:hover { background: #0a6cc4; }
         QWidget { font-size: 12px; color: #1f2124; }
 
         /* ── quick access toolbar: the strip above the ribbon ──────────────────── */

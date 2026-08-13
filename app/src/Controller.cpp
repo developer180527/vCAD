@@ -9,6 +9,7 @@
 #include <tuple>
 
 #include <algorithm>
+#include <chrono>
 
 namespace cad::app {
 namespace {
@@ -24,7 +25,8 @@ constexpr float kIdentity[12]{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
 
 Controller::Controller() {
     meshes_ = std::make_unique<render::MeshCache>(blobs_);
-    scene_ = std::make_unique<render::SceneBuilder>(*meshes_, backend_.resources);
+    active_ = backend_.handle();
+    scene_ = std::make_unique<render::SceneBuilder>(*meshes_, *active_.resources);
     viewport_.width = 1280;
     viewport_.height = 800;
     scene_->setViewport(viewport_);
@@ -302,6 +304,14 @@ void Controller::setViewportSize(std::uint32_t width, std::uint32_t height) {
     viewport_.height = height;
     scene_->setViewport(viewport_);
     scene_->setCamera(camera_.matrices(viewport_));
+    // The backend owns the framebuffer being read back, so it has to be told too. Skipping this
+    // reads back the OLD size and the shell blits a stale, wrongly-shaped image.
+    if (active_.frames != nullptr) active_.frames->resize(viewport_);
+    notifyView();
+}
+
+void Controller::cameraChanged() {
+    scene_->setCamera(camera_.matrices(viewport_));
     notifyView();
 }
 
@@ -309,6 +319,85 @@ void Controller::fitView() {
     camera_.fit(scene_->bounds(), viewport_);
     scene_->setCamera(camera_.matrices(viewport_));
     notifyView();
+}
+
+void Controller::setViewportBackground(int r, int g, int b) {
+    scene_->setBackground(float(r) / 255.0f, float(g) / 255.0f, float(b) / 255.0f);
+    notifyView();
+}
+
+// ── the GPU renderer ────────────────────────────────────────────────────────────────────
+
+kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32_t height) {
+    // bgfx is a process singleton, so this is idempotent rather than an error: two viewports
+    // share one backend and differ by view id.
+    if (gpu_) return {};
+
+    auto gpu = std::make_unique<render::BgfxBackend>();
+    render::BgfxConfig config;
+    config.offscreen = true;
+    config.viewport.width = width != 0 ? width : viewport_.width;
+    config.viewport.height = height != 0 ? height : viewport_.height;
+
+    if (auto r = gpu->initialise(config); !r) return r.error();
+
+    // Noop is not a failure to bgfx: it validates every call and draws nothing, so init succeeds
+    // and the frame comes back blank with no error anywhere. Refuse it here instead, because a
+    // viewport that silently renders nothing is the single most expensive bug this project has
+    // had, twice.
+    if (gpu->rendererName() == "Noop") {
+        gpu->shutdown();
+        return kernel::Error{kernel::ErrorCode::Internal,
+                             "No GPU renderer available; the viewport would draw nothing.",
+                             "bgfx selected the Noop renderer"};
+    }
+
+    gpu_ = std::move(gpu);
+    active_ = gpu_->handle();
+
+    // Before any camera matrix is built. The two conventions differ by renderer, and getting it
+    // wrong depth-clips the whole scene and draws nothing — with no error.
+    camera_.setHomogeneousDepth(gpu_->homogeneousDepth());
+
+    // A SceneBuilder holds buffer ids issued by the resources it was built against, so it cannot
+    // be pointed at a different backend. Rebuild it and re-upload; at startup the document is
+    // usually empty, and when it is not this is a one-off cost at attach.
+    scene_ = std::make_unique<render::SceneBuilder>(*meshes_, *active_.resources);
+    viewport_ = config.viewport;
+    scene_->setViewport(viewport_);
+    active_.frames->resize(viewport_);
+    if (auto r = scene_->update(history_.current(), placements_); !r) return r.error();
+    scene_->setCamera(camera_.matrices(viewport_));
+
+    notifyView();
+    return {};
+}
+
+std::string Controller::rendererName() const {
+    return gpu_ ? gpu_->rendererName() : std::string("null");
+}
+
+kernel::Result<Controller::RenderedFrame> Controller::renderFrame() {
+    if (!gpu_) {
+        return kernel::Error{kernel::ErrorCode::InvalidInput,
+                             "No renderer is attached.",
+                             "call attachRenderer() first"};
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    active_.frames->submit(scene_->frame());
+    const auto t1 = std::chrono::steady_clock::now();
+    auto pixels = gpu_->captureFrame();
+    const auto t2 = std::chrono::steady_clock::now();
+    using Ms = std::chrono::duration<double, std::milli>;
+    timing_.submitMs = Ms(t1 - t0).count();
+    timing_.captureMs = Ms(t2 - t1).count();
+    if (!pixels) return pixels.error();
+
+    RenderedFrame out;
+    out.width = viewport_.width;
+    out.height = viewport_.height;
+    out.pixels = std::move(pixels.value());
+    return out;
 }
 
 Controller::Stats Controller::stats() const {

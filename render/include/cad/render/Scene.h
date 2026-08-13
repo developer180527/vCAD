@@ -57,6 +57,10 @@ public:
     };
     void setCullSettings(const CullSettings&) noexcept;
 
+    /// Viewport clear colour, linear 0..1. Here rather than in BgfxConfig because it is a per
+    /// frame property the shell changes with the theme, not a device setting fixed at init.
+    void setBackground(float r, float g, float b) noexcept;
+
     struct CullStats {
         std::size_t cells = 0;              ///< spatial cells across all batches
         std::size_t cellsVisible = 0;
