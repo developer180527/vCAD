@@ -39,21 +39,22 @@ Two rules keep the exercise honest:
 | Status bar: message, units, stats | **Present** | |
 | Home workspace: rail, project strip, recent | **Present** | |
 | 3D viewport | **Placeholder** | Qt-painted; bgfx is a separate job |
-| Sketch canvas | **Present** | Draw, select, constrain |
+| Sketch canvas | **Present** | Draw, snap, select, constrain, delete |
+| Logging | **Present** | Categories, file sink beside the binary, Qt and OCCT adopted |
 | — | | |
-| **Command property panel** (left dock takeover) | **MISSING** | DESKTOP_UX 3.2. The single most important gap: every non-trivial command needs it |
+| Command property panel (left dock takeover) | **Present** | Box, Cylinder, Extrude. Retired the QInputDialog stopgap |
 | **ViewCube** | **MISSING** | In the placeholder's paint only, not a real widget |
 | **Navigation bar** | **MISSING** | Same |
 | **Heads-up view toolbar** | **MISSING** | SolidWorks pattern: view controls inside the graphics area |
-| **Context toolbar on selection** | **MISSING** | SolidWorks pattern |
-| **Marking menu** (radial right-click) | **MISSING** | Inventor pattern; expert-speed |
-| **Options / Settings dialog** | **MISSING** | Units, tolerances, navigation preset, theme, cache paths |
-| **Browser: rollback marker as a draggable row** | **MISSING** | Rollback works; it has no tree presence |
-| **Browser: feature state badges** (ERR/WARN/suppressed) | **MISSING** | DESKTOP_UX 3.4; `Engine` already computes the state |
-| **Browser: context menu** (rename, delete, suppress, edit) | **MISSING** | |
-| **Sketch: dimension display** | **MISSING** | Constraints exist; nothing draws them |
-| **Sketch: constraint glyphs on geometry** | **MISSING** | A sketch you cannot read is a sketch you cannot trust |
-| **Sketch: DOF readout in the status bar** | **MISSING** | `lastSketchSolve()` has the number |
+| Context toolbar on selection | **Present** | Sketch canvas; positioned above the selection |
+| Marking menu (radial right-click) | **Present** | Eight fixed wedges, dead zone, disabled not absent |
+| Options / Settings dialog | **Present** | Units, navigation, inference tolerances. **Not persisted across restarts** |
+| **Browser: rollback marker as a draggable row** | **MISSING** | Works from the context menu; not draggable |
+| Browser: feature state badges | **Present** | ERR / BLOCKED / dirty, and strikethrough for rolled-back |
+| Browser: context menu | **Present** | Edit Sketch, Rename, Roll Back to Here, Roll Forward, Delete |
+| Sketch: dimension display | **Present** | Amber, with extension lines, offset off the geometry |
+| Sketch: constraint glyphs | **Present** | Green; coincidence as a dot rather than a letter |
+| Sketch: DOF readout in the status bar | **Present** | Curves, constraints, and the DOF or conflict count |
 | **Task pane** (right, libraries/appearances) | Out of scope | Needs content that does not exist |
 | **InfoCenter / search** | Out of scope | |
 
@@ -61,7 +62,9 @@ Two rules keep the exercise honest:
 
 ## Build order
 
-Ordered by *how much functionality each unblocks*, not by visual impact.
+**Status, Aug 2026: items 1, 2, 3, 5 and 6 are done.** What remains is item 4, which is gated on a
+decision, and item 7, which is small. Ordered by *how much functionality each unblocks*, not by
+visual impact.
 
 1. **Command property panel.** The left dock swaps from `Model` to the running command and back.
    Everything with a parameter needs it — extrude distance, fillet radius, sketch dimensions — and
