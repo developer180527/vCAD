@@ -3,6 +3,7 @@
 #include "HomePage.h"
 #include "Icons.h"
 #include "Ribbon.h"
+#include "SketchCanvas.h"
 #include "ViewportPlaceholder.h"
 
 #include <QApplication>
@@ -424,6 +425,35 @@ void MainWindow::rebuildRibbon() {
     // Only the Part/model tab set exists, because Part is the only implemented document kind
     // (ADR 0009). Assembly and Drawing get their own sets here when their documents open.
 
+    // In the sketch environment the ribbon collapses to ONE tab, as Inventor's does. The app
+    // entered this mode for the user, so the commands follow without them choosing a mode.
+    if (c->environment() == cad::app::Environment::Sketch) {
+        auto* sketchTab = ribbon_->addTab(tr("Sketch"));
+        auto* draw = sketchTab->addPanel(tr("Draw"));
+        const auto addTool = [&](const QString& label, const QString& iconName,
+                                 SketchCanvas::Tool tool, const QString& shortcut) {
+            auto* action = new QAction(icon(iconName), label, this);
+            action->setToolTip(tr("%1 (%2)").arg(label, shortcut));
+            connect(action, &QAction::triggered, this, [this, tool] {
+                const std::size_t index = session_.activeIndex();
+                if (index < sketchCanvases_.size()) sketchCanvases_[index]->setTool(tool);
+            });
+            draw->addLarge(action);
+        };
+        addTool(tr("Line"), QStringLiteral("line"), SketchCanvas::Tool::Line, QStringLiteral("L"));
+        addTool(tr("Circle"), QStringLiteral("circle"), SketchCanvas::Tool::Circle,
+                QStringLiteral("C"));
+
+        auto* finish = sketchTab->addPanel(tr("Exit"));
+        finish->addLarge(commandOr("sketch.finish", tr("Finish\nSketch"),
+                                   QStringLiteral("sketch-finish")));
+        finish->addSmall(commandOr("sketch.cancel", tr("Cancel"), QStringLiteral("delete")));
+
+        ribbon_->setCurrentTab(0);
+        refreshCommandStates();
+        return;
+    }
+
     // ── 3D Model ────────────────────────────────────────────────────────────────────────
     auto* model = ribbon_->addTab(tr("3D Model"));
 
@@ -539,7 +569,8 @@ void MainWindow::rebuildRibbon() {
     auto* sketchManage = sketch->addPanel(tr("Manage"));
     sketchManage->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
                                      QStringLiteral("sketch")));
-    sketchManage->addLarge(planned(tr("Edit\nSketch"), QStringLiteral("sketch-edit")));
+    sketchManage->addLarge(commandOr("sketch.edit", tr("Edit\nSketch"),
+                                     QStringLiteral("sketch-edit")));
     sketchManage->addLarge(planned(tr("Delete\nSketch"), QStringLiteral("delete")));
 
     // ── Inspect ─────────────────────────────────────────────────────────────────────────
@@ -693,6 +724,13 @@ void MainWindow::createDocument(DocumentKind kind) {
     auto* c = session_.documents()[index].controller.get();
 
     auto* editor = new ViewportPlaceholder(*c, workspaces_);
+    // The sketch surface is a SIBLING in the stack, not an overlay on the viewport. A sketch is
+    // edited face-on in its own 2D coordinate system; sharing the 3D camera would mean unprojecting
+    // every click onto a plane before it meant anything.
+    auto* canvas = new SketchCanvas(*c, workspaces_);
+    workspaces_->addWidget(canvas);
+    sketchCanvases_.push_back(canvas);
+    connect(canvas, &SketchCanvas::sketchChanged, this, [this] { refreshStatus(); });
     workspaces_->addWidget(editor);
     editors_.push_back(editor);
 
@@ -707,6 +745,16 @@ void MainWindow::createDocument(DocumentKind kind) {
         // The title's dirty marker is derived from the document, so it has to be refreshed on
         // every edit — not only when the active document changes.
         syncTitle();
+        // An ENVIRONMENT change has to re-derive both the workspace widget and the ribbon, and
+        // neither happens on an ordinary document notification. Entering a sketch would otherwise
+        // leave the 3D viewport on screen with the model ribbon above it -- the mode would exist in
+        // app/ and be invisible in the shell. Guarded so an ordinary edit does not rebuild the
+        // ribbon on every keystroke.
+        if (c->environment() != lastEnvironment_) {
+            lastEnvironment_ = c->environment();
+            syncWorkspace();
+            rebuildRibbon();
+        }
         if (auto* w = workspaces_->currentWidget()) w->update();
     });
     c->onViewChanged([this, c] {
@@ -741,7 +789,18 @@ void MainWindow::syncWorkspace() {
         return;
     }
     const std::size_t index = session_.activeIndex();
-    if (index < editors_.size()) workspaces_->setCurrentWidget(editors_[index]);
+    if (index >= editors_.size()) return;
+    auto* c = controller();
+    const bool sketching = c != nullptr && c->environment() == cad::app::Environment::Sketch;
+    if (sketching && index < sketchCanvases_.size()) {
+        workspaces_->setCurrentWidget(sketchCanvases_[index]);
+        // Frame the sketch on entry: one loaded from a file can be anywhere, and an empty canvas
+        // showing the wrong region reads as "the sketch is gone".
+        sketchCanvases_[index]->fit();
+        sketchCanvases_[index]->setFocus();
+    } else {
+        workspaces_->setCurrentWidget(editors_[index]);
+    }
     if (index < session_.count()) {
         setWindowTitle(tr("vCAD — %1")
                            .arg(QString::fromStdString(session_.documents()[index].title)));

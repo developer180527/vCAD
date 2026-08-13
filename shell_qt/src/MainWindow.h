@@ -20,6 +20,7 @@ class QTreeWidget;
 namespace cadqt {
 
 class HomePage;
+class SketchCanvas;
 class Ribbon;
 class ViewportPlaceholder;
 
@@ -106,6 +107,12 @@ private:
     /// Carries the drag handle between the rail and the content column.
     QSplitter* homeSplitter_ = nullptr;
     QTabBar* documentTabs_ = nullptr;
+    /// One sketch canvas per open document, parallel to editors_. Held rather than looked up so
+    /// switching documents while sketching cannot show another document's sketch.
+    std::vector<SketchCanvas*> sketchCanvases_;
+    /// Last seen environment, so a change can be detected from a document notification. See the
+    /// comment at the observer.
+    cad::app::Environment lastEnvironment_ = cad::app::Environment::Model;
 
     /// One editor widget per open document, parallel to Session::documents(). Held rather than
     /// recreated so switching tabs preserves camera and scroll position.

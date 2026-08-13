@@ -15,6 +15,7 @@
 #include "cad/render/Camera.h"
 #include "cad/render/NullBackend.h"
 #include "cad/render/Scene.h"
+#include "cad/sketch/Sketch.h"
 
 #include <functional>
 #include <optional>
@@ -55,6 +56,19 @@ struct Command {
     std::function<bool(const CommandContext&)> enabled;
     std::function<void()> invoke;
 };
+
+/// What the app is currently doing, which changes what a click MEANS.
+///
+/// The concept DESKTOP_UX 3.1 identified as missing and three future features need: the sketch
+/// editor, assembly edit-in-place, and drawing sheets. It lives here rather than in the shell
+/// because the rule "in a sketch, clicks hit sketch geometry" is a model rule, not a Qt one -- put
+/// it in MainWindow and it does not exist on iPad.
+enum class Environment : std::uint8_t {
+    Model,   ///< the default: features, solids, the browser
+    Sketch,  ///< editing one sketch's geometry and constraints
+};
+
+const char* toString(Environment) noexcept;
 
 /// The application. One per open document.
 class Controller {
@@ -170,13 +184,52 @@ private:
     document::ObjectId addPrimitive(const std::string& type,
                                     const std::vector<std::pair<std::string, double>>& lengths);
 
+public:
+    // ── sketch environment ────────────────────────────────────────────────────────────────
+
+    [[nodiscard]] Environment environment() const noexcept { return environment_; }
+
+    /// Enters the sketch environment on an existing Sketch feature. The app enters this FOR the
+    /// user (ADR 0008's anti-workbench decision): you never pick a mode, you pick a thing to edit.
+    bool editSketch(document::ObjectId);
+
+    /// Creates a Sketch feature and immediately edits it — what Start Sketch does.
+    document::ObjectId beginSketch();
+
+    /// Writes the edited sketch back into its feature and returns to the model environment.
+    ///
+    /// One commit for the whole editing session, not per stroke. A user drawing twelve lines wants
+    /// one undo step called "Sketch", not twelve.
+    void finishSketch();
+
+    /// Leaves without writing anything back.
+    void cancelSketch();
+
+    /// The sketch being edited, or null outside the sketch environment. Non-const so the shell can
+    /// add geometry; every mutation must be followed by solveSketch().
+    [[nodiscard]] sketch::Sketch* activeSketch() noexcept;
+    [[nodiscard]] const sketch::Sketch* activeSketch() const noexcept;
+
+    /// Re-solves the edited sketch and notifies observers. Called after every edit, because a
+    /// sketch that does not follow its constraints while you draw is not a sketch.
+    sketch::SolveReport solveSketch();
+
+    /// Last solve's result, for the status bar's degrees-of-freedom readout.
+    [[nodiscard]] const sketch::SolveReport& lastSketchSolve() const noexcept {
+        return lastSketchSolve_;
+    }
+
     /// Moves the rollback marker. Null rolls the whole tree forward.
+    ///
+    /// Public with the sketch API above: the shell drives both directly, unlike the feature
+    /// builders below which exist only to serve registered commands.
     ///
     /// Not an undoable edit: where you are looking in the tree is not a change to the model, and an
     /// undo stack full of marker moves would bury the edits a user actually wants to undo.
     void setRollback(std::optional<document::ObjectId>);
     [[nodiscard]] std::optional<document::ObjectId> rollback() const;
 
+private:
     /// Adds a Sketch feature, seeded with a fully constrained rectangle.
     ///
     /// The seed is a STOPGAP and says so in the status line. A real Start Sketch enters a sketch
@@ -224,6 +277,13 @@ private:
 
     /// Document digest as of the last save (or of the empty document, which is why a brand-new
     /// document is not "modified" until it is actually edited).
+    Environment environment_ = Environment::Model;
+    /// The sketch being edited. Held by value: it is a working copy, so cancelling is simply
+    /// discarding it and no half-applied edit can reach the document.
+    std::optional<sketch::Sketch> editing_;
+    document::ObjectId editingId_;
+    sketch::SolveReport lastSketchSolve_;
+
     std::uint64_t savedDigest_ = 0;   ///< set in the constructor from saveDigest()
     std::vector<document::ObjectId> selection_;
     std::vector<render::Placement> placements_;

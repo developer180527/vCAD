@@ -339,6 +339,89 @@ std::vector<naming::ElementName> Controller::edgesOf(ObjectId id) const {
     return edges;
 }
 
+const char* toString(Environment e) noexcept {
+    switch (e) {
+        case Environment::Model:  return "Model";
+        case Environment::Sketch: return "Sketch";
+    }
+    return "Model";
+}
+
+bool Controller::editSketch(ObjectId id) {
+    const auto object = history_.current().find(id);
+    if (!object || object->type() != "Sketch") {
+        status("That is not a sketch.");
+        return false;
+    }
+    const auto* text = object->find("sketch");
+    const auto* serialized = text != nullptr ? std::get_if<std::string>(text) : nullptr;
+    if (serialized == nullptr) {
+        status("That sketch has no geometry to edit.");
+        return false;
+    }
+    auto parsed = sketch::Sketch::deserialize(*serialized);
+    if (!parsed) {
+        status(parsed.error().message);
+        return false;
+    }
+
+    editing_ = std::move(parsed.value());
+    editingId_ = id;
+    environment_ = Environment::Sketch;
+    lastSketchSolve_ = editing_->solve();
+    notifyDocument();
+    notifyView();
+    status("Editing " + object->label() + " — " + lastSketchSolve_.message);
+    return true;
+}
+
+ObjectId Controller::beginSketch() {
+    const ObjectId id = addSketch();
+    editSketch(id);
+    return id;
+}
+
+void Controller::finishSketch() {
+    if (!editing_.has_value()) return;
+    const auto object = history_.current().find(editingId_);
+    if (object) {
+        auto next = history_.current();
+        auto updated = object->withProperty("sketch", editing_->serialize());
+        next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+        // Everything downstream of the sketch has to rebuild: that is the whole point of editing it.
+        next = recompute::Engine::invalidate(next, editingId_);
+        history_.commit(std::move(next), "Edit Sketch");
+    }
+    editing_.reset();
+    environment_ = Environment::Model;
+    refresh();
+    status("Finished sketch");
+}
+
+void Controller::cancelSketch() {
+    editing_.reset();
+    environment_ = Environment::Model;
+    notifyDocument();
+    notifyView();
+    status("Discarded sketch changes");
+}
+
+sketch::Sketch* Controller::activeSketch() noexcept {
+    return editing_.has_value() ? &*editing_ : nullptr;
+}
+
+const sketch::Sketch* Controller::activeSketch() const noexcept {
+    return editing_.has_value() ? &*editing_ : nullptr;
+}
+
+sketch::SolveReport Controller::solveSketch() {
+    if (!editing_.has_value()) return {};
+    lastSketchSolve_ = editing_->solve();
+    notifyView();
+    notifyDocument();
+    return lastSketchSolve_;
+}
+
 void Controller::setRollback(std::optional<ObjectId> marker) {
     // replaceCurrent, not commit: see the header. Moving the marker is navigation, not an edit.
     history_.replaceCurrent(history_.current().withRollbackAfter(marker));
@@ -580,6 +663,29 @@ void Controller::registerCommands() {
     // separately so each is reachable now, and the mode selector can fold them together once the
     // non-modal command surface exists (DESKTOP_UX 3.2).
     const auto twoSelected = [](const CommandContext& c) { return c.selectedObjects == 2; };
+    commands_.push_back({"sketch.finish", "Finish Sketch",
+                         "Apply the sketch and return to the model", "sketch-finish",
+                         [this](const CommandContext&) {
+                             return environment_ == Environment::Sketch;
+                         },
+                         [this] { finishSketch(); }});
+    commands_.push_back({"sketch.cancel", "Cancel Sketch",
+                         "Discard changes and return to the model", "delete",
+                         [this](const CommandContext&) {
+                             return environment_ == Environment::Sketch;
+                         },
+                         [this] { cancelSketch(); }});
+    commands_.push_back({"sketch.edit", "Edit Sketch",
+                         "Edit the selected sketch's geometry", "sketch-edit",
+                         [this](const CommandContext& c) {
+                             if (c.selectedObjects != 1) return false;
+                             const auto o = history_.current().find(selection_.front());
+                             return o != nullptr && o->type() == "Sketch";
+                         },
+                         [this] {
+                             if (selection_.size() == 1) editSketch(selection_.front());
+                         }});
+
     commands_.push_back({"edit.rollback", "Roll Back",
                          "Suspend every feature after the selected one", "rollback",
                          [](const CommandContext& c) { return c.selectedObjects == 1; },
@@ -595,7 +701,7 @@ void Controller::registerCommands() {
 
     commands_.push_back({"feature.sketch", "Start Sketch",
                          "Create a sketch on the XY plane", "sketch", always,
-                         [this] { addSketch(); }});
+                         [this] { beginSketch(); }});
     commands_.push_back({"feature.extrude", "Extrude",
                          "Extrude the selected sketch into a solid", "extrude",
                          [this](const CommandContext& c) {
