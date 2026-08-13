@@ -1,6 +1,6 @@
 # 0007 — Renderer architecture and the swap seam
 
-Status: accepted (Aug 2026), amended — see "Amendment" at the end
+Status: accepted (Aug 2026), amended twice — see the two "Amendment" sections at the end
 
 ## Context
 
@@ -230,3 +230,113 @@ were doing anyway for the DDC. The 50,000 identical bolts tessellate once.
 Deferred to M3.3, recorded so the data model does not preclude them: GPU-driven frustum and
 occlusion culling, LOD selection, and small-feature culling (a part under a few pixels draws
 as a box or not at all).
+
+---
+
+# Amendment (Aug 2026, second): instancing is not the architecture
+
+The first amendment made instanced batches the organising principle of the renderer. That was
+wrong, and two independent findings force the change.
+
+## What forced it
+
+**1. Instancing has never worked.**
+
+`spikes/scale 8 1` places eight boxes on a 2x2x2 grid at 40 mm pitch. The scene builder uploads
+eight distinct transforms — dumped from `BgfxResources::uploadInstances` and verified correct,
+translations `(0,0,0) (40,0,0) (0,40,0) (40,40,0) (0,0,40) ...`. The framebuffer contains **one
+box**, at instance 0's transform. Every instance reads element 0 of the instance stream.
+
+It reproduces on both instance paths — the persistent dynamic vertex buffer and bgfx's transient
+`InstanceDataBuffer` — so it predates the M3.4 buffer change. bgfx's Metal backend advertises
+`BGFX_CAPS_INSTANCING`, so this is our usage or our shader pipeline, not a platform gap. The root
+cause is not yet identified.
+
+Consequence: **every scale number this project has published is void.** "100k parts at 40 draw
+calls", the triangle counts, the frame times — all of it measured one part's transform drawn N
+times. The claims in the first amendment's tables were never demonstrated.
+
+It survived because **no test in five tiers looks at a pixel**, and the one spike that captures
+pixels (`spikes/bgfx_offscreen`) renders a single instance with an identity basis at zero
+translation — precisely the configuration under which this bug is invisible. Counting what was
+submitted is not evidence that it was drawn.
+
+**2. The benchmark workload is unrepresentative.**
+
+`spikes/scale` builds N placements from 20 unique meshes. That is a 5000:1 duplication ratio, and
+it makes instancing look like the whole answer. Real assemblies are not shaped like that: repeats
+are fasteners, brackets and fittings — a large minority. The majority of a million-part model is
+*distinct* geometry, where instancing does nothing at all. The first amendment's dedupe table
+("100,000 parts -> ~1,000 meshes") describes the flattering case as though it were the general
+one.
+
+## Decision — clusters and a BVH, with instancing demoted to a special case
+
+The unit of drawing becomes a **cluster**, not a mesh:
+
+```
+Part     = mesh ref + transform + colour + element base + world bounds
+BVH      = built per rebuild over all parts
+Cluster  = a spatially local group of parts; the unit of culling, LOD and drawing
+```
+
+Clusters come in two kinds, chosen by mesh multiplicity:
+
+- **Merged** (the default). Part transforms are baked into a shared world-space vertex/index
+  buffer. One draw call covers many *distinct* parts, which is the case instancing cannot help.
+- **Instanced** (high-multiplicity meshes only). Today's path, kept because merging 50,000
+  identical bolts would put 50,000 copies of that mesh in GPU memory. That memory argument — not
+  the draw-call argument — is the real and only justification for instancing.
+
+**Culling is BVH traversal**, not the per-batch uniform grid M3.4 introduced. That grid is
+per-batch, so it cannot reject across batches; a BVH rejects a subtree of 10,000 parts with one
+test, and is the substrate the next two items need.
+
+**LOD is discrete tessellations**, cooked at three deflection tolerances and cached in the DDC
+exactly like the single tier is today, selected by projected screen size. Impostors — one quad
+per part — are the bottom tier, not the first resort.
+
+**Occlusion culling** against the BVH is what actually carries the overview case. In a dense
+assembly most parts are *inside* the model; frustum culling cannot reject them and LOD only makes
+drawing them cheaper. This is the technique the incumbent CAD viewers lean on hardest, and it is
+the one this renderer has none of.
+
+## What survives
+
+- **Decisions 1-5 of the original ADR.** Unaffected.
+- **The three-interface seam.** Unaffected in shape; `Batch` gains a cluster sibling. Occlusion
+  needs GPU visibility results feeding a CPU decision, which is a fourth *optional* interface, so
+  a backend that cannot do it degrades to frustum-only rather than failing to compile.
+- **Content-addressed meshes and the DDC.** Still right, and now also the natural home for LOD
+  tiers and for out-of-core streaming later.
+- **Element identity.** `CadVertex::element` plus a per-cluster base gives the same absolute slot
+  the pick shader already resolves. Topological naming, picking and highlighting are untouched.
+  This is the part of the current design that is genuinely load-bearing and correct.
+
+## What this costs
+
+`render/Scene.{h,cpp}` is largely replaced. The per-batch cell grid, the persistent instance
+buffers as the *primary* path, and `Instance::elementBase` as the *only* element addressing all
+go. Merged clusters mean a moved part dirties its cluster rather than one instance — acceptable,
+because assembly geometry is overwhelmingly static, but it is a real regression for the
+drag-a-part case and needs measuring rather than assuming.
+
+## The verification rule this ADR now imposes
+
+**A rendering claim is not established by a counter.** Any scale or correctness claim about the
+renderer must be backed by a pixel-level assertion on a scene with more than one part, at more
+than one transform. `spikes/scale` gets that assertion before any of the work above lands, and
+the "draw calls", "instances" and "triangles" counters are demoted to diagnostics.
+
+That rule is the actual lesson here. The renderer was reported as working, at scale, in three
+successive commits, on the strength of numbers that were internally consistent and entirely
+disconnected from what reached the screen.
+
+## Order
+
+1. Pixel verification in `spikes/scale` — multi-part, multi-transform.
+2. Fix instancing (needed for the instanced-cluster case regardless).
+3. BVH + merged clusters.
+4. LOD tiers from the DDC.
+5. Occlusion culling.
+6. Qt widget embedding.

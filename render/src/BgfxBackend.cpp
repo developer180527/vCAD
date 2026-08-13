@@ -364,6 +364,16 @@ struct BgfxBackend::Impl {
     std::uint32_t submitBatches(const SceneFrame& frame, bgfx::ViewId view,
                                 bgfx::ProgramHandle program, std::uint64_t state);
 
+    /// Re-applies the uniforms every shaded draw needs.
+    ///
+    /// PER DRAW, not per frame. `bgfx::submit` defaults to BGFX_DISCARD_ALL, and
+    /// BGFX_DISCARD_STATE is documented as discarding "state and uniform bindings" — so a
+    /// uniform set once before a loop of submits reaches the FIRST draw and nothing else. Every
+    /// batch after the first was drawing with undefined ambient and highlight. Invisible in the
+    /// single-batch offscreen spike, and in a real assembly it reads as inconsistent lighting
+    /// rather than as a bug.
+    void applyShadingUniforms();
+
     /// End a frame.
     ///
     /// Just `bgfx::frame()`. An earlier version also called `bgfx::renderFrame()` here, on the
@@ -407,6 +417,13 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readTarget(
     return pixels;
 }
 
+void BgfxBackend::Impl::applyShadingUniforms() {
+    const float shading[4]{config.ambient, 0, 0, 0};
+    const float noHighlight[4]{0, 0, 0, 0};
+    if (bgfx::isValid(uShading)) bgfx::setUniform(uShading, shading);
+    if (bgfx::isValid(uHighlight)) bgfx::setUniform(uHighlight, noHighlight);
+}
+
 std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::ViewId view,
                                               bgfx::ProgramHandle program,
                                               std::uint64_t state) {
@@ -432,6 +449,7 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
             // therefore no silent truncation.
             bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},
                                         range.instanceOffset, range.instanceCount);
+            applyShadingUniforms();
             // No backface culling, deliberately. Imported CAD geometry has inconsistent face
             // winding — foreign STEP and IGES routinely mix orientations — and the shader
             // already lights both sides. Culling would buy nothing except a second silent way
@@ -486,11 +504,6 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
     bgfx::setViewTransform(kViewShaded, frame.camera.view.m, frame.camera.projection.m);
     if (bgfx::isValid(impl_.colourFb)) bgfx::setViewFrameBuffer(kViewShaded, impl_.colourFb);
 
-    const float shading[4]{impl_.config.ambient, 0, 0, 0};
-    const float noHighlight[4]{0, 0, 0, 0};
-    bgfx::setUniform(impl_.uShading, shading);
-    bgfx::setUniform(impl_.uHighlight, noHighlight);
-
     if (frame.showShaded && bgfx::isValid(impl_.shaded)) {
         impl_.stats.drawCalls += impl_.submitBatches(
             frame, kViewShaded, impl_.shaded,
@@ -500,7 +513,6 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
 
     if (frame.showEdges && bgfx::isValid(impl_.edge)) {
         const float edgeParams[4]{impl_.config.edgeDepthBias, 0, 0, 0};
-        bgfx::setUniform(impl_.uEdgeParams, edgeParams);
 
         for (const EdgeBatch& batch : frame.edgeBatches) {
             if (batch.vertexCount == 0 || batch.instances == BufferId::None) continue;
@@ -511,10 +523,13 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
             const float colour[4]{float(batch.colour[0]) / 255.0f,
                                   float(batch.colour[1]) / 255.0f,
                                   float(batch.colour[2]) / 255.0f, 1.0f};
-            bgfx::setUniform(impl_.uEdgeColor, colour);
 
             for (const DrawRange& range : batch.ranges) {
                 if (range.instanceCount == 0) continue;
+                // Both uniforms inside the loop: see applyShadingUniforms on why once per batch
+                // is not enough.
+                bgfx::setUniform(impl_.uEdgeColor, colour);
+                bgfx::setUniform(impl_.uEdgeParams, edgeParams);
                 bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx}, batch.vertexOffset,
                                       batch.vertexCount);
                 // The SAME buffer the shaded pass used, at the same offsets. Edges used to
