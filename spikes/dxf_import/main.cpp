@@ -6,6 +6,7 @@
 // lost -- a reader that silently drops geometry is worse than one that refuses.
 
 #include "cad/sketch/Dxf.h"
+#include "cad/sketch/Infer.h"
 
 #include <cmath>
 #include <cstdio>
@@ -83,6 +84,45 @@ int main(int argc, char** argv) {
         auto bad = io::importDxf("CMakeLists.txt");
         std::printf("non-DXF refused: %s\n", bad ? "NO — accepted!" : "yes");
         ok = ok && !bad;
+    }
+
+    // ── constraint inference ────────────────────────────────────────────────────────────
+    //
+    // The point of the whole exercise: an imported DXF is dumb geometry, and this is what makes it
+    // parametric. The square's four corners should fuse and its edges become horizontal/vertical.
+    {
+        auto fresh = io::importDxf(path, options, nullptr);
+        sketch::InferenceOptions inf;
+        const auto ir = sketch::infer(fresh.value(), inf);
+        std::printf("\ninference: %s\n", ir.summary().c_str());
+
+        // Four corners of the closed square, each shared by two lines -> 4 coincidences. The
+        // construction centreline's ends do not touch anything.
+        ok = ok && ir.coincident == 4;
+        // Square: two horizontal edges, two vertical. Plus the horizontal centreline.
+        ok = ok && ir.horizontal == 3 && ir.vertical == 2;
+        // The real assertion: degrees of freedom must actually drop.
+        ok = ok && ir.dofsAfter < ir.dofsBefore;
+        // And inference must not contradict itself.
+        if (ir.conflicting != 0) {
+            std::printf("inference produced %zu conflicts — rules or tolerance are wrong\n",
+                        ir.conflicting);
+            ok = false;
+        }
+
+        // A tolerance near zero must still find EXACT coincidences. This file's square comes from a
+        // closed LWPOLYLINE, so its corners share vertices literally rather than approximately --
+        // and exact geometry is coincident at any tolerance. Asserting 0 here would have been
+        // asserting that a tight tolerance breaks correct input, which is the opposite of the point.
+        // Testing gap-fusing needs a file with actual gaps; this one has none by construction.
+        auto tight = io::importDxf(path, options, nullptr);
+        sketch::InferenceOptions strict;
+        strict.pointTolerance = 1e-12;
+        strict.angleToleranceDeg = 1e-9;
+        const auto sr = sketch::infer(tight.value(), strict);
+        std::printf("near-zero tolerance: %zu coincident (exact matches survive), %zu H/V\n",
+                    sr.coincident, sr.horizontal + sr.vertical);
+        ok = ok && sr.coincident == 4;
     }
 
     std::printf(ok ? "OK\n" : "FAIL\n");

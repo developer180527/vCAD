@@ -114,6 +114,10 @@ public:
                  bool construction = false);
 
     [[nodiscard]] const std::vector<Geometry>& geometry() const noexcept { return geometry_; }
+    /// Ids, index-aligned with geometry(). Exposed so callers that walk geometry positionally can
+    /// name what they found — constraint inference needs exactly this, and reconstructing it by
+    /// probing find() was both fragile and O(n^2).
+    [[nodiscard]] const std::vector<GeoId>& ids() const noexcept { return ids_; }
     [[nodiscard]] const Geometry* find(GeoId) const noexcept;
 
     /// Reads a characteristic point in sketch coordinates. Fails for a point a geometry does not

@@ -5,6 +5,7 @@
 cad_core_library(cad_sketch
   src/Sketch.cpp
   src/Dxf.cpp
+  src/Infer.cpp
 )
 
 target_include_directories(cad_sketch PUBLIC include)
