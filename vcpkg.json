@@ -16,7 +16,8 @@
     "glfw3",
     "sqlite3",
     "boost-graph",
-    "boost-math"
+    "boost-math",
+    "dime"
   ],
   "default-features": [
     "tests"
@@ -37,6 +38,7 @@
   },
   "builtin-baseline": "dc31f86a441067d6c2e9e4ad52988eb41ef4f442",
   "overrides": [],
+  "$comment-dime": "DXF read and write (Coin3D dime), BSD-3-Clause. Chosen over libdxfrw and dxflib specifically because those are GPL-2.0: linking either would raise vCAD floor to GPL and make proprietary plugins impossible. See COPYRIGHT.md. Entity coverage includes Line/Arc/Circle/Ellipse/Spline/LWPolyline/Polyline/Point/Insert, and UnknownEntity round-trips what it does not parse.",
   "$comment-boost": "planegcs needs Boost.Graph (connected_components, to partition a sketch into independent subsystems) and Boost.Math (constants). Header-only, so vcpkg copies headers rather than compiling. Requested instead of patching the vendored solver: reimplementing connected_components would be reinventing, and every edit to vendored code makes the next upstream sync a merge.",
   "$comment-sqlite3": "The native document format (ADR 0003). Requested explicitly rather than relying on the platform's copy: macOS and most Linux ship libsqlite3, Windows ships nothing, and assetlib's find_package(SQLite3 QUIET) was silently picking up the system one. A single C file -- seconds to build, and it does not touch OCCT.",
   "$comment-bgfx": "bgfx 1.129 with [tools] for shaderc. The tools feature pulls glslang and spirv-tools -- a real but one-time build. Compiling shaders from source beats checking in per-platform binary blobs nobody can regenerate. glfw3 is for the dev viewer only."
