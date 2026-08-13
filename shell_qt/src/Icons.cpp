@@ -375,6 +375,18 @@ QIcon icon(const QString& name, int size) {
         dashed.setStyle(Qt::DashLine);
         g.setPen(dashed);
         g.drawRect(QRectF(size * 0.32, size * 0.32, size * 0.36, size * 0.36));
+    } else if (name == "select") {
+        // An arrow cursor over a curve: the pointer is what every application uses for "pick".
+        QPainterPath arrow;
+        arrow.moveTo(size * 0.30, size * 0.18);
+        arrow.lineTo(size * 0.30, size * 0.72);
+        arrow.lineTo(size * 0.44, size * 0.58);
+        arrow.lineTo(size * 0.54, size * 0.80);
+        arrow.lineTo(size * 0.64, size * 0.74);
+        arrow.lineTo(size * 0.54, size * 0.53);
+        arrow.lineTo(size * 0.70, size * 0.50);
+        arrow.closeSubpath();
+        g.drawPath(arrow);
     } else if (name == "rollback" || name == "rollforward") {
         // The tree as three bars with the marker between them. Which bars are dimmed says which
         // features are suspended, so the two directions read differently at a glance.

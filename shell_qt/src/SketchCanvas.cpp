@@ -8,6 +8,7 @@
 #include <QPainterPath>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
 
 namespace cadqt {
@@ -17,6 +18,24 @@ using cad::sketch::GeoKind;
 using cad::sketch::PointRef;
 
 constexpr int kSnapPixels = 10;
+/// Tighter than the snap radius: snapping should be eager, selection should not. A pick that grabs
+/// the wrong curve is more annoying than one that misses, because the user must notice it first.
+constexpr double kPickPixels = 6.0;
+
+const QColor kSelected(0x0a, 0x6c, 0xc4);
+
+/// Distance from a point to a SEGMENT, not to the infinite line. A sketch is full of short
+/// collinear segments, and the infinite-line distance would let a click at one end of the sketch
+/// select a curve at the other.
+double distanceToSegment(QPointF p, QPointF a, QPointF b) {
+    const double dx = b.x() - a.x();
+    const double dy = b.y() - a.y();
+    const double lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared < 1e-12) return std::hypot(p.x() - a.x(), p.y() - a.y());
+    double t = ((p.x() - a.x()) * dx + (p.y() - a.y()) * dy) / lengthSquared;
+    t = std::clamp(t, 0.0, 1.0);
+    return std::hypot(p.x() - (a.x() + t * dx), p.y() - (a.y() + t * dy));
+}
 
 const QColor kBackground(0xfa, 0xfa, 0xf9);
 const QColor kGrid(0xe4, 0xe3, 0xe0);
@@ -122,6 +141,58 @@ SketchCanvas::Snap SketchCanvas::snapAt(QPointF screen) const {
     return best;
 }
 
+std::uint32_t SketchCanvas::pickAt(QPointF screen) const {
+    const auto* sketch = controller_.activeSketch();
+    if (sketch == nullptr) return cad::sketch::kNoGeo;
+
+    std::uint32_t best = cad::sketch::kNoGeo;
+    double bestDistance = kPickPixels;
+    const auto& ids = sketch->ids();
+    const auto& geometry = sketch->geometry();
+
+    for (std::size_t i = 0; i < geometry.size() && i < ids.size(); ++i) {
+        const auto& g = geometry[i];
+        double d = 1e30;
+        switch (g.kind) {
+            case GeoKind::Line:
+                d = distanceToSegment(screen, toScreen(g.p[0], g.p[1]), toScreen(g.p[2], g.p[3]));
+                break;
+            case GeoKind::Circle: {
+                const QPointF c = toScreen(g.p[0], g.p[1]);
+                // Distance to the RIM, not to the centre: a circle is the curve, and picking its
+                // middle would select it from anywhere inside a large one.
+                d = std::abs(std::hypot(screen.x() - c.x(), screen.y() - c.y()) - g.p[2] * scale_);
+                break;
+            }
+            case GeoKind::Arc: {
+                const QPointF c = toScreen(g.p[0], g.p[1]);
+                const double radial =
+                    std::abs(std::hypot(screen.x() - c.x(), screen.y() - c.y()) - g.p[2] * scale_);
+                // Only counts if the cursor is within the arc's SWEEP. Without this an arc is
+                // pickable all the way round the circle it belongs to, including the part that is
+                // not drawn.
+                double angle = std::atan2(-(screen.y() - c.y()), screen.x() - c.x());
+                double start = g.p[3];
+                double end = g.p[4];
+                while (end < start) end += 2 * M_PI;
+                while (angle < start) angle += 2 * M_PI;
+                d = (angle <= end) ? radial : 1e30;
+                break;
+            }
+            case GeoKind::Point: {
+                const QPointF at = toScreen(g.p[0], g.p[1]);
+                d = std::hypot(screen.x() - at.x(), screen.y() - at.y());
+                break;
+            }
+        }
+        if (d < bestDistance) {
+            bestDistance = d;
+            best = ids[i];
+        }
+    }
+    return best;
+}
+
 void SketchCanvas::paintEvent(QPaintEvent*) {
     QPainter g(this);
     g.setRenderHint(QPainter::Antialiasing, true);
@@ -150,8 +221,15 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
     const auto* sketch = controller_.activeSketch();
     if (sketch == nullptr) return;
 
-    for (const auto& geo : sketch->geometry()) {
-        QPen pen(geo.construction ? kConstruction : kProfile, geo.construction ? 1.2 : 2.0);
+    const auto& selection = controller_.sketchSelection();
+    const auto& geoIds = sketch->ids();
+    for (std::size_t gi = 0; gi < sketch->geometry().size(); ++gi) {
+        const auto& geo = sketch->geometry()[gi];
+        const bool isSelected =
+            gi < geoIds.size()
+            && std::find(selection.begin(), selection.end(), geoIds[gi]) != selection.end();
+        QPen pen(isSelected ? kSelected : (geo.construction ? kConstruction : kProfile),
+                 isSelected ? 2.8 : (geo.construction ? 1.2 : 2.0));
         if (geo.construction) pen.setStyle(Qt::DashLine);
         g.setPen(pen);
         switch (geo.kind) {
@@ -205,7 +283,24 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
 
 void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     auto* sketch = controller_.activeSketch();
-    if (sketch == nullptr || tool_ == Tool::Select) return;
+    if (sketch == nullptr) return;
+
+    if (tool_ == Tool::Select) {
+        if (event->button() != Qt::LeftButton) return;
+        const std::uint32_t hit = pickAt(event->position());
+        if (hit == cad::sketch::kNoGeo) {
+            // Clicking empty space clears, which is what every editor does and what makes a
+            // stale selection impossible to leave behind by accident.
+            controller_.clearSketchSelection();
+        } else {
+            const bool additive = (event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))
+                                  != 0;
+            controller_.selectSketchGeometry(hit, additive);
+        }
+        emit sketchChanged();
+        update();
+        return;
+    }
     if (event->button() == Qt::RightButton) {
         drawing_ = false;   // right-click abandons, as it does everywhere
         update();
@@ -274,8 +369,15 @@ void SketchCanvas::keyPressEvent(QKeyEvent* event) {
         }
         return;
     }
+    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+        controller_.deleteSketchSelection();
+        emit sketchChanged();
+        update();
+        return;
+    }
     if (event->key() == Qt::Key_L) setTool(Tool::Line);
     else if (event->key() == Qt::Key_C) setTool(Tool::Circle);
+    else if (event->key() == Qt::Key_S) setTool(Tool::Select);
     else QWidget::keyPressEvent(event);
 }
 

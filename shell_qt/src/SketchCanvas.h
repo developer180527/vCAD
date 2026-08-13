@@ -60,6 +60,13 @@ private:
     };
     [[nodiscard]] Snap snapAt(QPointF screen) const;
 
+    /// Nearest curve under the cursor within the pick radius, or kNoGeo.
+    ///
+    /// Hit testing is VIEW work, not model work: it needs screen distances and a pixel tolerance,
+    /// because "close enough to click" is a property of the display, not of the sketch. The
+    /// resulting selection is handed to the Controller, which owns it.
+    [[nodiscard]] std::uint32_t pickAt(QPointF screen) const;
+
     cad::app::Controller& controller_;
     Tool tool_ = Tool::Line;
 

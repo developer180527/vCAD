@@ -440,9 +440,24 @@ void MainWindow::rebuildRibbon() {
             });
             draw->addLarge(action);
         };
+        addTool(tr("Select"), QStringLiteral("select"), SketchCanvas::Tool::Select,
+                QStringLiteral("S"));
         addTool(tr("Line"), QStringLiteral("line"), SketchCanvas::Tool::Line, QStringLiteral("L"));
         addTool(tr("Circle"), QStringLiteral("circle"), SketchCanvas::Tool::Circle,
                 QStringLiteral("C"));
+
+        // Delete is on the Sketch tab too: with selection working it is the most-used edit here,
+        // and reaching for the model tab's Delete would leave the environment.
+        auto* modify = sketchTab->addPanel(tr("Modify"));
+        {
+            auto* del = new QAction(icon(QStringLiteral("delete")), tr("Delete"), this);
+            del->setToolTip(tr("Delete the selected sketch geometry (Del)"));
+            connect(del, &QAction::triggered, this, [this] {
+                if (auto* ctl = controller()) ctl->deleteSketchSelection();
+                refreshStatus();
+            });
+            modify->addSmall(del);
+        }
 
         auto* finish = sketchTab->addPanel(tr("Exit"));
         finish->addLarge(commandOr("sketch.finish", tr("Finish\nSketch"),

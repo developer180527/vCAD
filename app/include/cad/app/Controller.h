@@ -214,6 +214,25 @@ public:
     /// sketch that does not follow its constraints while you draw is not a sketch.
     sketch::SolveReport solveSketch();
 
+    /// Selected sketch geometry, by GeoId.
+    ///
+    /// Held here rather than in the canvas for the same reason the model selection is: what is
+    /// selected is a model fact that commands act on, and the iPad shell needs the same set. The
+    /// canvas does the HIT TESTING, which is genuinely view work -- it needs screen distances and a
+    /// pixel tolerance -- and reports the result here.
+    void selectSketchGeometry(sketch::GeoId, bool additive);
+    void clearSketchSelection();
+    [[nodiscard]] const std::vector<sketch::GeoId>& sketchSelection() const noexcept {
+        return sketchSelection_;
+    }
+
+    /// Deletes the selected sketch geometry, and every constraint that referred to it.
+    ///
+    /// Dropping the constraints is not optional: a constraint pointing at deleted geometry cannot
+    /// be satisfied or even evaluated, and leaving one behind means the next solve fails on a
+    /// sketch the user thinks they just tidied up.
+    void deleteSketchSelection();
+
     /// Last solve's result, for the status bar's degrees-of-freedom readout.
     [[nodiscard]] const sketch::SolveReport& lastSketchSolve() const noexcept {
         return lastSketchSolve_;
@@ -283,6 +302,7 @@ private:
     std::optional<sketch::Sketch> editing_;
     document::ObjectId editingId_;
     sketch::SolveReport lastSketchSolve_;
+    std::vector<sketch::GeoId> sketchSelection_;
 
     std::uint64_t savedDigest_ = 0;   ///< set in the constructor from saveDigest()
     std::vector<document::ObjectId> selection_;

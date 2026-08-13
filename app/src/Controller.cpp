@@ -5,6 +5,8 @@
 
 #include "cad/units/Units.h"
 
+#include <sstream>
+
 #include <algorithm>
 
 namespace cad::app {
@@ -412,6 +414,90 @@ sketch::Sketch* Controller::activeSketch() noexcept {
 
 const sketch::Sketch* Controller::activeSketch() const noexcept {
     return editing_.has_value() ? &*editing_ : nullptr;
+}
+
+void Controller::selectSketchGeometry(sketch::GeoId id, bool additive) {
+    if (!additive) sketchSelection_.clear();
+    const auto it = std::find(sketchSelection_.begin(), sketchSelection_.end(), id);
+    if (it != sketchSelection_.end()) {
+        sketchSelection_.erase(it);   // clicking a selected item again deselects, as in the tree
+    } else {
+        sketchSelection_.push_back(id);
+    }
+    notifyView();
+    notifyDocument();
+}
+
+void Controller::clearSketchSelection() {
+    if (sketchSelection_.empty()) return;
+    sketchSelection_.clear();
+    notifyView();
+    notifyDocument();
+}
+
+void Controller::deleteSketchSelection() {
+    if (!editing_.has_value() || sketchSelection_.empty()) return;
+
+    // Rebuild the sketch without the selected geometry rather than mutating in place: Sketch has no
+    // remove-geometry operation, and adding one that also had to rewrite every constraint's targets
+    // is a bigger change than this is worth today. Ids are PRESERVED on the survivors, so the
+    // constraints that remain still point at the right geometry.
+    const sketch::Sketch& old = *editing_;
+    sketch::Sketch next(old.plane());
+    std::vector<sketch::GeoId> kept;
+    for (std::size_t i = 0; i < old.geometry().size() && i < old.ids().size(); ++i) {
+        const sketch::GeoId id = old.ids()[i];
+        if (std::find(sketchSelection_.begin(), sketchSelection_.end(), id)
+            != sketchSelection_.end()) {
+            continue;
+        }
+        kept.push_back(id);
+    }
+
+    // Serialise, drop the removed lines, and parse back. Deserialise preserves ids, so this keeps
+    // every surviving constraint pointing where it did -- which is exactly why the text format was
+    // built to preserve them.
+    std::string rebuilt = "sketch 1\n";
+    rebuilt += std::string("plane ") + sketch::toString(old.plane()) + "\n";
+    std::istringstream in(old.serialize());
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("g ", 0) == 0) {
+            std::istringstream row(line);
+            std::string tag;
+            sketch::GeoId id = 0;
+            row >> tag >> id;
+            if (std::find(kept.begin(), kept.end(), id) == kept.end()) continue;
+            rebuilt += line + "\n";
+        } else if (line.rfind("c ", 0) == 0) {
+            // A constraint survives only if EVERY geometry it names survives.
+            std::istringstream row(line);
+            std::string tag;
+            std::string kind;
+            sketch::GeoId a = 0;
+            int ap = 0;
+            sketch::GeoId b = 0;
+            row >> tag >> kind >> a >> ap >> b;
+            const bool aKept = std::find(kept.begin(), kept.end(), a) != kept.end();
+            const bool bKept = b == sketch::kNoGeo
+                               || std::find(kept.begin(), kept.end(), b) != kept.end();
+            if (!aKept || !bKept) continue;
+            rebuilt += line + "\n";
+        }
+    }
+
+    auto parsed = sketch::Sketch::deserialize(rebuilt);
+    if (!parsed) {
+        status(parsed.error().message);
+        return;
+    }
+    const std::size_t removed = sketchSelection_.size();
+    editing_ = std::move(parsed.value());
+    sketchSelection_.clear();
+    lastSketchSolve_ = editing_->solve();
+    notifyView();
+    notifyDocument();
+    status("Deleted " + std::to_string(removed) + (removed == 1 ? " curve" : " curves"));
 }
 
 sketch::SolveReport Controller::solveSketch() {
