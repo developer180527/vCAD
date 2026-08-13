@@ -28,6 +28,7 @@ qt_add_executable(vcad
   src/Icons.cpp
   src/ViewportPlaceholder.cpp
   src/SketchCanvas.cpp
+  src/MarkingMenu.cpp
   src/HomePage.cpp
 )
 target_link_libraries(vcad PRIVATE cad::app Qt6::Widgets)

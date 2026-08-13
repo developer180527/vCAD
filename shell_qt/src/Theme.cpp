@@ -136,6 +136,12 @@ void applyTheme(QApplication& app) {
            features with annotations, rather than two columns of equal weight. */
         QTreeView::item:!selected { }
 
+        /* The selection toolbar floats over the canvas, so it needs its own edge and a solid
+           ground -- a translucent one over sketch geometry is unreadable exactly where it sits. */
+        #contextBar {
+            background: #f6f5f3; border: 1px solid #b8b6b1; border-radius: 4px;
+        }
+
         /* ── command property panel: the left dock while a command runs ─────────── */
         #commandPanel { background: #fafaf9; }
         #commandTitle { font-weight: 600; color: #1f2124; }

@@ -1,6 +1,12 @@
 #include "SketchCanvas.h"
 
+#include "MarkingMenu.h"
+
 #include "cad/app/Controller.h"
+#include "Icons.h"
+
+#include <QToolButton>
+#include <QHBoxLayout>
 
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -79,6 +85,35 @@ SketchCanvas::SketchCanvas(cad::app::Controller& controller, QWidget* parent)
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setCursor(Qt::CrossCursor);
+
+    // Context toolbar: a child widget rather than a popup, so it scrolls and clips with the canvas
+    // and cannot be left floating over another window when focus moves.
+    contextBar_ = new QWidget(this);
+    contextBar_->setObjectName(QStringLiteral("contextBar"));
+    auto* row = new QHBoxLayout(contextBar_);
+    row->setContentsMargins(4, 3, 4, 3);
+    row->setSpacing(2);
+    const auto addButton = [&](const QString& iconName, const QString& tip,
+                               cad::sketch::ConstraintKind kind) {
+        auto* button = new QToolButton(contextBar_);
+        button->setIcon(icon(iconName, 16));
+        button->setToolTip(tip);
+        button->setAutoRaise(true);
+        connect(button, &QToolButton::clicked, this, [this, kind] {
+            controller_.applySketchConstraint(kind);
+            emit sketchChanged();
+            update();
+        });
+        row->addWidget(button);
+        return button;
+    };
+    using CK = cad::sketch::ConstraintKind;
+    contextHorizontal_ = addButton(QStringLiteral("horizontal"), tr("Horizontal"), CK::Horizontal);
+    contextVertical_ = addButton(QStringLiteral("vertical"), tr("Vertical"), CK::Vertical);
+    contextParallel_ = addButton(QStringLiteral("parallel"), tr("Parallel"), CK::Parallel);
+    contextPerpendicular_ =
+        addButton(QStringLiteral("perpendicular"), tr("Perpendicular"), CK::Perpendicular);
+    contextBar_->hide();
 }
 
 void SketchCanvas::setTool(Tool t) {
@@ -417,8 +452,14 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (event->button() == Qt::RightButton) {
-        drawing_ = false;   // right-click abandons, as it does everywhere
-        update();
+        if (drawing_) {
+            // While drawing, right-click abandons the curve — the established meaning, and it must
+            // win over the menu or a half-drawn line becomes impossible to cancel by reflex.
+            drawing_ = false;
+            update();
+            return;
+        }
+        showMarkingMenu(event->globalPosition().toPoint());
         return;
     }
     if (event->button() != Qt::LeftButton) return;
@@ -469,6 +510,107 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
     update();
 }
 
+void SketchCanvas::showMarkingMenu(const QPoint& globalPos) {
+    using CK = cad::sketch::ConstraintKind;
+    const auto& selection = controller_.sketchSelection();
+    const auto* sketch = controller_.activeSketch();
+
+    const auto allLines = [&](std::size_t n) {
+        if (sketch == nullptr || selection.size() != n) return false;
+        for (const auto id : selection) {
+            const auto* g = sketch->find(id);
+            if (g == nullptr || g->kind != GeoKind::Line) return false;
+        }
+        return true;
+    };
+    const auto constrain = [this](CK kind) {
+        return [this, kind] {
+            controller_.applySketchConstraint(kind);
+            emit sketchChanged();
+            update();
+        };
+    };
+
+    std::vector<MarkingMenu::Item> items;
+    // Eight wedges maximum, and the SAME eight regardless of selection — disabled rather than
+    // absent. A radial menu whose items move depending on context destroys the muscle memory that
+    // is the only reason to make it radial.
+    items.push_back({tr("Line"), icon(QStringLiteral("line")),
+                     [this] { setTool(Tool::Line); }, true});
+    items.push_back({tr("Horizontal"), icon(QStringLiteral("horizontal")),
+                     constrain(CK::Horizontal), allLines(1)});
+    items.push_back({tr("Perpendicular"), icon(QStringLiteral("perpendicular")),
+                     constrain(CK::Perpendicular), allLines(2)});
+    items.push_back({tr("Equal"), icon(QStringLiteral("equal")),
+                     constrain(CK::EqualLength), allLines(2)});
+    items.push_back({tr("Delete"), icon(QStringLiteral("delete")),
+                     [this] {
+                         controller_.deleteSketchSelection();
+                         emit sketchChanged();
+                         update();
+                     },
+                     !selection.empty()});
+    items.push_back({tr("Parallel"), icon(QStringLiteral("parallel")),
+                     constrain(CK::Parallel), allLines(2)});
+    items.push_back({tr("Vertical"), icon(QStringLiteral("vertical")),
+                     constrain(CK::Vertical), allLines(1)});
+    items.push_back({tr("Select"), icon(QStringLiteral("select")),
+                     [this] { setTool(Tool::Select); }, true});
+
+    MarkingMenu::popup(this, globalPos, std::move(items));
+}
+
+void SketchCanvas::syncContextToolbar() {
+    const auto& selection = controller_.sketchSelection();
+    const auto* sketch = controller_.activeSketch();
+    if (contextBar_ == nullptr) return;
+
+    if (selection.empty() || sketch == nullptr) {
+        contextBar_->hide();
+        return;
+    }
+
+    // Enabled state mirrors the ribbon's, so the same command is offered in the same condition
+    // wherever the user reaches for it.
+    bool oneLine = selection.size() == 1;
+    bool twoLines = selection.size() == 2;
+    for (const auto id : selection) {
+        const auto* g = sketch->find(id);
+        if (g == nullptr || g->kind != GeoKind::Line) {
+            oneLine = false;
+            twoLines = false;
+        }
+    }
+    contextHorizontal_->setEnabled(oneLine);
+    contextVertical_->setEnabled(oneLine);
+    contextParallel_->setEnabled(twoLines);
+    contextPerpendicular_->setEnabled(twoLines);
+
+    // Positioned NEAR the selection, offset above it so the toolbar never covers the thing it acts
+    // on — the failure that makes a context toolbar worse than a ribbon trip.
+    QPointF anchor;
+    int found = 0;
+    for (const auto id : selection) {
+        if (const auto p = sketch->pointAt(id, cad::sketch::PointRef::Start)) {
+            anchor += toScreen(p.value()[0], p.value()[1]);
+            ++found;
+        }
+    }
+    if (found == 0) {
+        contextBar_->hide();
+        return;
+    }
+    anchor /= found;
+    contextBar_->adjustSize();
+    int x = static_cast<int>(anchor.x()) - contextBar_->width() / 2;
+    int y = static_cast<int>(anchor.y()) - contextBar_->height() - 14;
+    if (y < 4) y = static_cast<int>(anchor.y()) + 18;   // flip below when there is no room above
+    x = std::clamp(x, 4, std::max(4, width() - contextBar_->width() - 4));
+    contextBar_->move(x, y);
+    contextBar_->show();
+    contextBar_->raise();
+}
+
 void SketchCanvas::mouseMoveEvent(QMouseEvent* event) {
     cursor_ = event->position();
     update();
@@ -509,6 +651,7 @@ void SketchCanvas::wheelEvent(QWheelEvent* event) {
 
 void SketchCanvas::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
+    syncContextToolbar();
     update();
 }
 

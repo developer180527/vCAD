@@ -2,6 +2,8 @@
 
 #include <QWidget>
 
+class QToolButton;
+
 namespace cad::app { class Controller; }
 
 namespace cadqt {
@@ -28,6 +30,10 @@ public:
     /// Frames the sketch. Called when the environment is entered, since a sketch loaded from a file
     /// can be anywhere.
     void fit();
+
+    /// Repositions and re-enables the selection toolbar. Public so the window can call it after a
+    /// selection change that did not originate here.
+    void syncContextToolbar();
 
 signals:
     /// Emitted after any edit, so the window can refresh the DOF readout.
@@ -66,6 +72,7 @@ private:
     /// because "close enough to click" is a property of the display, not of the sketch. The
     /// resulting selection is handed to the Controller, which owns it.
     [[nodiscard]] std::uint32_t pickAt(QPointF screen) const;
+    void showMarkingMenu(const QPoint& globalPos);
 
     cad::app::Controller& controller_;
     Tool tool_ = Tool::Line;
@@ -78,6 +85,12 @@ private:
     double startV_ = 0.0;
     Snap startSnap_;
     QPointF cursor_;
+
+    QWidget* contextBar_ = nullptr;
+    QToolButton* contextHorizontal_ = nullptr;
+    QToolButton* contextVertical_ = nullptr;
+    QToolButton* contextParallel_ = nullptr;
+    QToolButton* contextPerpendicular_ = nullptr;
 };
 
 }  // namespace cadqt
