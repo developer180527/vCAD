@@ -452,7 +452,7 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
                 // Placement::transform is a column-major 4x3 affine — four columns of three
                 // floats — which is what the C ABI documents and what expandBounds above reads.
                 // The instance stream is three vec4s, because bgfx hands i_data0..2 to the shader
-                // as vec4s and instanceTransform() rebuilds the matrix as
+                // as vec4s and instancePosition() applies them as
                 //     column N = i_dataN.xyz,  translation = (i_data0.w, i_data1.w, i_data2.w)
                 // so each slot is one basis column plus one translation component.
                 //

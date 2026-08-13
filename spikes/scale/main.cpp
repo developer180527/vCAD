@@ -163,6 +163,15 @@ int main(int argc, char** argv) {
                 "is O(placements) and unavoidable)\n",
                 rebuildMs, noopRebuilds);
 
+    // Bounds, printed because they are the other explanation for "one box on screen": if they
+    // cover a single instance, the camera frames that one and the rest are simply outside the
+    // viewport. Identical symptom, entirely different bug.
+    {
+        const auto b = scene.bounds();
+        std::printf("bounds: (%.1f %.1f %.1f) .. (%.1f %.1f %.1f)\n", b.min[0], b.min[1],
+                    b.min[2], b.max[0], b.max[1], b.max[2]);
+    }
+
     render::CameraController camera;
     camera.setHomogeneousDepth(backend.homogeneousDepth());
     camera.fit(scene.bounds(), config.viewport);
@@ -293,6 +302,67 @@ int main(int argc, char** argv) {
     } else {
         std::printf("PASS  zoomed in, culling drew %zu of %zu instances in %zu draw ranges\n",
                     zoomed.instancesVisible, zoomed.instancesTotal, zoomed.ranges);
+    }
+
+    // PIXEL CHECK. ADR 0007's rule, applied to the spike that most needed it: a scale claim is not
+    // established by a counter. Counters said 8 instances for the entire life of the instancing
+    // bug; only the framebuffer knows how many boxes are actually there.
+    //
+    // Counts DISTINCT COLUMNS of lit pixels rather than total lit pixels. N boxes on a grid occupy
+    // N separate spans across the image, and a single box drawn N times on top of itself occupies
+    // one -- which is precisely the failure, and is invisible to any total.
+    {
+        auto pixels = backend.captureFrame();
+        if (!pixels) {
+            std::printf("capture failed: %s\n", pixels.error().message.c_str());
+            ++failures;
+        } else {
+            const auto& px = pixels.value();
+            const std::uint32_t w = config.viewport.width;
+            const std::uint32_t h = config.viewport.height;
+            std::vector<bool> litColumn(w, false);
+            std::size_t lit = 0;
+            for (std::uint32_t y = 0; y < h; ++y) {
+                for (std::uint32_t x = 0; x < w; ++x) {
+                    const std::size_t at = (static_cast<std::size_t>(y) * w + x) * 4;
+                    if (at + 2 >= px.size()) continue;
+                    if (px[at] > 80 || px[at + 1] > 80 || px[at + 2] > 80) {
+                        litColumn[x] = true;
+                        ++lit;
+                    }
+                }
+            }
+            std::size_t spans = 0;
+            bool inSpan = false;
+            for (std::uint32_t x = 0; x < w; ++x) {
+                if (litColumn[x] && !inSpan) { ++spans; inSpan = true; }
+                else if (!litColumn[x]) { inSpan = false; }
+            }
+            std::printf("pixels: %zu lit, %zu distinct horizontal spans\n", lit, spans);
+
+            if (FILE* f = std::fopen("scale.ppm", "wb")) {
+                std::fprintf(f, "P6\n%u %u\n255\n", w, h);
+                for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
+                    std::fputc(px[i], f);
+                    std::fputc(px[i + 1], f);
+                    std::fputc(px[i + 2], f);
+                }
+                std::fclose(f);
+                std::printf("wrote scale.ppm\n");
+            }
+
+            if (lit == 0) {
+                std::printf("FAIL: nothing rasterised\n");
+                ++failures;
+            } else if (instanceCount > 1 && spans < 2) {
+                std::printf("FAIL: %u instances requested but the image has ONE span -- every "
+                            "instance drew at the same transform\n", instanceCount);
+                ++failures;
+            } else {
+                std::printf("PASS  %zu spans for %u instances: instances are at distinct "
+                            "transforms\n", spans, instanceCount);
+            }
+        }
     }
 
     backend.shutdown();

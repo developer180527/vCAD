@@ -8,8 +8,8 @@ uniform vec4 u_edgeParams;   // x = depth bias in NDC
 
 void main()
 {
-	mat4 model = instanceTransform(i_data0, i_data1, i_data2);
-	vec4 clip = mul(u_viewProj, mul(model, vec4(a_position, 1.0)));
+	vec4 world = vec4(instancePosition(i_data0, i_data1, i_data2, a_position), 1.0);
+	vec4 clip = mul(u_viewProj, world);
 
 	// Pull edges toward the viewer in clip space. Without this they z-fight the surfaces they
 	// lie exactly on, producing the stippled, broken outlines that make a viewport look cheap.
