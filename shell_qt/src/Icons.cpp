@@ -375,6 +375,19 @@ QIcon icon(const QString& name, int size) {
         dashed.setStyle(Qt::DashLine);
         g.setPen(dashed);
         g.drawRect(QRectF(size * 0.32, size * 0.32, size * 0.36, size * 0.36));
+    } else if (name == "rollback" || name == "rollforward") {
+        // The tree as three bars with the marker between them. Which bars are dimmed says which
+        // features are suspended, so the two directions read differently at a glance.
+        const bool back = name == "rollback";
+        for (int r = 0; r < 3; ++r) {
+            const qreal y = size * (0.24 + r * 0.22);
+            const bool suspended = back ? r == 2 : r == 0;
+            g.setPen(QPen(suspended ? QColor(0xa8, 0xab, 0xaf) : kLine, pen.widthF()));
+            g.drawLine(QPointF(size * 0.20, y), QPointF(size * 0.80, y));
+        }
+        g.setPen(QPen(kAccent, pen.widthF() * 1.4));
+        const qreal marker = back ? size * 0.57 : size * 0.35;
+        g.drawLine(QPointF(size * 0.14, marker), QPointF(size * 0.86, marker));
     } else {
         g.drawRect(QRectF(size * 0.28, size * 0.28, size * 0.44, size * 0.44));
     }

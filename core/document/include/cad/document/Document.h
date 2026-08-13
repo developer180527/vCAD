@@ -144,6 +144,27 @@ public:
     /// a cycle is a user-visible modelling mistake, not an internal fault.
     [[nodiscard]] kernel::Result<std::vector<ObjectId>> topologicalOrder() const;
 
+    // ── rollback ──────────────────────────────────────────────────────────────────────────
+    //
+    // The marker every history-based CAD application has: features after it are SUSPENDED, so you
+    // can move it back up the tree, insert a feature in the middle, and move it down again.
+    //
+    // Identified by ObjectId, not by an index. Ids are handed out monotonically and never reused,
+    // so id order IS creation order and the marker survives a feature above it being deleted --
+    // where an index would silently start suspending a different feature.
+    //
+    // Deliberately NOT part of digest(): where the marker sits does not change what any feature IS,
+    // so moving it must not invalidate a single cache key. Rolling forward then re-serves every
+    // suspended feature from the cache instead of recomputing it, which is what makes dragging the
+    // marker feel instant on a heavy model.
+
+    /// Last feature that computes. Null means the whole tree computes.
+    [[nodiscard]] std::optional<ObjectId> rollbackAfter() const noexcept;
+    [[nodiscard]] Document withRollbackAfter(std::optional<ObjectId>) const;
+
+    /// Whether `id` is suspended by the marker.
+    [[nodiscard]] bool isRolledBack(ObjectId) const noexcept;
+
     /// Content digest of the whole document. Deterministic across processes.
     [[nodiscard]] std::uint64_t digest() const;
 

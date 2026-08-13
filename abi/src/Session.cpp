@@ -24,6 +24,7 @@
 
 #include <exception>
 #include <map>
+#include <optional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -791,6 +792,29 @@ CadStatus cad_sketch_infer(CadSession handle, CadSketch sk, double pointToleranc
             s.lastError = report.summary();
             return CAD_OK;
         });
+    });
+}
+
+CadStatus cad_rollback_set(CadSession handle, CadObject id) {
+    return withSession(handle, [&](Session& s) {
+        std::optional<ObjectId> marker;
+        if (id != 0) {
+            if (!s.doc().contains(ObjectId{id})) {
+                return fail(s, CAD_ERR_BAD_HANDLE, "No such object to roll back to.");
+            }
+            marker = ObjectId{id};
+        }
+        s.history.replaceCurrent(s.doc().withRollbackAfter(marker));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_rollback_get(CadSession handle, CadObject* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        const auto marker = s.doc().rollbackAfter();
+        *out = marker.has_value() ? marker->value : 0;
+        return CAD_OK;
     });
 }
 

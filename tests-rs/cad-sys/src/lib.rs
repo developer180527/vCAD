@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 7;
+pub const CAD_ABI_VERSION_MINOR: u32 = 8;
 
 pub type CadStatus = i32;
 
@@ -284,6 +284,9 @@ extern "C" {
                                  scale: f64) -> CadStatus;
     pub fn cad_sketch_infer(s: CadSession, sk: CadSketch, point_tol: f64, angle_tol: f64,
                             parallel_perp: i32, out: *mut CadInferReport) -> CadStatus;
+
+    pub fn cad_rollback_set(s: CadSession, id: CadObject) -> CadStatus;
+    pub fn cad_rollback_get(s: CadSession, out: *mut CadObject) -> CadStatus;
 
     pub fn cad_document_save(s: CadSession, path: *const c_char) -> CadStatus;
     pub fn cad_document_open(s: CadSession, path: *const c_char) -> CadStatus;

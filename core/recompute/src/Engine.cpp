@@ -157,6 +157,27 @@ kernel::Result<std::pair<Document, RecomputeReport>> Engine::recompute(
 
         // 1. Blocked by an upstream failure? Mark and continue — do NOT abort the pass.
         //    A user with one broken feature in a fifty-feature part must still see the
+        // 0. Suspended by the rollback marker.
+        //
+        // Checked FIRST, before blocking and before the cache. A suspended feature is not failed and
+        // not blocked -- it is deliberately not part of the model right now -- so it gets Dirty with
+        // its output dropped. Dirty, because that is exactly true: it will need computing the moment
+        // the marker moves past it.
+        //
+        // Its output MUST be dropped rather than left stale. A suspended extrude that kept its solid
+        // would still be tessellated and drawn, so rolling back would suspend a feature and change
+        // nothing on screen.
+        //
+        // Not counted as failed or blocked in the report: nothing is wrong, and a status bar saying
+        // "3 features could not be built" after a deliberate rollback would be alarming nonsense.
+        if (doc.isRolledBack(id)) {
+            ++report.skipped;
+            poisoned.insert(id);   // so dependents below are Blocked, not attempted
+            doc = doc.replace(std::make_shared<const document::ObjectData>(
+                object->withState(document::ObjectState::Dirty).withoutOutput()));
+            continue;
+        }
+
         //    other forty-nine.
         bool blocked = false;
         for (const ObjectId in : object->inputs()) {

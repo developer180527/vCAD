@@ -288,6 +288,10 @@ kernel::Result<void> saveDocument(const document::Document& doc,
                 // The id allocator's high-water mark. See Document::withNextId for why losing
                 // this is a correctness bug and not a cosmetic one.
                 {"next_object_id", std::to_string(doc.nextId())},
+                // 0 means "no marker": object ids start at 1, so zero is unambiguous and needs no
+                // separate presence flag.
+                {"rollback_after",
+                 std::to_string(doc.rollbackAfter().has_value() ? doc.rollbackAfter()->value : 0)},
             };
             for (const auto& [key, value] : rows) {
                 meta.bind(1, std::string(key));
@@ -415,6 +419,15 @@ kernel::Result<document::Document> loadDocument(const std::filesystem::path& pat
 
     // Restore the allocator last: insert() only raised it past the ids present, which is wrong if
     // the highest-numbered object had been deleted before the save.
+    {
+        Stmt marker(db.get(), "SELECT value FROM meta WHERE key = 'rollback_after'");
+        if (marker.ok() && marker.step()) {
+            const auto raw = static_cast<std::uint64_t>(
+                std::strtoull(marker.asText(0).c_str(), nullptr, 10));
+            if (raw != 0) doc = doc.withRollbackAfter(document::ObjectId{raw});
+        }
+    }
+
     Stmt next(db.get(), "SELECT value FROM meta WHERE key = 'next_object_id'");
     if (next.ok() && next.step()) {
         doc = doc.withNextId(static_cast<std::uint64_t>(std::strtoull(

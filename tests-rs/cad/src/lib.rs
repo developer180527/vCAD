@@ -460,6 +460,18 @@ impl Session {
         Ok(r)
     }
 
+    /// Suspends every feature after `o`. `None` rolls the whole tree forward.
+    pub fn set_rollback(&mut self, o: Option<Object>) -> Result<()> {
+        let st = unsafe { sys::cad_rollback_set(self.handle, o.map_or(0, |x| x.0)) };
+        self.check(st)
+    }
+
+    pub fn rollback(&self) -> Result<Option<Object>> {
+        let mut id: sys::CadObject = 0;
+        self.check(unsafe { sys::cad_rollback_get(self.handle, &mut id) })?;
+        Ok(if id == 0 { None } else { Some(Object(id)) })
+    }
+
     /// Writes the feature tree to a native `.vpart` document (ADR 0003).
     ///
     /// Not the same as [`Self::export_file`], which writes geometry for other applications. This

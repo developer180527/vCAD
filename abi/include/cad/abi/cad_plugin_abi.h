@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 7
+#define CAD_ABI_VERSION_MINOR 8
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -355,6 +355,12 @@ CAD_API CadStatus cad_sketch_infer(CadSession, CadSketch, double point_tolerance
  *
  * cad_document_open REPLACES the session's document and clears its undo history — opening a file
  * is not an edit you can undo past. */
+/* Rollback marker: features AFTER `id` are suspended -- not computed, no output, not drawn.
+ * Pass 0 to roll the whole tree forward. Moving it is navigation, not an edit, so it does not
+ * create an undo step. */
+CAD_API CadStatus cad_rollback_set(CadSession, CadObject id_or_zero);
+CAD_API CadStatus cad_rollback_get(CadSession, CadObject* out_id_or_zero);
+
 CAD_API CadStatus cad_document_save(CadSession, const char* path);
 CAD_API CadStatus cad_document_open(CadSession, const char* path);
 

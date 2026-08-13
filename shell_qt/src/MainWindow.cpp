@@ -526,6 +526,14 @@ void MainWindow::rebuildRibbon() {
     editPanel->addSmall(commandOr("edit.redo", tr("Redo"), QStringLiteral("redo")));
     editPanel->addSmall(commandOr("edit.delete", tr("Delete"), QStringLiteral("delete")));
 
+    // Rollback gets its own panel rather than sitting in Edit: it is not an edit at all -- it moves
+    // where you are in the tree, and grouping it with Undo/Delete would suggest otherwise.
+    auto* historyPanel = model->addPanel(tr("History"));
+    historyPanel->addSmall(commandOr("edit.rollback", tr("Roll Back"),
+                                     QStringLiteral("rollback")));
+    historyPanel->addSmall(commandOr("edit.rollforward", tr("Roll Forward"),
+                                     QStringLiteral("rollforward")));
+
     // ── Sketch ──────────────────────────────────────────────────────────────────────────
     auto* sketch = ribbon_->addTab(tr("Sketch"));
     auto* sketchManage = sketch->addPanel(tr("Manage"));

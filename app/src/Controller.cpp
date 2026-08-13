@@ -339,6 +339,33 @@ std::vector<naming::ElementName> Controller::edgesOf(ObjectId id) const {
     return edges;
 }
 
+void Controller::setRollback(std::optional<ObjectId> marker) {
+    // replaceCurrent, not commit: see the header. Moving the marker is navigation, not an edit.
+    history_.replaceCurrent(history_.current().withRollbackAfter(marker));
+    // Placements for suspended features must go, or their last-known geometry keeps being drawn.
+    // refresh() rebuilds the scene from objects that still have output, so dropping placements whose
+    // object lost its output is what actually makes the viewport reflect the rollback.
+    refresh();
+    const auto& doc = history_.current();
+    placements_.erase(std::remove_if(placements_.begin(), placements_.end(),
+                                     [&](const render::Placement& p) {
+                                         const auto o = doc.find(p.object);
+                                         return !o || o->output() == nullptr;
+                                     }),
+                      placements_.end());
+    refresh();
+    if (marker.has_value()) {
+        const auto object = doc.find(*marker);
+        status("Rolled back to " + (object ? object->label() : std::string("a feature")));
+    } else {
+        status("Rolled forward to the end");
+    }
+}
+
+std::optional<ObjectId> Controller::rollback() const {
+    return history_.current().rollbackAfter();
+}
+
 ObjectId Controller::addSketch() {
     // A closed, fully constrained 40 x 25 rectangle on XY. Constrained rather than merely drawn:
     // the point of a sketch is that its dimensions drive it, and a seed with 8 free degrees of
@@ -553,6 +580,19 @@ void Controller::registerCommands() {
     // separately so each is reachable now, and the mode selector can fold them together once the
     // non-modal command surface exists (DESKTOP_UX 3.2).
     const auto twoSelected = [](const CommandContext& c) { return c.selectedObjects == 2; };
+    commands_.push_back({"edit.rollback", "Roll Back",
+                         "Suspend every feature after the selected one", "rollback",
+                         [](const CommandContext& c) { return c.selectedObjects == 1; },
+                         [this] {
+                             if (selection_.size() == 1) setRollback(selection_.front());
+                         }});
+    commands_.push_back({"edit.rollforward", "Roll Forward",
+                         "Compute the whole feature tree again", "rollforward",
+                         [this](const CommandContext&) {
+                             return history_.current().rollbackAfter().has_value();
+                         },
+                         [this] { setRollback(std::nullopt); }});
+
     commands_.push_back({"feature.sketch", "Start Sketch",
                          "Create a sketch on the XY plane", "sketch", always,
                          [this] { addSketch(); }});

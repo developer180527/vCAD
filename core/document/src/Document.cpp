@@ -122,6 +122,7 @@ struct Document::Impl {
     // cache keys.
     std::map<ObjectId, ObjectPtr> objects;
     std::uint64_t nextId = 1;
+    std::optional<ObjectId> rollbackAfter;
 };
 
 Document::Document() : impl_(std::make_shared<Impl>()) {}
@@ -167,6 +168,20 @@ Document Document::insert(ObjectPtr object) const {
 }
 
 std::uint64_t Document::nextId() const noexcept { return impl_->nextId; }
+
+std::optional<ObjectId> Document::rollbackAfter() const noexcept { return impl_->rollbackAfter; }
+
+Document Document::withRollbackAfter(std::optional<ObjectId> marker) const {
+    auto next = std::make_shared<Impl>(*impl_);
+    next->rollbackAfter = marker;
+    return Document(next);
+}
+
+bool Document::isRolledBack(ObjectId id) const noexcept {
+    if (!impl_->rollbackAfter.has_value()) return false;
+    // Strictly greater: the marker sits AFTER the named feature, so that feature still computes.
+    return id.value > impl_->rollbackAfter->value;
+}
 
 Document Document::withNextId(std::uint64_t value) const {
     auto next = std::make_shared<Impl>(*impl_);

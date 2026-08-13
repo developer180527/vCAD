@@ -17,6 +17,7 @@
 #include "cad/render/Scene.h"
 
 #include <functional>
+#include <optional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -168,6 +169,13 @@ private:
     /// Adds a primitive and selects it — the behaviour a user expects from a ribbon button.
     document::ObjectId addPrimitive(const std::string& type,
                                     const std::vector<std::pair<std::string, double>>& lengths);
+
+    /// Moves the rollback marker. Null rolls the whole tree forward.
+    ///
+    /// Not an undoable edit: where you are looking in the tree is not a change to the model, and an
+    /// undo stack full of marker moves would bury the edits a user actually wants to undo.
+    void setRollback(std::optional<document::ObjectId>);
+    [[nodiscard]] std::optional<document::ObjectId> rollback() const;
 
     /// Adds a Sketch feature, seeded with a fully constrained rectangle.
     ///
