@@ -7,6 +7,8 @@
 #include <map>
 #include <vector>
 
+class QButtonGroup;
+class QDockWidget;
 class QLabel;
 class QMenu;
 class QStackedWidget;
@@ -28,6 +30,11 @@ public:
     MainWindow();
     ~MainWindow() override;
 
+    /// Screenshot support (`--shot`). Selecting a ribbon tab and opening a populated document
+    /// are the two things a UI screenshot needs and a fresh window does not do on its own.
+    void selectRibbonTab(int index);
+    void openDemoDocument();
+
 private:
     void buildTopArea();          ///< QAT + ribbon, in ONE menu widget
     void buildDocks();
@@ -40,6 +47,16 @@ private:
     /// That is the anti-workbench decision made concrete: a user never selects a command set,
     /// they select a thing to edit and the commands follow.
     void rebuildRibbon();
+
+    /// The action for a real command from `Controller::commands()`, or null if it has none.
+    [[nodiscard]] QAction* command(const char* id);
+    /// A disabled stand-in for a command the app does not have yet. See the definition.
+    [[nodiscard]] QAction* planned(const QString& label, const QString& iconName);
+    /// The real command if `Controller` exposes it, otherwise a disabled stand-in. Lets the
+    /// ribbon be written once against the full command set: a command becomes live the day
+    /// `app/` grows it, with no edit here.
+    [[nodiscard]] QAction* commandOr(const char* id, const QString& label,
+                                     const QString& iconName);
 
     void refreshTree();
     void refreshProperties();
@@ -56,6 +73,10 @@ private:
 
     Ribbon* ribbon_ = nullptr;
     QMenu* fileMenu_ = nullptr;
+    /// Held so Home can hide them: Home is a full-window workspace, not a document.
+    QDockWidget* browserDock_ = nullptr;
+    QDockWidget* propertiesDock_ = nullptr;
+
     QTreeWidget* browser_ = nullptr;
     QTableWidget* properties_ = nullptr;
     QStackedWidget* workspaces_ = nullptr;
@@ -65,6 +86,10 @@ private:
     /// One editor widget per open document, parallel to Session::documents(). Held rather than
     /// recreated so switching tabs preserves camera and scroll position.
     std::vector<QWidget*> editors_;
+
+    /// Body / Face / Edge / Vertex. Shell-owned until IPicker can resolve by entity type.
+    QWidget* filterBar_ = nullptr;
+    QButtonGroup* selectionFilter_ = nullptr;
 
     QLabel* statusMessage_ = nullptr;
     QLabel* statusStats_ = nullptr;

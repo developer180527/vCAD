@@ -45,6 +45,19 @@ void applyTheme(QApplication& app) {
         #qatButton { border: 1px solid transparent; border-radius: 3px; padding: 3px; }
         #qatButton:hover { background: #d7e5f3; border-color: #a8c7e6; }
         #qatButton:disabled { color: #a8abaf; }
+
+        /* Selection filter: one segmented control, not four loose buttons. The shared border
+           and the squared inner corners are what make it read as a single choice. */
+        #qatFilterLabel { color: #6c7075; padding-right: 6px; }
+        #qatFilter {
+            border: 1px solid #c3c1bd; border-left-width: 0; background: #f4f3f1;
+            padding: 2px 9px; color: #33373b;
+        }
+        #qatFilter:first-child { border-left-width: 1px;
+                                 border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+        #qatFilter:last-child { border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+        #qatFilter:hover { background: #e4eef8; }
+        #qatFilter:checked { background: #0a70c8; color: #ffffff; border-color: #0a70c8; }
         #fileTab {
             background: #0a6cc4; color: white; border: none;
             padding: 5px 16px; font-weight: 600;
@@ -118,6 +131,40 @@ void applyTheme(QApplication& app) {
         #homeTile:hover { background: #eaf2fb; border-color: #0a6cc4; }
         #homeTile:disabled { background: #f4f3f1; color: #a8abaf; }
         #homeRecent { background: #fafaf9; }
+
+        /* ── home, Inventor layout ─────────────────────────────────────────────── */
+        #homeSidebar { background: #f1f0ee; border-right: 1px solid #dfdedb; }
+        #homeMain { background: #fafaf9; }
+        #homeProduct { font-size: 24px; font-weight: 300; color: #33373b; }
+        #homeProductSub { font-size: 12px; color: #83878c; }
+        #homeSideButton {
+            background: #fafaf9; border: 1px solid #c3c1bd; border-radius: 3px;
+            padding: 7px 12px; text-align: left; color: #33373b;
+        }
+        #homeSideButton:hover { background: #e4eef8; border-color: #0a70c8; }
+        #homeSideButton::menu-button { border: 0px; width: 18px; }
+        #homeLink { color: #0a70c8; }
+        #homeLinkDisabled { color: #a8abaf; }
+
+        #homeHeading { font-size: 21px; font-weight: 300; color: #33373b; }
+        #homeStripItem { color: #6c7075; }
+        #homeStripSeparator { color: #cfcdc9; }
+        #homeStripCache { color: #a8abaf; }
+        #homeStripCache[online="true"] { color: #1f8a4c; }
+        #homeSort { padding: 2px 6px; min-width: 118px; }
+        #homeSearch { padding: 3px 8px; border: 1px solid #c3c1bd; border-radius: 3px;
+                      background: #ffffff; }
+        #homeViewToggle { border: 1px solid transparent; border-radius: 3px; padding: 3px; }
+        #homeViewToggle:checked { background: #d7e5f3; border-color: #a8c7e6; }
+        #homeScroll { background: transparent; }
+        #homeCards { background: transparent; }
+
+        #homeCard { background: #ffffff; border: 1px solid #dfdedb; border-radius: 3px; }
+        #homeCard:hover { border-color: #0a70c8; }
+        #homeThumb { background: #f1f0ee; border: 1px solid #e6e5e2; }
+        #homeCardName { font-weight: 600; color: #33373b; }
+        #homeCardWhen { color: #83878c; font-size: 11px; }
+        #homeEmpty { color: #83878c; }
     )"));
 }
 

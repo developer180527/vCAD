@@ -112,6 +112,147 @@ QIcon icon(const QString& name, int size) {
         if (name == "save") g.drawRect(QRectF(size * 0.34, size * 0.50, size * 0.28, size * 0.32));
         if (name == "open") g.drawLine(QPointF(size * 0.24, size * 0.34),
                                        QPointF(size * 0.72, size * 0.34));
+    } else if (name == "sketch" || name == "sketch-edit") {
+        // A sketch plane with a profile on it.
+        g.drawRect(QRectF(size * 0.16, size * 0.30, size * 0.68, size * 0.44));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.30, size * 0.62), QPointF(size * 0.44, size * 0.40));
+        g.drawLine(QPointF(size * 0.44, size * 0.40), QPointF(size * 0.68, size * 0.56));
+        if (name == "sketch-edit") {
+            g.drawLine(QPointF(size * 0.60, size * 0.78), QPointF(size * 0.82, size * 0.56));
+        }
+    } else if (name == "extrude") {
+        // A profile pushed along an axis: the defining gesture of the command.
+        g.drawRect(QRectF(size * 0.18, size * 0.52, size * 0.32, size * 0.28));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.52, size * 0.60), QPointF(size * 0.82, size * 0.30));
+        g.drawLine(QPointF(size * 0.82, size * 0.30), QPointF(size * 0.70, size * 0.32));
+        g.drawLine(QPointF(size * 0.82, size * 0.30), QPointF(size * 0.80, size * 0.42));
+    } else if (name == "revolve") {
+        g.drawLine(QPointF(size * 0.24, size * 0.16), QPointF(size * 0.24, size * 0.84));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawEllipse(QRectF(size * 0.34, size * 0.28, size * 0.48, size * 0.44));
+    } else if (name == "fillet" || name == "chamfer") {
+        // The same corner, rounded or cut. Drawn as a pair so they read as siblings.
+        QPainterPath path;
+        path.moveTo(size * 0.22, size * 0.80);
+        path.lineTo(size * 0.22, size * 0.42);
+        if (name == "fillet") {
+            path.quadTo(size * 0.22, size * 0.22, size * 0.60, size * 0.22);
+        } else {
+            path.lineTo(size * 0.42, size * 0.22);
+            path.lineTo(size * 0.60, size * 0.22);
+        }
+        path.lineTo(size * 0.80, size * 0.22);
+        g.drawPath(path);
+        g.setPen(QPen(kAccent, pen.widthF()));
+        if (name == "chamfer") {
+            g.drawLine(QPointF(size * 0.22, size * 0.42), QPointF(size * 0.42, size * 0.22));
+        }
+    } else if (name == "shell") {
+        g.drawRect(QRectF(size * 0.20, size * 0.24, size * 0.60, size * 0.56));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.32, size * 0.36, size * 0.36, size * 0.32));
+    } else if (name == "hole") {
+        g.drawRect(QRectF(size * 0.18, size * 0.30, size * 0.64, size * 0.46));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawEllipse(QRectF(size * 0.42, size * 0.38, size * 0.18, size * 0.18));
+    } else if (name == "pattern-rect" || name == "pattern-circular" || name == "mirror") {
+        const qreal d = size * 0.16;
+        if (name == "pattern-rect") {
+            for (int r = 0; r < 2; ++r) {
+                for (int col = 0; col < 2; ++col) {
+                    g.setPen(r == 0 && col == 0 ? pen : QPen(kAccent, pen.widthF()));
+                    g.drawRect(QRectF(size * 0.24 + col * size * 0.30,
+                                      size * 0.24 + r * size * 0.30, d, d));
+                }
+            }
+        } else if (name == "pattern-circular") {
+            g.drawRect(QRectF(size * 0.42, size * 0.16, d, d));
+            g.setPen(QPen(kAccent, pen.widthF()));
+            g.drawRect(QRectF(size * 0.68, size * 0.60, d, d));
+            g.drawRect(QRectF(size * 0.16, size * 0.60, d, d));
+        } else {
+            g.drawRect(QRectF(size * 0.16, size * 0.34, size * 0.26, size * 0.32));
+            g.setPen(QPen(kAccent, pen.widthF()));
+            g.drawRect(QRectF(size * 0.58, size * 0.34, size * 0.26, size * 0.32));
+            g.drawLine(QPointF(size * 0.50, size * 0.18), QPointF(size * 0.50, size * 0.82));
+        }
+    } else if (name == "measure") {
+        g.drawLine(QPointF(size * 0.20, size * 0.66), QPointF(size * 0.80, size * 0.66));
+        g.drawLine(QPointF(size * 0.20, size * 0.56), QPointF(size * 0.20, size * 0.76));
+        g.drawLine(QPointF(size * 0.80, size * 0.56), QPointF(size * 0.80, size * 0.76));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.30, size * 0.36), QPointF(size * 0.70, size * 0.36));
+    } else if (name == "section") {
+        g.drawRect(QRectF(size * 0.20, size * 0.26, size * 0.60, size * 0.48));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.50, size * 0.16), QPointF(size * 0.50, size * 0.84));
+        g.drawLine(QPointF(size * 0.54, size * 0.34), QPointF(size * 0.74, size * 0.34));
+        g.drawLine(QPointF(size * 0.54, size * 0.50), QPointF(size * 0.74, size * 0.50));
+    } else if (name == "mass" || name == "draft") {
+        drawBox(g, size);
+        g.setPen(QPen(kAccent, pen.widthF()));
+        if (name == "mass") {
+            g.drawEllipse(QRectF(size * 0.44, size * 0.44, size * 0.12, size * 0.12));
+        } else {
+            g.drawLine(QPointF(size * 0.30, size * 0.78), QPointF(size * 0.60, size * 0.30));
+        }
+    } else if (name == "dimension") {
+        g.drawLine(QPointF(size * 0.20, size * 0.62), QPointF(size * 0.80, size * 0.62));
+        g.drawLine(QPointF(size * 0.20, size * 0.52), QPointF(size * 0.20, size * 0.72));
+        g.drawLine(QPointF(size * 0.80, size * 0.52), QPointF(size * 0.80, size * 0.72));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.40, size * 0.34), QPointF(size * 0.60, size * 0.34));
+    } else if (name == "note") {
+        g.drawRect(QRectF(size * 0.20, size * 0.22, size * 0.60, size * 0.44));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.30, size * 0.66), QPointF(size * 0.30, size * 0.82));
+    } else if (name == "parameters") {
+        for (int r = 0; r < 3; ++r) {
+            const qreal y = size * (0.30 + r * 0.18);
+            g.drawLine(QPointF(size * 0.20, y), QPointF(size * 0.80, y));
+        }
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawEllipse(QRectF(size * 0.54, size * 0.24, size * 0.12, size * 0.12));
+        g.drawEllipse(QRectF(size * 0.28, size * 0.42, size * 0.12, size * 0.12));
+    } else if (name == "cache" || name == "purge") {
+        // A stack of platters: the DDC as a store, not a folder.
+        for (int r = 0; r < 3; ++r) {
+            const qreal y = size * (0.28 + r * 0.18);
+            g.drawEllipse(QRectF(size * 0.22, y, size * 0.56, size * 0.16));
+        }
+        if (name == "purge") {
+            g.setPen(QPen(kAccent, pen.widthF()));
+            g.drawLine(QPointF(size * 0.26, size * 0.78), QPointF(size * 0.74, size * 0.26));
+        }
+    } else if (name == "shaded" || name == "shaded-edges" || name == "wireframe") {
+        drawBox(g, size);
+        if (name != "wireframe") {
+            g.setPen(Qt::NoPen);
+            g.setBrush(name == "shaded" ? kLine : kAccent);
+            g.drawRect(QRectF(size * 0.30, size * 0.40, size * 0.28, size * 0.28));
+            g.setBrush(Qt::NoBrush);
+        }
+    } else if (name == "origin" || name == "sketches") {
+        g.drawRect(QRectF(size * 0.18, size * 0.32, size * 0.44, size * 0.44));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.38, size * 0.22, size * 0.44, size * 0.44));
+    } else if (name == "view-list" || name == "view-grid") {
+        if (name == "view-list") {
+            for (int r = 0; r < 3; ++r) {
+                const qreal y = size * (0.28 + r * 0.20);
+                g.drawLine(QPointF(size * 0.22, y), QPointF(size * 0.28, y));
+                g.drawLine(QPointF(size * 0.38, y), QPointF(size * 0.78, y));
+            }
+        } else {
+            for (int r = 0; r < 2; ++r) {
+                for (int c = 0; c < 2; ++c) {
+                    g.drawRect(QRectF(size * (0.22 + c * 0.30), size * (0.22 + r * 0.30),
+                                      size * 0.22, size * 0.22));
+                }
+            }
+        }
     } else {
         g.drawRect(QRectF(size * 0.28, size * 0.28, size * 0.44, size * 0.44));
     }

@@ -5,6 +5,7 @@
 #include "Ribbon.h"
 #include "ViewportPlaceholder.h"
 
+#include <QButtonGroup>
 #include <QDockWidget>
 #include <QHeaderView>
 #include <QLabel>
@@ -62,6 +63,10 @@ MainWindow::MainWindow() {
         refreshStatus();
     });
 
+    // syncWorkspace, not just the refreshes: it is what hides the docks for Home, and startup
+    // begins on Home. Without it the first frame shows an empty Model tree next to the project
+    // page, which is exactly the "document failed to load" impression Home should never give.
+    syncWorkspace();
     rebuildRibbon();
     refreshDocumentTabs();
     refreshCommandStates();
@@ -133,6 +138,51 @@ void MainWindow::buildTopArea() {
     }, QKeySequence::Redo);
 
     qatRow->addStretch(1);
+
+    // Selection filter. Non-negotiable in CAD: picking an edge inside a dense assembly is
+    // otherwise impossible, and a filter that lives in a preferences dialog is a filter nobody
+    // knows is on. It sits at the right of the QAT, visible at all times, because "why did my
+    // click select the whole body" is a question the UI should already be answering.
+    //
+    // The shell owns the setting for now. It becomes a Controller concern the day IPicker
+    // resolves a pixel to the nearest entity of a requested TYPE rather than to one element —
+    // see DESKTOP_UX.md 3.3, which is a resolution rule over the ID buffer, not new GPU work.
+    //
+    // Hidden on Home, which has nothing to select. A filter offering to restrict picking on a
+    // page with no geometry is chrome pretending to be a control.
+    filterBar_ = new QWidget(qat);
+    auto* filterRow = new QHBoxLayout(filterBar_);
+    filterRow->setContentsMargins(0, 0, 0, 0);
+    filterRow->setSpacing(2);
+
+    auto* filterLabel = new QLabel(tr("Select"), filterBar_);
+    filterLabel->setObjectName(QStringLiteral("qatFilterLabel"));
+    filterRow->addWidget(filterLabel);
+
+    selectionFilter_ = new QButtonGroup(this);
+    selectionFilter_->setExclusive(true);
+    const std::array<std::pair<const char*, const char*>, 4> filters{{
+        {"Body", "Select whole bodies"},
+        {"Face", "Select faces"},
+        {"Edge", "Select edges"},
+        {"Vertex", "Select vertices"},
+    }};
+    int filterId = 0;
+    for (const auto& [name, tip] : filters) {
+        auto* button = new QToolButton(filterBar_);
+        button->setText(tr(name));
+        button->setToolTip(tr(tip));
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        button->setObjectName(QStringLiteral("qatFilter"));
+        if (filterId == 0) button->setChecked(true);
+        selectionFilter_->addButton(button, filterId++);
+        filterRow->addWidget(button);
+    }
+    qatRow->addWidget(filterBar_);
+    connect(selectionFilter_, &QButtonGroup::idClicked, this, [this](int) { refreshStatus(); });
+
+    qatRow->addSpacing(10);
     auto* product = new QLabel(tr("vCAD"), qat);
     product->setStyleSheet(QStringLiteral("color: #6c7075;"));
     qatRow->addWidget(product);
@@ -160,6 +210,33 @@ void MainWindow::buildTopArea() {
     fileMenu_->addAction(tr("Exit"), QKeySequence::Quit, this, &QWidget::close);
 }
 
+QAction* MainWindow::command(const char* id) {
+    const auto it = actions_.find(id);
+    return it == actions_.end() ? nullptr : it->second;
+}
+
+QAction* MainWindow::planned(const QString& label, const QString& iconName) {
+    // A command the app will have and does not yet: present, disabled, and honest about it.
+    //
+    // The alternative — showing only what works — makes the app look smaller than it is and
+    // makes every later release rearrange the ribbon under the user. Inventor's shape should be
+    // legible from the first run, which is the same argument that puts the unimplemented
+    // document kinds on the Home page (ADR 0009).
+    //
+    // Deliberately NOT routed through Controller::commands(): app/ exposes commands that exist.
+    // A disabled label is a shell concern.
+    auto* action = new QAction(label, this);
+    action->setIcon(icon(iconName));
+    action->setEnabled(false);
+    action->setToolTip(tr("%1 — not implemented yet").arg(label));
+    return action;
+}
+
+QAction* MainWindow::commandOr(const char* id, const QString& label, const QString& iconName) {
+    if (auto* existing = command(id)) return existing;
+    return planned(label, iconName);
+}
+
 void MainWindow::rebuildRibbon() {
     // Tabs are a function of the active workspace. Home contributes none of its own.
     ribbon_->clearTabs();
@@ -167,16 +244,22 @@ void MainWindow::rebuildRibbon() {
 
     auto* c = controller();
     if (c == nullptr) {
-        auto* start = ribbon_->addTab(tr("Get Started"));
-        auto* panel = start->addPanel(tr("New"));
-        for (const auto kind : {DocumentKind::Part, DocumentKind::Assembly,
-                                DocumentKind::Drawing}) {
-            auto* action = new QAction(QString::fromUtf8(cad::app::toString(kind)), this);
-            action->setIcon(icon(QString::fromUtf8(cad::app::toString(kind)).toLower()));
-            action->setEnabled(cad::app::implemented(kind));
-            connect(action, &QAction::triggered, this, [this, kind] { createDocument(kind); });
-            panel->addLarge(action);
-        }
+        // Home's ribbon, matching Inventor: application-level tabs only. Creating documents is
+        // the Home page's own job — the sidebar's New... button — so the ribbon does not
+        // duplicate it.
+        auto* tools = ribbon_->addTab(tr("Tools"));
+        auto* options = tools->addPanel(tr("Options"));
+        options->addLarge(planned(tr("Application\nOptions"), QStringLiteral("parameters")));
+        options->addLarge(planned(tr("Document\nSettings"), QStringLiteral("note")));
+        auto* cachePanel = tools->addPanel(tr("Cache"));
+        cachePanel->addLarge(planned(tr("Cache\nStatus"), QStringLiteral("cache")));
+        cachePanel->addSmall(planned(tr("Purge Local"), QStringLiteral("purge")));
+
+        auto* collaborate = ribbon_->addTab(tr("Collaborate"));
+        auto* project = collaborate->addPanel(tr("Project"));
+        project->addLarge(planned(tr("Projects"), QStringLiteral("assembly")));
+        project->addSmall(planned(tr("Search Paths"), QStringLiteral("open")));
+
         ribbon_->setCurrentTab(0);
         return;
     }
@@ -189,30 +272,87 @@ void MainWindow::rebuildRibbon() {
         connect(action, &QAction::triggered, this, [invoke] { invoke(); });
         actions_[command.id] = action;
     }
-    if (auto* undo = actions_["edit.undo"]) undo->setShortcut(QKeySequence::Undo);
-    if (auto* redo = actions_["edit.redo"]) redo->setShortcut(QKeySequence::Redo);
-    if (auto* del = actions_["edit.delete"]) del->setShortcut(QKeySequence::Delete);
+    if (auto* undo = command("edit.undo")) undo->setShortcut(QKeySequence::Undo);
+    if (auto* redo = command("edit.redo")) redo->setShortcut(QKeySequence::Redo);
+    if (auto* del = command("edit.delete")) del->setShortcut(QKeySequence::Delete);
 
+    // Only the Part/model tab set exists, because Part is the only implemented document kind
+    // (ADR 0009). Assembly and Drawing get their own sets here when their documents open.
+
+    // ── 3D Model ────────────────────────────────────────────────────────────────────────
     auto* model = ribbon_->addTab(tr("3D Model"));
-    auto* create = model->addPanel(tr("Create"));
-    create->addLarge(actions_["feature.box"]);
-    create->addLarge(actions_["feature.cylinder"]);
-    auto* modify = model->addPanel(tr("Modify"));
-    modify->addLarge(actions_["feature.cut"]);
-    auto* editPanel = model->addPanel(tr("Edit"));
-    editPanel->addSmall(actions_["edit.undo"]);
-    editPanel->addSmall(actions_["edit.redo"]);
-    editPanel->addSmall(actions_["edit.delete"]);
 
+    auto* sketchPanel = model->addPanel(tr("Sketch"));
+    sketchPanel->addLarge(planned(tr("Start\nSketch"), QStringLiteral("sketch")));
+
+    auto* create = model->addPanel(tr("Create"));
+    create->addLarge(commandOr("feature.box", tr("Box"), QStringLiteral("box")));
+    create->addLarge(commandOr("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
+    create->addLarge(planned(tr("Extrude"), QStringLiteral("extrude")));
+    create->addLarge(planned(tr("Revolve"), QStringLiteral("revolve")));
+
+    auto* modify = model->addPanel(tr("Modify"));
+    modify->addLarge(commandOr("feature.cut", tr("Cut"), QStringLiteral("cut")));
+    modify->addLarge(commandOr("feature.fillet", tr("Fillet"), QStringLiteral("fillet")));
+    modify->addLarge(commandOr("feature.chamfer", tr("Chamfer"), QStringLiteral("chamfer")));
+    modify->addSmall(planned(tr("Shell"), QStringLiteral("shell")));
+    modify->addSmall(planned(tr("Hole"), QStringLiteral("hole")));
+
+    auto* pattern = model->addPanel(tr("Pattern"));
+    pattern->addSmall(planned(tr("Rectangular"), QStringLiteral("pattern-rect")));
+    pattern->addSmall(planned(tr("Circular"), QStringLiteral("pattern-circular")));
+    pattern->addSmall(planned(tr("Mirror"), QStringLiteral("mirror")));
+
+    auto* editPanel = model->addPanel(tr("Edit"));
+    editPanel->addSmall(commandOr("edit.undo", tr("Undo"), QStringLiteral("undo")));
+    editPanel->addSmall(commandOr("edit.redo", tr("Redo"), QStringLiteral("redo")));
+    editPanel->addSmall(commandOr("edit.delete", tr("Delete"), QStringLiteral("delete")));
+
+    // ── Sketch ──────────────────────────────────────────────────────────────────────────
+    auto* sketch = ribbon_->addTab(tr("Sketch"));
+    auto* sketchManage = sketch->addPanel(tr("Manage"));
+    sketchManage->addLarge(planned(tr("Start\nSketch"), QStringLiteral("sketch")));
+    sketchManage->addLarge(planned(tr("Edit\nSketch"), QStringLiteral("sketch-edit")));
+    sketchManage->addLarge(planned(tr("Delete\nSketch"), QStringLiteral("delete")));
+
+    // ── Inspect ─────────────────────────────────────────────────────────────────────────
+    auto* inspect = ribbon_->addTab(tr("Inspect"));
+    auto* measure = inspect->addPanel(tr("Measure"));
+    measure->addLarge(planned(tr("Measure"), QStringLiteral("measure")));
+    auto* analysis = inspect->addPanel(tr("Analysis"));
+    analysis->addLarge(planned(tr("Section\nView"), QStringLiteral("section")));
+    analysis->addSmall(planned(tr("Mass Properties"), QStringLiteral("mass")));
+    analysis->addSmall(planned(tr("Draft Analysis"), QStringLiteral("draft")));
+
+    // ── Annotate ────────────────────────────────────────────────────────────────────────
+    auto* annotate = ribbon_->addTab(tr("Annotate"));
+    auto* annotation = annotate->addPanel(tr("3D Annotation"));
+    annotation->addLarge(planned(tr("Dimension"), QStringLiteral("dimension")));
+    annotation->addLarge(planned(tr("Note"), QStringLiteral("note")));
+
+    // ── Manage ──────────────────────────────────────────────────────────────────────────
+    auto* manage = ribbon_->addTab(tr("Manage"));
+    auto* parameters = manage->addPanel(tr("Parameters"));
+    parameters->addLarge(planned(tr("Parameters"), QStringLiteral("parameters")));
+    // The DDC, surfaced in the UI. No other CAD application has this panel because no other CAD
+    // application has a content-addressed recompute cache (ADR 0004).
+    auto* cache = manage->addPanel(tr("Cache"));
+    cache->addLarge(planned(tr("Cache\nStatus"), QStringLiteral("cache")));
+    cache->addSmall(planned(tr("Purge Local"), QStringLiteral("purge")));
+
+    // ── View ────────────────────────────────────────────────────────────────────────────
     auto* view = ribbon_->addTab(tr("View"));
     auto* navigate = view->addPanel(tr("Navigate"));
-    navigate->addLarge(actions_["view.fit"]);
-    navigate->addLarge(actions_["view.ortho"]);
+    navigate->addLarge(commandOr("view.fit", tr("Fit"), QStringLiteral("fit")));
+    navigate->addLarge(commandOr("view.ortho", tr("Ortho"), QStringLiteral("ortho")));
+    auto* appearance = view->addPanel(tr("Appearance"));
+    appearance->addSmall(planned(tr("Shaded"), QStringLiteral("shaded")));
+    appearance->addSmall(planned(tr("Shaded + Edges"), QStringLiteral("shaded-edges")));
+    appearance->addSmall(planned(tr("Wireframe"), QStringLiteral("wireframe")));
+    auto* visibility = view->addPanel(tr("Visibility"));
+    visibility->addSmall(planned(tr("Origin Planes"), QStringLiteral("origin")));
+    visibility->addSmall(planned(tr("All Sketches"), QStringLiteral("sketches")));
 
-    // Empty but present, so the app's shape is visible from the start instead of shifting later.
-    ribbon_->addTab(tr("Sketch"));
-    ribbon_->addTab(tr("Inspect"));
-    ribbon_->addTab(tr("Manage"));
     ribbon_->setCurrentTab(0);
     refreshCommandStates();
 }
@@ -263,6 +403,26 @@ void MainWindow::buildWorkspaces() {
     setCentralWidget(centre);
 }
 
+void MainWindow::selectRibbonTab(int index) {
+    if (ribbon_ != nullptr) ribbon_->setCurrentTab(index);
+}
+
+void MainWindow::openDemoDocument() {
+    createDocument(DocumentKind::Part);
+    auto* c = controller();
+    if (c == nullptr) return;
+    // Two features, so the browser has depth and the properties panel has something to show.
+    for (const char* id : {"feature.box", "feature.cylinder"}) {
+        for (const auto& command : c->commands()) {
+            if (command.id == id) { command.invoke(); break; }
+        }
+    }
+    refreshTree();
+    refreshProperties();
+    refreshCommandStates();
+    refreshStatus();
+}
+
 void MainWindow::createDocument(DocumentKind kind) {
     if (!cad::app::implemented(kind)) {
         statusMessage_->setText(
@@ -303,7 +463,15 @@ void MainWindow::createDocument(DocumentKind kind) {
 }
 
 void MainWindow::syncWorkspace() {
-    if (session_.homeActive()) {
+    // Home fills the window. Inventor hides the browser and the property panel there, and it is
+    // right to: neither has anything to show, and an empty Model tree beside a project page reads
+    // as a document that failed to load. They come back with the first document.
+    const bool home = session_.homeActive();
+    if (browserDock_ != nullptr) browserDock_->setVisible(!home);
+    if (propertiesDock_ != nullptr) propertiesDock_->setVisible(!home);
+    if (filterBar_ != nullptr) filterBar_->setVisible(!home);
+
+    if (home) {
         workspaces_->setCurrentWidget(home_);
         home_->refresh();
         setWindowTitle(tr("vCAD"));
@@ -341,7 +509,8 @@ void MainWindow::refreshDocumentTabs() {
 // ── docks ───────────────────────────────────────────────────────────────────────────────
 
 void MainWindow::buildDocks() {
-    auto* browserDock = new QDockWidget(tr("Model"), this);
+    browserDock_ = new QDockWidget(tr("Model"), this);
+    auto* browserDock = browserDock_;
     browserDock->setFeatures(QDockWidget::DockWidgetMovable);
     browser_ = new QTreeWidget(browserDock);
     browser_->setHeaderHidden(true);
@@ -362,7 +531,8 @@ void MainWindow::buildDocks() {
         }
     });
 
-    auto* propertiesDock = new QDockWidget(tr("Properties"), this);
+    propertiesDock_ = new QDockWidget(tr("Properties"), this);
+    auto* propertiesDock = propertiesDock_;
     propertiesDock->setFeatures(QDockWidget::DockWidgetMovable);
     properties_ = new QTableWidget(propertiesDock);
     properties_->setColumnCount(2);

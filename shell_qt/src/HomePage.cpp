@@ -2,33 +2,56 @@
 
 #include "Icons.h"
 
+#include <QButtonGroup>
+#include <QComboBox>
+#include <QDateTime>
+#include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QLabel>
-#include <QListWidget>
+#include <QLineEdit>
+#include <QMenu>
+#include <QPushButton>
+#include <QScrollArea>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QStyle>
 
 namespace cadqt {
 namespace {
 
-/// A big New tile, matching Inventor's New panel. Disabled tiles are still SHOWN: a user should
-/// see that Assembly exists and is coming, not wonder whether the app has one.
-QToolButton* newTile(QWidget* parent, cad::app::DocumentKind kind) {
-    auto* button = new QToolButton(parent);
-    const QString label = QString::fromUtf8(cad::app::toString(kind));
-    button->setText(cad::app::implemented(kind) ? label
-                                               : label + QObject::tr("\n(not yet)"));
-    button->setIcon(icon(label.toLower(), 48));
-    button->setIconSize(QSize(48, 48));
-    button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    button->setFixedSize(112, 100);
-    button->setEnabled(cad::app::implemented(kind));
-    button->setObjectName(QStringLiteral("homeTile"));
-    button->setToolTip(cad::app::implemented(kind)
-                           ? QObject::tr("Create a new %1").arg(label)
-                           : QObject::tr("%1 documents are not implemented yet").arg(label));
-    return button;
+using cad::app::DocumentKind;
+
+constexpr int kSidebarWidth = 250;
+constexpr int kCardWidth = 168;
+constexpr int kThumbHeight = 116;
+/// Four across before wrapping. Inventor reflows to the window; a fixed column count is the
+/// cheap version of that and is what the default window width gives anyway.
+constexpr int kCardColumns = 4;
+
+const std::array<DocumentKind, 4> kKinds{DocumentKind::Part, DocumentKind::Assembly,
+                                         DocumentKind::Drawing, DocumentKind::Presentation};
+
+QFrame* horizontalRule(QWidget* parent) {
+    auto* line = new QFrame(parent);
+    line->setFrameShape(QFrame::HLine);
+    line->setObjectName(QStringLiteral("homeRule"));
+    return line;
+}
+
+QLabel* separatorDot(QWidget* parent) {
+    auto* dot = new QLabel(QStringLiteral("│"), parent);
+    dot->setObjectName(QStringLiteral("homeStripSeparator"));
+    return dot;
+}
+
+/// "22/11/2024 16:41", Inventor's format. Relative time reads better in a list you scan daily;
+/// an absolute stamp is what an engineer quotes in a change note, which is the more common use.
+QString timestampOf(const std::filesystem::path& path) {
+    const QFileInfo info(QString::fromStdString(path.string()));
+    if (!info.exists()) return QObject::tr("not found");
+    return info.lastModified().toString(QStringLiteral("dd/MM/yyyy HH:mm"));
 }
 
 }  // namespace
@@ -36,66 +59,337 @@ QToolButton* newTile(QWidget* parent, cad::app::DocumentKind kind) {
 HomePage::HomePage(cad::app::Session& session, QWidget* parent)
     : QWidget(parent), session_(session) {
     setObjectName(QStringLiteral("homePage"));
-    auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(32, 28, 32, 28);
-    outer->setSpacing(18);
 
-    auto* title = new QLabel(tr("vCAD"), this);
-    title->setObjectName(QStringLiteral("homeTitle"));
-    outer->addWidget(title);
-
-    auto* newLabel = new QLabel(tr("New"), this);
-    newLabel->setObjectName(QStringLiteral("homeSection"));
-    outer->addWidget(newLabel);
-
-    auto* tiles = new QWidget(this);
-    auto* tileRow = new QGridLayout(tiles);
-    tileRow->setContentsMargins(0, 0, 0, 0);
-    tileRow->setSpacing(10);
-    int column = 0;
-    for (const auto kind : {cad::app::DocumentKind::Part, cad::app::DocumentKind::Assembly,
-                            cad::app::DocumentKind::Drawing,
-                            cad::app::DocumentKind::Presentation}) {
-        auto* tile = newTile(tiles, kind);
-        const int k = static_cast<int>(kind);
-        connect(tile, &QToolButton::clicked, this, [this, k] { emit createRequested(k); });
-        tileRow->addWidget(tile, 0, column++);
-    }
-    tileRow->setColumnStretch(column, 1);
-    outer->addWidget(tiles);
-
-    auto* line = new QFrame(this);
-    line->setFrameShape(QFrame::HLine);
-    line->setObjectName(QStringLiteral("homeRule"));
-    outer->addWidget(line);
-
-    auto* recentLabel = new QLabel(tr("Recent documents"), this);
-    recentLabel->setObjectName(QStringLiteral("homeSection"));
-    outer->addWidget(recentLabel);
-
-    recent_ = new QListWidget(this);
-    recent_->setObjectName(QStringLiteral("homeRecent"));
-    outer->addWidget(recent_, 1);
-    connect(recent_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
-        emit openRequested(item->data(Qt::UserRole).toString());
-    });
+    auto* row = new QHBoxLayout(this);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(0);
+    row->addWidget(buildSidebar(), 0);
+    row->addWidget(buildMain(), 1);
 
     refresh();
 }
 
-void HomePage::refresh() {
-    recent_->clear();
-    if (session_.recent().empty()) {
-        // Say what will appear here rather than leaving a blank box, which reads as broken.
-        auto* empty = new QListWidgetItem(tr("Documents you open will be listed here."), recent_);
-        empty->setFlags(Qt::NoItemFlags);
+// ── sidebar ─────────────────────────────────────────────────────────────────────────────
+
+QWidget* HomePage::buildSidebar() {
+    auto* side = new QWidget(this);
+    side->setObjectName(QStringLiteral("homeSidebar"));
+    side->setFixedWidth(kSidebarWidth);
+
+    auto* column = new QVBoxLayout(side);
+    column->setContentsMargins(26, 30, 26, 22);
+    column->setSpacing(0);
+
+    auto* product = new QLabel(tr("vCAD 0.1"), side);
+    product->setObjectName(QStringLiteral("homeProduct"));
+    column->addWidget(product);
+    column->addSpacing(4);
+
+    auto* milestone = new QLabel(tr("M3 · renderer"), side);
+    milestone->setObjectName(QStringLiteral("homeProductSub"));
+    column->addWidget(milestone);
+    column->addSpacing(26);
+    column->addWidget(horizontalRule(side));
+    column->addSpacing(18);
+
+    auto* open = new QPushButton(tr("Open..."), side);
+    open->setObjectName(QStringLiteral("homeSideButton"));
+    connect(open, &QPushButton::clicked, this, [this] { emit openBrowseRequested(); });
+    column->addWidget(open);
+    column->addSpacing(8);
+
+    // New..., with the kinds on a dropdown — Inventor's split button. The kinds that are not
+    // implemented are listed and disabled rather than hidden (ADR 0009 decision 2).
+    auto* create = new QToolButton(side);
+    create->setText(tr("New..."));
+    create->setObjectName(QStringLiteral("homeSideButton"));
+    create->setPopupMode(QToolButton::MenuButtonPopup);
+    create->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    auto* menu = new QMenu(create);
+    for (const auto kind : kKinds) {
+        const QString label = QString::fromUtf8(cad::app::toString(kind));
+        auto* action = menu->addAction(icon(label.toLower(), 16), label);
+        action->setEnabled(cad::app::implemented(kind));
+        const int k = static_cast<int>(kind);
+        connect(action, &QAction::triggered, this, [this, k] { emit createRequested(k); });
+    }
+    create->setMenu(menu);
+    connect(create, &QToolButton::clicked, this,
+            [this] { emit createRequested(static_cast<int>(DocumentKind::Part)); });
+    column->addWidget(create);
+
+    column->addStretch(1);
+
+    column->addWidget(horizontalRule(side));
+    column->addSpacing(12);
+    for (const auto& [text, enabled] : std::initializer_list<std::pair<QString, bool>>{
+             {tr("What's New"), false}, {tr("Help"), false},
+             {tr("Tutorials"), false}, {tr("Community"), false}}) {
+        auto* link = new QLabel(text, side);
+        link->setObjectName(enabled ? QStringLiteral("homeLink")
+                                    : QStringLiteral("homeLinkDisabled"));
+        column->addWidget(link);
+        column->addSpacing(6);
+    }
+    return side;
+}
+
+// ── main area ───────────────────────────────────────────────────────────────────────────
+
+QWidget* HomePage::buildMain() {
+    auto* main = new QWidget(this);
+    main->setObjectName(QStringLiteral("homeMain"));
+
+    auto* column = new QVBoxLayout(main);
+    column->setContentsMargins(28, 0, 28, 20);
+    column->setSpacing(0);
+
+    column->addWidget(buildProjectStrip());
+    column->addSpacing(22);
+
+    auto* heading = new QLabel(tr("Recent"), main);
+    heading->setObjectName(QStringLiteral("homeHeading"));
+    column->addWidget(heading);
+    column->addSpacing(10);
+
+    column->addWidget(buildRecentToolbar());
+    column->addSpacing(16);
+
+    auto* scroll = new QScrollArea(main);
+    scroll->setObjectName(QStringLiteral("homeScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+
+    scroll->viewport()->setAutoFillBackground(false);
+    cardsHost_ = new QWidget(scroll);
+    cardsHost_->setObjectName(QStringLiteral("homeCards"));
+    cardsHost_->setAutoFillBackground(false);
+    cards_ = new QGridLayout(cardsHost_);
+    cards_->setContentsMargins(0, 0, 0, 0);
+    cards_->setSpacing(14);
+    cards_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    scroll->setWidget(cardsHost_);
+    column->addWidget(scroll, 1);
+
+    return main;
+}
+
+QWidget* HomePage::buildProjectStrip() {
+    // Ours, not Inventor's (DESKTOP_UX 3.7). "Open this project" also means "use the team's
+    // cache", so the cache belongs next to the project rather than buried in preferences.
+    auto* strip = new QWidget(this);
+    strip->setObjectName(QStringLiteral("homeProjectStrip"));
+    auto* row = new QHBoxLayout(strip);
+    row->setContentsMargins(0, 14, 0, 12);
+    row->setSpacing(10);
+
+    projectName_ = new QLabel(strip);
+    projectName_->setObjectName(QStringLiteral("homeStripItem"));
+    row->addWidget(projectName_);
+    row->addWidget(separatorDot(strip));
+
+    projectPaths_ = new QLabel(strip);
+    projectPaths_->setObjectName(QStringLiteral("homeStripItem"));
+    row->addWidget(projectPaths_);
+    row->addWidget(separatorDot(strip));
+
+    cacheStatus_ = new QLabel(strip);
+    cacheStatus_->setObjectName(QStringLiteral("homeStripCache"));
+    row->addWidget(cacheStatus_);
+    row->addStretch(1);
+    return strip;
+}
+
+QWidget* HomePage::buildRecentToolbar() {
+    auto* bar = new QWidget(this);
+    auto* row = new QHBoxLayout(bar);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(8);
+
+    // List / grid toggle, as a pair of checkable buttons like Inventor's.
+    auto* views = new QButtonGroup(this);
+    views->setExclusive(true);
+    int viewId = 0;
+    for (const auto& name : {QStringLiteral("view-list"), QStringLiteral("view-grid")}) {
+        auto* button = new QToolButton(bar);
+        button->setIcon(icon(name, 16));
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        button->setObjectName(QStringLiteral("homeViewToggle"));
+        button->setToolTip(viewId == 0 ? tr("List view") : tr("Grid view"));
+        if (viewId == 1) button->setChecked(true);
+        views->addButton(button, viewId++);
+        row->addWidget(button);
+    }
+    connect(views, &QButtonGroup::idClicked, this, [this](int id) {
+        gridView_ = id == 1;
+        rebuildCards();
+    });
+
+    row->addWidget(separatorDot(bar));
+
+    auto* sortLabel = new QLabel(tr("Sort by"), bar);
+    sortLabel->setObjectName(QStringLiteral("homeStripItem"));
+    row->addWidget(sortLabel);
+
+    sort_ = new QComboBox(bar);
+    sort_->addItems({tr("Last Opened"), tr("Name"), tr("Kind")});
+    sort_->setObjectName(QStringLiteral("homeSort"));
+    connect(sort_, &QComboBox::currentIndexChanged, this, [this](int) { rebuildCards(); });
+    row->addWidget(sort_);
+
+    row->addStretch(1);
+
+    search_ = new QLineEdit(bar);
+    search_->setPlaceholderText(tr("Search recent"));
+    search_->setObjectName(QStringLiteral("homeSearch"));
+    search_->setFixedWidth(220);
+    search_->setClearButtonEnabled(true);
+    connect(search_, &QLineEdit::textChanged, this, [this](const QString&) { rebuildCards(); });
+    row->addWidget(search_);
+
+    return bar;
+}
+
+// ── cards ───────────────────────────────────────────────────────────────────────────────
+
+QWidget* HomePage::buildCard(const std::filesystem::path& path) {
+    auto* card = new QFrame(cardsHost_);
+    card->setObjectName(QStringLiteral("homeCard"));
+    card->setFixedWidth(kCardWidth);
+    card->setCursor(Qt::PointingHandCursor);
+
+    auto* column = new QVBoxLayout(card);
+    column->setContentsMargins(8, 8, 8, 10);
+    column->setSpacing(6);
+
+    // Thumbnail. A rendered preview belongs here; until documents can be opened and drawn there
+    // is nothing to render, so the kind's icon stands in rather than a grey rectangle that looks
+    // like a failed image load.
+    auto* thumb = new QLabel(card);
+    thumb->setObjectName(QStringLiteral("homeThumb"));
+    thumb->setFixedHeight(kThumbHeight);
+    thumb->setAlignment(Qt::AlignCenter);
+    thumb->setPixmap(icon(QStringLiteral("part"), 48).pixmap(48, 48));
+    column->addWidget(thumb);
+
+    auto* name = new QLabel(QString::fromStdString(path.filename().string()), card);
+    name->setObjectName(QStringLiteral("homeCardName"));
+    name->setWordWrap(false);
+    column->addWidget(name);
+
+    auto* when = new QLabel(timestampOf(path), card);
+    when->setObjectName(QStringLiteral("homeCardWhen"));
+    column->addWidget(when);
+
+    card->setToolTip(QString::fromStdString(path.string()));
+    return card;
+}
+
+QWidget* HomePage::buildEmptyState() {
+    auto* empty = new QWidget(cardsHost_);
+    auto* column = new QVBoxLayout(empty);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(14);
+
+    auto* text = new QLabel(tr("No recent documents. Start one:"), empty);
+    text->setObjectName(QStringLiteral("homeEmpty"));
+    column->addWidget(text);
+
+    auto* tiles = new QWidget(empty);
+    auto* tileRow = new QHBoxLayout(tiles);
+    tileRow->setContentsMargins(0, 0, 0, 0);
+    tileRow->setSpacing(10);
+    for (const auto kind : kKinds) {
+        const QString label = QString::fromUtf8(cad::app::toString(kind));
+        const bool ready = cad::app::implemented(kind);
+        auto* tile = new QToolButton(tiles);
+        // Disabled tiles are still SHOWN. A user should see that Assembly exists and is coming,
+        // not wonder whether the app has one.
+        tile->setText(ready ? label : label + tr("\n(not yet)"));
+        tile->setIcon(icon(label.toLower(), 48));
+        tile->setIconSize(QSize(48, 48));
+        tile->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        tile->setFixedSize(112, 104);
+        tile->setEnabled(ready);
+        tile->setObjectName(QStringLiteral("homeTile"));
+        tile->setToolTip(ready ? tr("Create a new %1").arg(label)
+                               : tr("%1 documents are not implemented yet").arg(label));
+        const int k = static_cast<int>(kind);
+        connect(tile, &QToolButton::clicked, this, [this, k] { emit createRequested(k); });
+        tileRow->addWidget(tile);
+    }
+    tileRow->addStretch(1);
+    column->addWidget(tiles);
+    column->addStretch(1);
+    return empty;
+}
+
+void HomePage::rebuildCards() {
+    while (QLayoutItem* item = cards_->takeAt(0)) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+
+    const QString needle = search_ != nullptr ? search_->text().trimmed() : QString();
+    std::vector<std::filesystem::path> shown;
+    for (const auto& path : session_.recent()) {
+        const QString name = QString::fromStdString(path.filename().string());
+        if (!needle.isEmpty() && !name.contains(needle, Qt::CaseInsensitive)) continue;
+        shown.push_back(path);
+    }
+
+    if (sort_ != nullptr && sort_->currentIndex() == 1) {
+        std::sort(shown.begin(), shown.end(), [](const auto& a, const auto& b) {
+            return a.filename().string() < b.filename().string();
+        });
+    }
+
+    if (shown.empty()) {
+        cards_->addWidget(session_.recent().empty()
+                              ? buildEmptyState()
+                              : [this] {
+                                    auto* none = new QLabel(tr("Nothing matches that search."),
+                                                            cardsHost_);
+                                    none->setObjectName(QStringLiteral("homeEmpty"));
+                                    return static_cast<QWidget*>(none);
+                                }(),
+                          0, 0);
         return;
     }
-    for (const auto& path : session_.recent()) {
-        auto* item = new QListWidgetItem(QString::fromStdString(path.filename().string()), recent_);
-        item->setData(Qt::UserRole, QString::fromStdString(path.string()));
-        item->setToolTip(QString::fromStdString(path.string()));
+
+    const int columns = gridView_ ? kCardColumns : 1;
+    int index = 0;
+    for (const auto& path : shown) {
+        cards_->addWidget(buildCard(path), index / columns, index % columns);
+        ++index;
     }
+}
+
+// ── refresh ─────────────────────────────────────────────────────────────────────────────
+
+void HomePage::refresh() {
+    const auto& project = session_.project();
+    projectName_->setText(project.loaded()
+                              ? tr("Project: %1").arg(QString::fromStdString(project.name))
+                              : tr("Project: none"));
+    projectPaths_->setText(tr("Search paths: %1 configured")
+                               .arg(project.searchPaths.size()));
+
+    // Honest about the cache: "online" is a claim about a directory we have not checked. Until
+    // the DDC reports its own status this says what is configured, not what is reachable.
+    if (project.sharedCache.empty()) {
+        cacheStatus_->setText(tr("○ Shared cache not configured"));
+        cacheStatus_->setProperty("online", false);
+    } else {
+        cacheStatus_->setText(
+            tr("● Shared cache: %1").arg(QString::fromStdString(project.sharedCache.string())));
+        cacheStatus_->setProperty("online", true);
+    }
+    cacheStatus_->style()->unpolish(cacheStatus_);
+    cacheStatus_->style()->polish(cacheStatus_);
+
+    rebuildCards();
 }
 
 }  // namespace cadqt

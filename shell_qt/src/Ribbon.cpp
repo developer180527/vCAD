@@ -13,6 +13,16 @@ constexpr int kSmallIcon = 16;
 /// up with the large buttons beside it.
 constexpr int kSmallPerColumn = 3;
 
+/// Every panel's button area is this tall, whatever it holds.
+///
+/// Without it a panel of three small buttons is shorter than a panel of large ones, and its
+/// caption floats up to meet it — so the captions form a ragged line across the ribbon. Inventor
+/// aligns them, and the alignment is most of what makes the band read as one surface rather than
+/// as a row of separate toolbars. Sized for the tallest thing a panel holds: a large button with
+/// a 32 px icon over a TWO-line label ("Start Sketch", "Section View"). Sizing it for one line
+/// clips the second, which is how it read at 62.
+constexpr int kPanelContentHeight = 72;
+
 }  // namespace
 
 // ── panel ───────────────────────────────────────────────────────────────────────────────
@@ -23,11 +33,12 @@ RibbonPanel::RibbonPanel(const QString& title, QWidget* parent) : QWidget(parent
     outer->setSpacing(2);
 
     auto* content = new QWidget(this);
+    content->setFixedHeight(kPanelContentHeight);
     row_ = new QHBoxLayout(content);
     row_->setContentsMargins(0, 0, 0, 0);
     row_->setSpacing(2);
     row_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    outer->addWidget(content, 1);
+    outer->addWidget(content, 0);
 
     // The caption UNDER the buttons. This one detail is most of what distinguishes a ribbon from
     // a toolbar in a tab widget.
@@ -38,6 +49,7 @@ RibbonPanel::RibbonPanel(const QString& title, QWidget* parent) : QWidget(parent
 }
 
 QToolButton* RibbonPanel::addLarge(QAction* action) {
+    if (action == nullptr) return nullptr;   // a command the app does not expose: show nothing
     auto* button = new QToolButton(this);
     button->setDefaultAction(action);
     button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
@@ -53,6 +65,7 @@ QToolButton* RibbonPanel::addLarge(QAction* action) {
 }
 
 QToolButton* RibbonPanel::addSmall(QAction* action) {
+    if (action == nullptr) return nullptr;
     if (currentSmallColumn_ == nullptr || smallInColumn_ >= kSmallPerColumn) {
         currentSmallColumn_ = new QWidget(this);
         auto* column = new QVBoxLayout(currentSmallColumn_);
