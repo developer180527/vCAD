@@ -105,11 +105,22 @@ Crucially the app enters environments *for* the user. That is the honest version
 workbenches, and it is why contextual tabs solve discoverability where a workbench switcher
 destroys it.
 
-### 3.2 Commands are non-modal, and their surface is an in-canvas mini toolbar
+### 3.2 Commands are non-modal, and their surface is a docked property panel
 
-A command in progress shows a small panel **over the viewport**, near the work — not a modal
-dialog, not a docked task panel. The document stays live behind it: the browser still selects, the
-view still navigates.
+> **Superseded, Aug 2026.** This section originally specified an in-canvas mini toolbar floating
+> over the viewport. Research into both reference applications
+> ([UI_RESEARCH.md](UI_RESEARCH.md)) shows that is the minority pattern: SolidWorks uses the
+> **PropertyManager** in the left panel, explicitly "without a dialog box covering the graphics
+> area", and Inventor uses **property panels**, with mini-toolbars on only seven dialogs. The
+> non-modal principle below was right; the surface was my inference and was wrong.
+
+A command in progress takes over the **left dock**, replacing the model browser until it finishes.
+The viewport is never covered and stays interactive, so selecting geometry feeds the running
+command — which is precisely why both vendors do it this way.
+
+It also suits our constraints better than the floating version: a docked panel is ordinary widget
+layout, whereas a floating surface over a native GPU child window cannot be composited by Qt at all
+— the same problem §3.6 raises for the ViewCube.
 
 ADR 0008 promised non-modal and never said what it means. It means `Controller` needs real
 **in-progress command state**, not just `execute`:
