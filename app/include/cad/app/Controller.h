@@ -70,6 +70,19 @@ enum class Environment : std::uint8_t {
 
 const char* toString(Environment) noexcept;
 
+/// One editable input of a command in progress.
+///
+/// Text in and text out, exactly like PropertyRow: the shell renders a field, the user types, and
+/// the parsing and unit handling stay here rather than in every shell. `kind` is a rendering hint
+/// only — a Bool wants a checkbox, a Length wants a line edit that accepts "2 in".
+struct CommandParameter {
+    enum class Kind : std::uint8_t { Length, Angle, Real, Integer, Text, Bool };
+    std::string name;      ///< stable key the command reads
+    std::string label;     ///< shown to the user
+    Kind kind = Kind::Length;
+    std::string value;     ///< current text, already formatted with units
+};
+
 /// The application. One per open document.
 class Controller {
 public:
@@ -233,6 +246,33 @@ public:
     /// sketch the user thinks they just tidied up.
     void deleteSketchSelection();
 
+    // ── command in progress ───────────────────────────────────────────────────────────────
+    //
+    // The state DESKTOP_UX 3.2 has described since ADR 0008 promised "non-modal" and did not say
+    // what that meant. A command with parameters is STARTED, edited, then committed or abandoned —
+    // it is not a function call that happens instantly with defaults.
+    //
+    // Lives here rather than in the shell because both shells need it, and because committing is a
+    // document edit: only this layer may touch History.
+
+    /// Starts a parameterised command. False if the id has none, in which case the shell should
+    /// invoke it directly as before.
+    bool beginCommand(const std::string& id);
+
+    /// Empty when no command is in progress.
+    [[nodiscard]] const std::string& activeCommand() const noexcept { return activeCommand_; }
+    [[nodiscard]] const std::vector<CommandParameter>& commandParameters() const noexcept {
+        return commandParameters_;
+    }
+
+    /// Text in, as everywhere else. Returns false if the text will not parse, leaving the old value
+    /// so a half-typed entry cannot destroy a good one.
+    bool setCommandParameter(const std::string& name, const std::string& text);
+
+    /// Applies the command and clears the panel. False if it could not run.
+    bool commitCommand();
+    void cancelCommand();
+
     /// Applies a constraint to the current sketch selection, then re-solves.
     ///
     /// Only the kinds that are unambiguous from GEOMETRY selection are accepted. Coincident and
@@ -320,6 +360,9 @@ private:
     document::ObjectId editingId_;
     sketch::SolveReport lastSketchSolve_;
     std::vector<sketch::GeoId> sketchSelection_;
+
+    std::string activeCommand_;
+    std::vector<CommandParameter> commandParameters_;
 
     std::uint64_t savedDigest_ = 0;   ///< set in the constructor from saveDigest()
     std::vector<document::ObjectId> selection_;

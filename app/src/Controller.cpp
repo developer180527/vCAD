@@ -6,6 +6,7 @@
 #include "cad/units/Units.h"
 
 #include <sstream>
+#include <tuple>
 
 #include <algorithm>
 
@@ -527,6 +528,107 @@ Arity arityOf(sketch::ConstraintKind kind) {
 }
 
 }  // namespace
+
+bool Controller::beginCommand(const std::string& id) {
+    // The parameter set per command. A table rather than a virtual per-command class: there will be
+    // dozens of commands and almost all of them are two or three numbers, so a class each would be
+    // ceremony without benefit. A command that needs more than this gets its own panel later.
+    commandParameters_.clear();
+    if (id == "feature.extrude") {
+        if (selection_.size() != 1) {
+            status("Select a sketch to extrude.");
+            return false;
+        }
+        commandParameters_.push_back(
+            {"distance", "Distance", CommandParameter::Kind::Length,
+             units::format(units::millimetres(10.0), units::UnitSystem::Millimetre)});
+    } else if (id == "feature.box") {
+        for (const auto& [name, label, mm] : {std::tuple{"dx", "Length", 100.0},
+                                              std::tuple{"dy", "Width", 60.0},
+                                              std::tuple{"dz", "Height", 40.0}}) {
+            commandParameters_.push_back(
+                {name, label, CommandParameter::Kind::Length,
+                 units::format(units::millimetres(mm), units::UnitSystem::Millimetre)});
+        }
+    } else if (id == "feature.cylinder") {
+        for (const auto& [name, label, mm] : {std::tuple{"radius", "Radius", 25.0},
+                                              std::tuple{"height", "Height", 80.0}}) {
+            commandParameters_.push_back(
+                {name, label, CommandParameter::Kind::Length,
+                 units::format(units::millimetres(mm), units::UnitSystem::Millimetre)});
+        }
+    } else {
+        return false;   // no parameters: the shell invokes it directly, as before
+    }
+
+    activeCommand_ = id;
+    notifyDocument();
+    status("Enter values, then OK.");
+    return true;
+}
+
+bool Controller::setCommandParameter(const std::string& name, const std::string& text) {
+    for (auto& p : commandParameters_) {
+        if (p.name != name) continue;
+        // Validated by PARSING it, not by pattern-matching the text: the unit grammar lives in one
+        // place and this must accept exactly what a property field accepts, including "2 in".
+        if (p.kind == CommandParameter::Kind::Length) {
+            const auto parsed = units::parseLength(text, units::UnitSystem::Millimetre);
+            if (!parsed) {
+                // The old value is kept. A field that blanks itself on a typo loses work the user
+                // has already done in the other fields.
+                status("Could not read \"" + text + "\" as a length.");
+                return false;
+            }
+        }
+        p.value = text;
+        notifyDocument();
+        return true;
+    }
+    return false;
+}
+
+bool Controller::commitCommand() {
+    if (activeCommand_.empty()) return false;
+    const std::string id = activeCommand_;
+
+    const auto lengthOf = [this](const char* name) -> double {
+        for (const auto& p : commandParameters_) {
+            if (p.name != name) continue;
+            if (const auto parsed = units::parseLength(p.value, units::UnitSystem::Millimetre)) {
+                return parsed.value().base();
+            }
+        }
+        return 0.0;
+    };
+
+    bool ok = false;
+    if (id == "feature.extrude") {
+        addExtrude(lengthOf("distance"));
+        ok = true;
+    } else if (id == "feature.box") {
+        addPrimitive("Box", {{"dx", lengthOf("dx")}, {"dy", lengthOf("dy")},
+                             {"dz", lengthOf("dz")}});
+        ok = true;
+    } else if (id == "feature.cylinder") {
+        addPrimitive("Cylinder", {{"radius", lengthOf("radius")}, {"height", lengthOf("height")}});
+        ok = true;
+    }
+
+    // Cleared AFTER the command runs, so a command that inspects the selection still sees it.
+    activeCommand_.clear();
+    commandParameters_.clear();
+    notifyDocument();
+    return ok;
+}
+
+void Controller::cancelCommand() {
+    if (activeCommand_.empty()) return;
+    activeCommand_.clear();
+    commandParameters_.clear();
+    notifyDocument();
+    status("Cancelled");
+}
 
 bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
     if (!editing_.has_value()) return false;
