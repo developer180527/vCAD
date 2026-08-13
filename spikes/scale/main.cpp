@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <optional>
 #include <vector>
 
 using namespace cad;
@@ -317,59 +318,92 @@ int main(int argc, char** argv) {
     // established by a counter. Counters said 8 instances for the entire life of the instancing
     // bug; only the framebuffer knows how many boxes are actually there.
     //
-    // Counts DISTINCT COLUMNS of lit pixels rather than total lit pixels. N boxes on a grid occupy
-    // N separate spans across the image, and a single box drawn N times on top of itself occupies
-    // one -- which is precisely the failure, and is invisible to any total.
+    // CALIBRATED against a baseline frame, because a self-referential pixel statistic is how this
+    // check failed to be a check. It used to count distinct horizontal spans of lit pixels, on the
+    // theory that N boxes on a grid occupy N spans and N boxes stacked at one transform occupy
+    // one. Both halves are wrong. Adjacent boxes merge into a single run, so a correct frame of 8
+    // boxes reported ONE span and read as the failure; and 3 spans satisfied it whether the image
+    // held 3 boxes or 512. It agreed with itself rather than with anything real.
+    //
+    // What actually has meaning is the same scene rendered twice from the SAME camera: once with
+    // every placement, once with placement 0 alone. The second frame is exactly one instance's
+    // footprint at this zoom, so it is the unit the first frame is measured in. If every instance
+    // draws at the same transform the two frames are identical, which no counter can hide and no
+    // silhouette merging can disguise.
     {
-        auto pixels = backend.captureFrame();
-        if (!pixels) {
-            std::printf("capture failed: %s\n", pixels.error().message.c_str());
+        const std::uint32_t w = config.viewport.width;
+        const std::uint32_t h = config.viewport.height;
+
+        // Lit pixels in the frame currently on the backend, optionally saved as a PPM.
+        const auto litPixels = [&](const char* ppm) -> std::optional<std::size_t> {
+            auto pixels = backend.captureFrame();
+            if (!pixels) {
+                std::printf("capture failed: %s\n", pixels.error().message.c_str());
+                return std::nullopt;
+            }
+            const auto& px = pixels.value();
+            std::size_t lit = 0;
+            for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
+                if (px[i] > 80 || px[i + 1] > 80 || px[i + 2] > 80) ++lit;
+            }
+            if (ppm != nullptr) {
+                if (FILE* f = std::fopen(ppm, "wb")) {
+                    std::fprintf(f, "P6\n%u %u\n255\n", w, h);
+                    for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
+                        std::fputc(px[i], f);
+                        std::fputc(px[i + 1], f);
+                        std::fputc(px[i + 2], f);
+                    }
+                    std::fclose(f);
+                }
+            }
+            return lit;
+        };
+
+        const auto litAll = litPixels("scale.ppm");
+
+        // The baseline. Camera untouched — refitting it would zoom onto the single box and
+        // measure a different footprint, which is the whole trap this is avoiding.
+        std::optional<std::size_t> litOne;
+        if (instanceCount > 1 && litAll) {
+            const std::vector<render::Placement> one{placements.front()};
+            if (auto r = scene.update(doc, one); !r) {
+                std::printf("baseline update failed: %s\n", r.error().message.c_str());
+            } else {
+                gpu.frames->submit(scene.frame());
+                litOne = litPixels("scale_one.ppm");
+            }
+        }
+
+        if (!litAll) {
+            ++failures;
+        } else if (*litAll == 0) {
+            std::fprintf(stderr, "FAIL: nothing rasterised\n");
+            ++failures;
+        } else if (instanceCount == 1) {
+            std::printf("PASS  %zu lit pixels for a single instance\n", *litAll);
+        } else if (!litOne || *litOne == 0) {
+            std::fprintf(stderr, "FAIL: could not render the one-instance baseline to compare "
+                                 "against\n");
             ++failures;
         } else {
-            const auto& px = pixels.value();
-            const std::uint32_t w = config.viewport.width;
-            const std::uint32_t h = config.viewport.height;
-            std::vector<bool> litColumn(w, false);
-            std::size_t lit = 0;
-            for (std::uint32_t y = 0; y < h; ++y) {
-                for (std::uint32_t x = 0; x < w; ++x) {
-                    const std::size_t at = (static_cast<std::size_t>(y) * w + x) * 4;
-                    if (at + 2 >= px.size()) continue;
-                    if (px[at] > 80 || px[at + 1] > 80 || px[at + 2] > 80) {
-                        litColumn[x] = true;
-                        ++lit;
-                    }
-                }
-            }
-            std::size_t spans = 0;
-            bool inSpan = false;
-            for (std::uint32_t x = 0; x < w; ++x) {
-                if (litColumn[x] && !inSpan) { ++spans; inSpan = true; }
-                else if (!litColumn[x]) { inSpan = false; }
-            }
-            std::printf("pixels: %zu lit, %zu distinct horizontal spans\n", lit, spans);
-
-            if (FILE* f = std::fopen("scale.ppm", "wb")) {
-                std::fprintf(f, "P6\n%u %u\n255\n", w, h);
-                for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
-                    std::fputc(px[i], f);
-                    std::fputc(px[i + 1], f);
-                    std::fputc(px[i + 2], f);
-                }
-                std::fclose(f);
-                std::printf("wrote scale.ppm\n");
-            }
-
-            if (lit == 0) {
-                std::printf("FAIL: nothing rasterised\n");
-                ++failures;
-            } else if (instanceCount > 1 && spans < 2) {
-                std::printf("FAIL: %u instances requested but the image has ONE span -- every "
-                            "instance drew at the same transform\n", instanceCount);
+            // Occlusion means N instances never cover N times one instance's pixels -- on an
+            // isometric grid the front boxes hide much of what is behind them -- so the bar is
+            // deliberately low and absolute rather than proportional to N. Stacked instances give
+            // a ratio of exactly 1.00. Anything at or below 1.5 is the bug or close enough to it
+            // to be worth a human looking at scale.ppm and scale_one.ppm side by side.
+            const double ratio = double(*litAll) / double(*litOne);
+            std::printf("pixels: %zu lit for %u instances, %zu for one at the same camera "
+                        "(x%.2f)\n", *litAll, instanceCount, *litOne, ratio);
+            if (ratio <= 1.5) {
+                std::fprintf(stderr,
+                             "FAIL: %u instances cover only %.2fx the pixels of ONE instance at "
+                             "the same camera. They are drawing at the same transform.\n",
+                             instanceCount, ratio);
                 ++failures;
             } else {
-                std::printf("PASS  %zu spans for %u instances: instances are at distinct "
-                            "transforms\n", spans, instanceCount);
+                std::printf("PASS  %u instances cover %.2fx a single instance's footprint: they "
+                            "are at distinct transforms\n", instanceCount, ratio);
             }
         }
     }
