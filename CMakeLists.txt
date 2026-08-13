@@ -39,6 +39,13 @@ option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 # rather than a submodule of the engine repository it comes from.
 add_subdirectory(modules/assetlib EXCLUDE_FROM_ALL)
 
+# planegcs: FreeCAD's 2D constraint solver, LGPL-2.1-or-later, vendored unmodified.
+# See modules/planegcs/VENDORED.md for provenance, the licence audit, and the sync procedure.
+# Not EXCLUDE_FROM_ALL: it must build on every platform in CI from the day it lands, because a
+# vendored dependency that only compiles on the machine that added it is a dependency nobody else
+# can touch.
+add_subdirectory(modules/planegcs)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CadWarnings)
 include(CadLayering)
