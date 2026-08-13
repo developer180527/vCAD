@@ -375,6 +375,44 @@ QIcon icon(const QString& name, int size) {
         dashed.setStyle(Qt::DashLine);
         g.setPen(dashed);
         g.drawRect(QRectF(size * 0.32, size * 0.32, size * 0.36, size * 0.36));
+    } else if (name == "horizontal" || name == "vertical") {
+        // The constrained line in the accent colour against a faint axis, so the two read as a
+        // pair and the direction is unmistakable at 16px.
+        const bool horiz = name == "horizontal";
+        g.setPen(QPen(QColor(0xc9, 0xc7, 0xc3), pen.widthF()));
+        if (horiz) g.drawLine(QPointF(size * 0.12, size * 0.72), QPointF(size * 0.88, size * 0.72));
+        else       g.drawLine(QPointF(size * 0.72, size * 0.12), QPointF(size * 0.72, size * 0.88));
+        g.setPen(QPen(kAccent, pen.widthF() * 1.5));
+        if (horiz) g.drawLine(QPointF(size * 0.16, size * 0.36), QPointF(size * 0.84, size * 0.36));
+        else       g.drawLine(QPointF(size * 0.36, size * 0.16), QPointF(size * 0.36, size * 0.84));
+    } else if (name == "parallel" || name == "perpendicular") {
+        g.setPen(QPen(kLine, pen.widthF() * 1.3));
+        if (name == "parallel") {
+            g.drawLine(QPointF(size * 0.24, size * 0.82), QPointF(size * 0.52, size * 0.18));
+            g.setPen(QPen(kAccent, pen.widthF() * 1.3));
+            g.drawLine(QPointF(size * 0.52, size * 0.82), QPointF(size * 0.80, size * 0.18));
+        } else {
+            g.drawLine(QPointF(size * 0.20, size * 0.78), QPointF(size * 0.80, size * 0.78));
+            g.setPen(QPen(kAccent, pen.widthF() * 1.3));
+            g.drawLine(QPointF(size * 0.38, size * 0.78), QPointF(size * 0.38, size * 0.20));
+        }
+    } else if (name == "equal") {
+        // Two equals bars, the mathematical sign, over two segments of matching length.
+        g.setPen(QPen(kLine, pen.widthF() * 1.3));
+        g.drawLine(QPointF(size * 0.14, size * 0.74), QPointF(size * 0.44, size * 0.74));
+        g.drawLine(QPointF(size * 0.56, size * 0.74), QPointF(size * 0.86, size * 0.74));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.30, size * 0.30), QPointF(size * 0.70, size * 0.30));
+        g.drawLine(QPointF(size * 0.30, size * 0.46), QPointF(size * 0.70, size * 0.46));
+    } else if (name == "radius") {
+        // An arc with a radius line and an arrowhead: the dimension itself, not a generic circle.
+        g.drawArc(QRectF(size * 0.14, size * 0.14, size * 0.72, size * 0.72), 0, 270 * 16);
+        g.setPen(QPen(kAccent, pen.widthF()));
+        const QPointF c(size * 0.50, size * 0.50);
+        const QPointF rim(size * 0.82, size * 0.50);
+        g.drawLine(c, rim);
+        g.drawLine(rim, rim + QPointF(-size * 0.09, -size * 0.05));
+        g.drawLine(rim, rim + QPointF(-size * 0.09, size * 0.05));
     } else if (name == "select") {
         // An arrow cursor over a curve: the pointer is what every application uses for "pick".
         QPainterPath arrow;

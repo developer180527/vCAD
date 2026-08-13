@@ -12,6 +12,7 @@
 #include <QButtonGroup>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QHeaderView>
 #include <QLabel>
@@ -387,6 +388,7 @@ void MainWindow::rebuildRibbon() {
     // Tabs are a function of the active workspace. Home contributes none of its own.
     ribbon_->clearTabs();
     actions_.clear();
+    sketchConstraintActions_.clear();
 
     auto* c = controller();
     if (c == nullptr) {
@@ -445,6 +447,48 @@ void MainWindow::rebuildRibbon() {
         addTool(tr("Line"), QStringLiteral("line"), SketchCanvas::Tool::Line, QStringLiteral("L"));
         addTool(tr("Circle"), QStringLiteral("circle"), SketchCanvas::Tool::Circle,
                 QStringLiteral("C"));
+
+        // Constrain. Enablement is derived from the SELECTION, so a button is live only when it
+        // would actually apply -- the same rule as the model ribbon, and the reason none of these
+        // can offer themselves before canvas selection existed.
+        auto* constrain = sketchTab->addPanel(tr("Constrain"));
+        const auto addConstraint = [&](const QString& label, const QString& iconName,
+                                       cad::sketch::ConstraintKind kind, std::size_t needs,
+                                       bool linesOnly) {
+            auto* action = new QAction(icon(iconName), label, this);
+            action->setToolTip(needs == 1 ? tr("%1 — select one curve").arg(label)
+                                          : tr("%1 — select two curves").arg(label));
+            connect(action, &QAction::triggered, this, [this, kind] {
+                if (auto* ctl = controller()) ctl->applySketchConstraint(kind);
+                refreshStatus();
+            });
+            sketchConstraintActions_.push_back({action, needs, linesOnly});
+            constrain->addSmall(action);
+        };
+        using CK = cad::sketch::ConstraintKind;
+        addConstraint(tr("Horizontal"), QStringLiteral("horizontal"), CK::Horizontal, 1, true);
+        addConstraint(tr("Vertical"), QStringLiteral("vertical"), CK::Vertical, 1, true);
+        addConstraint(tr("Parallel"), QStringLiteral("parallel"), CK::Parallel, 2, true);
+        addConstraint(tr("Perpendicular"), QStringLiteral("perpendicular"), CK::Perpendicular, 2,
+                      true);
+        addConstraint(tr("Equal"), QStringLiteral("equal"), CK::EqualLength, 2, true);
+        {
+            // Radius carries a VALUE, so it asks. A dialog is the honest stopgap until the command
+            // property panel exists (DESKTOP_UX 3.2), which is where a value belongs.
+            auto* action = new QAction(icon(QStringLiteral("radius")), tr("Radius"), this);
+            action->setToolTip(tr("Radius — select one circle or arc"));
+            connect(action, &QAction::triggered, this, [this] {
+                auto* ctl = controller();
+                if (ctl == nullptr) return;
+                bool ok = false;
+                const double r = QInputDialog::getDouble(this, tr("Radius"), tr("Radius (mm):"),
+                                                         10.0, 0.001, 1e6, 3, &ok);
+                if (ok) ctl->applySketchRadius(r);
+                refreshStatus();
+            });
+            sketchConstraintActions_.push_back({action, 1, false});
+            constrain->addSmall(action);
+        }
 
         // Delete is on the Sketch tab too: with selection working it is the most-used edit here,
         // and reaching for the model tab's Delete would leave the environment.
@@ -762,6 +806,7 @@ void MainWindow::createDocument(DocumentKind kind) {
         refreshTree();
         refreshProperties();
         refreshCommandStates();
+        refreshSketchConstraintStates();
         refreshStatus();
         // The title's dirty marker is derived from the document, so it has to be refreshed on
         // every edit — not only when the active document changes.
@@ -964,6 +1009,23 @@ void MainWindow::refreshProperties() {
         }
     }
     updatingUi_ = false;
+}
+
+void MainWindow::refreshSketchConstraintStates() {
+    auto* c = controller();
+    const std::size_t selected = c != nullptr ? c->sketchSelection().size() : 0;
+    for (const auto& entry : sketchConstraintActions_) {
+        bool enabled = selected == entry.needs;
+        // Type is checked here as well as in the Controller, so the button greys out rather than
+        // enabling and then refusing -- the rule the model ribbon already follows.
+        if (enabled && entry.linesOnly && c != nullptr) {
+            for (const auto id : c->sketchSelection()) {
+                const auto* g = c->activeSketch() ? c->activeSketch()->find(id) : nullptr;
+                if (g == nullptr || g->kind != cad::sketch::GeoKind::Line) enabled = false;
+            }
+        }
+        entry.action->setEnabled(enabled);
+    }
 }
 
 void MainWindow::refreshCommandStates() {

@@ -500,6 +500,105 @@ void Controller::deleteSketchSelection() {
     status("Deleted " + std::to_string(removed) + (removed == 1 ? " curve" : " curves"));
 }
 
+namespace {
+
+/// What a constraint needs from the selection: how many curves, and of what sort.
+struct Arity {
+    std::size_t count = 1;
+    bool linesOnly = false;
+    bool roundOnly = false;   ///< circle or arc
+    const char* wants = "";
+};
+
+Arity arityOf(sketch::ConstraintKind kind) {
+    switch (kind) {
+        case sketch::ConstraintKind::Horizontal:
+        case sketch::ConstraintKind::Vertical:
+            return {1, true, false, "one line"};
+        case sketch::ConstraintKind::Parallel:
+        case sketch::ConstraintKind::Perpendicular:
+        case sketch::ConstraintKind::EqualLength:
+            return {2, true, false, "two lines"};
+        case sketch::ConstraintKind::Radius:
+            return {1, false, true, "one circle or arc"};
+        default:
+            return {0, false, false, ""};   // not applicable from geometry selection
+    }
+}
+
+}  // namespace
+
+bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
+    if (!editing_.has_value()) return false;
+    const Arity arity = arityOf(kind);
+    if (arity.count == 0) {
+        status("That constraint needs points selected, which is not supported yet.");
+        return false;
+    }
+    if (sketchSelection_.size() != arity.count) {
+        status(std::string("Select ") + arity.wants + " first.");
+        return false;
+    }
+
+    for (const sketch::GeoId id : sketchSelection_) {
+        const auto* g = editing_->find(id);
+        if (g == nullptr) return false;
+        const bool isLine = g->kind == sketch::GeoKind::Line;
+        const bool isRound =
+            g->kind == sketch::GeoKind::Circle || g->kind == sketch::GeoKind::Arc;
+        if ((arity.linesOnly && !isLine) || (arity.roundOnly && !isRound)) {
+            status(std::string("That constraint needs ") + arity.wants + ".");
+            return false;
+        }
+    }
+
+    const sketch::GeoId a = sketchSelection_.front();
+    const sketch::GeoId b = sketchSelection_.size() > 1 ? sketchSelection_[1] : sketch::kNoGeo;
+    switch (kind) {
+        case sketch::ConstraintKind::Horizontal:    editing_->horizontal(a); break;
+        case sketch::ConstraintKind::Vertical:      editing_->vertical(a); break;
+        case sketch::ConstraintKind::Parallel:      editing_->parallel(a, b); break;
+        case sketch::ConstraintKind::Perpendicular: editing_->perpendicular(a, b); break;
+        case sketch::ConstraintKind::EqualLength:   editing_->equalLength(a, b); break;
+        default: return false;
+    }
+
+    const auto report = solveSketch();
+    // A constraint that makes the sketch unsatisfiable is reported and KEPT, not silently dropped.
+    // The solver names which constraints conflict, so the user can remove the one they mean --
+    // rolling this one back automatically would hide the fact that the sketch was already close to
+    // over-constrained.
+    if (!report.conflicting.empty()) {
+        status("Added, but the sketch is now over-constrained: " + report.message);
+    } else {
+        status(std::string(sketch::toString(kind)) + " applied. " + report.message);
+    }
+    return true;
+}
+
+bool Controller::applySketchRadius(double millimetres) {
+    if (!editing_.has_value()) return false;
+    if (sketchSelection_.size() != 1) {
+        status("Select one circle or arc first.");
+        return false;
+    }
+    if (!(millimetres > 0.0)) {
+        status("A radius must be greater than zero.");
+        return false;
+    }
+    const sketch::GeoId id = sketchSelection_.front();
+    const auto* g = editing_->find(id);
+    if (g == nullptr
+        || (g->kind != sketch::GeoKind::Circle && g->kind != sketch::GeoKind::Arc)) {
+        status("That constraint needs one circle or arc.");
+        return false;
+    }
+    editing_->radius(id, millimetres);
+    const auto report = solveSketch();
+    status("Radius applied. " + report.message);
+    return true;
+}
+
 sketch::SolveReport Controller::solveSketch() {
     if (!editing_.has_value()) return {};
     lastSketchSolve_ = editing_->solve();

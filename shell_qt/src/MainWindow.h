@@ -67,6 +67,8 @@ private:
     /// Save / Discard / Cancel prompt. False means the user cancelled and the caller must abort.
     bool confirmDiscardChanges();
     void syncTitle();
+    /// Greys the Constrain buttons that do not suit the current sketch selection.
+    void refreshSketchConstraintStates();
 
     /// The action for a real command from `Controller::commands()`, or null if it has none.
     [[nodiscard]] QAction* command(const char* id);
@@ -110,6 +112,14 @@ private:
     /// One sketch canvas per open document, parallel to editors_. Held rather than looked up so
     /// switching documents while sketching cannot show another document's sketch.
     std::vector<SketchCanvas*> sketchCanvases_;
+    /// Constrain buttons plus what each needs selected. Rebuilt with the ribbon, because the
+    /// actions are owned by the tab that is destroyed on every environment change.
+    struct SketchConstraintAction {
+        QAction* action = nullptr;
+        std::size_t needs = 1;
+        bool linesOnly = true;
+    };
+    std::vector<SketchConstraintAction> sketchConstraintActions_;
     /// Last seen environment, so a change can be detected from a document notification. See the
     /// comment at the observer.
     cad::app::Environment lastEnvironment_ = cad::app::Environment::Model;

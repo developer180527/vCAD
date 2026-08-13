@@ -233,6 +233,23 @@ public:
     /// sketch the user thinks they just tidied up.
     void deleteSketchSelection();
 
+    /// Applies a constraint to the current sketch selection, then re-solves.
+    ///
+    /// Only the kinds that are unambiguous from GEOMETRY selection are accepted. Coincident and
+    /// Distance act on POINTS, and "these two lines are coincident" has no single meaning — which
+    /// of the four endpoint pairs? Those need point-level selection, which the canvas does not have
+    /// yet. Rejecting them here with a message beats guessing an endpoint pair and constraining
+    /// something the user did not ask for.
+    ///
+    /// Returns false and sets a status message when the selection does not suit the constraint.
+    bool applySketchConstraint(sketch::ConstraintKind);
+
+    /// Radius or diameter constraint on the selected circle or arc, in millimetres.
+    ///
+    /// Separate because it carries a VALUE, and the value comes from the shell — a dialog today,
+    /// the command property panel once that exists (DESKTOP_UX 3.2).
+    bool applySketchRadius(double millimetres);
+
     /// Last solve's result, for the status bar's degrees-of-freedom readout.
     [[nodiscard]] const sketch::SolveReport& lastSketchSolve() const noexcept {
         return lastSketchSolve_;
