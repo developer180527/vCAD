@@ -4,10 +4,9 @@
 #include "cad/kernel/Diagnostics.h"
 #include "cad/log/Log.h"
 
-#include <QCoreApplication>
 #include <QDateTime>
-#include <QDir>
-#include <QStandardPaths>
+#include <filesystem>
+#include <string>
 
 #include <QApplication>
 #include <QPixmap>
@@ -44,24 +43,59 @@ void qtMessageHandler(QtMsgType type, const QMessageLogContext& context, const Q
     cad::log::write(std::move(record));
 }
 
-/// Sets up logging before anything else runs.
+/// Sets up logging before anything else runs, and returns where the log went.
 ///
-/// A file sink in the platform's application-data directory, because a log a user cannot find is a
-/// log that never reaches a bug report. `QStandardPaths` puts it where each platform expects:
-/// ~/Library/Application Support on macOS, %APPDATA% on Windows, ~/.local/share on Linux.
-QString startLogging() {
+/// Resolved from argv[0], not QStandardPaths. vCAD ships as a bare executable today -- there is no
+/// .app bundle and no installer -- so the platform's application-data directory is the wrong
+/// answer twice over: it is for packaged applications, and while developing it puts the log
+/// somewhere you have to go hunting for, surviving rebuilds that should have cleaned it up.
+///
+/// Beside the executable is where a developer looks first and where a `rm -rf build` correctly
+/// removes it. Deriving it from argv[0] also means no Qt is involved, so logging is running before
+/// anything else in the process -- and it removes the ordering trap that using QStandardPaths
+/// introduced, where the directory silently depended on names set later.
+///
+/// Order of preference, first that works:
+///   1. $CAD_LOG_FILE       -- explicit always wins, and is what a support conversation asks for
+///   2. beside the executable
+///   3. the temp directory  -- an installed binary may live somewhere read-only
+std::string resolveLogPath(const char* argv0) {
+    namespace fs = std::filesystem;
+
+    if (const char* explicitPath = std::getenv("CAD_LOG_FILE")) {
+        if (*explicitPath != '\0') return explicitPath;
+    }
+
+    std::error_code ec;
+    if (argv0 != nullptr && *argv0 != '\0') {
+        fs::path exe = fs::weakly_canonical(fs::path(argv0), ec);
+        if (!ec && exe.has_parent_path()) {
+            const fs::path candidate = exe.parent_path() / "vcad.log";
+            // Probed by opening rather than by checking permissions: the permission bits can say
+            // yes on a read-only mount, and the only honest test of "can I write here" is writing.
+            if (std::FILE* probe = std::fopen(candidate.string().c_str(), "ab")) {
+                std::fclose(probe);
+                return candidate.string();
+            }
+        }
+    }
+
+    const fs::path fallback = fs::temp_directory_path(ec) / "vcad.log";
+    return ec ? std::string{} : fallback.string();
+}
+
+std::string startLogging(const char* argv0) {
     using cad::log::Category;
     using cad::log::Level;
 
-    // Info by default, Warning for the noisy ones. ThirdParty at Warning specifically: OCCT's
-    // healing and import chatter is valuable when you are chasing a bad file and pure noise
-    // otherwise, and it is exactly the category a user can be asked to raise.
+    // Info by default, Warning for the noisy one. OCCT's healing and import chatter is valuable
+    // when you are chasing a bad file and pure noise otherwise, and it is exactly the category a
+    // user can be asked to raise.
     cad::log::setLevel(Level::Info);
     cad::log::setLevel(Category::ThirdParty, Level::Warning);
-    cad::log::setLevel(Category::Recompute, Level::Info);
 
-    // CAD_LOG_LEVEL=debug raises everything without a rebuild, which is what a support
-    // conversation actually needs -- "run it again with this set" beats "install a debug build".
+    // CAD_LOG_LEVEL raises everything without a rebuild, which is what a support conversation
+    // actually needs -- "run it again with this set" beats "install a debug build".
     if (const char* raw = std::getenv("CAD_LOG_LEVEL")) {
         const std::string value(raw);
         if (value == "trace") cad::log::setLevel(Level::Trace);
@@ -71,14 +105,10 @@ QString startLogging() {
         else if (value == "off") cad::log::setLevel(Level::Off);
     }
 
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QString path;
-    if (!dir.isEmpty() && QDir().mkpath(dir)) {
-        path = QDir(dir).filePath(QStringLiteral("vcad.log"));
-        cad::log::addSink(cad::log::fileSink(path.toStdString()));
-    }
+    const std::string path = resolveLogPath(argv0);
+    if (!path.empty()) cad::log::addSink(cad::log::fileSink(path));
 
-    // OCCT last, so its own startup output lands in a log that already has its sinks.
+    // OCCT last, so its own output lands in a log that already has its sinks.
     cad::kernel::routeOcctDiagnosticsToLog();
     qInstallMessageHandler(qtMessageHandler);
     return path;
@@ -120,20 +150,17 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
 }  // namespace
 
 int main(int argc, char** argv) {
-    // The names are STATIC and must be set before QStandardPaths is asked anything: the writable
-    // AppDataLocation is derived from them, so setting them after QApplication would put the log in
-    // an unnamed directory.
-    QCoreApplication::setApplicationName(QStringLiteral("vCAD"));
-    QCoreApplication::setOrganizationName(QStringLiteral("vCAD"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.0.1"));
-
-    // Before QApplication, so a failure constructing it is still recorded.
-    const QString logPath = startLogging();
-    CAD_INFO(cad::log::Category::Shell)
-        << "vCAD " << qPrintable(QCoreApplication::applicationVersion()) << " starting"
-        << (logPath.isEmpty() ? "" : " — log: ") << qPrintable(logPath);
+    // Before QApplication, so a failure constructing it is still recorded. Nothing here touches
+    // Qt, which is the point: logging is live from the first statement of main.
+    const std::string logPath = startLogging(argc > 0 ? argv[0] : nullptr);
+    CAD_INFO(cad::log::Category::Shell) << "vCAD 0.0.1 starting";
+    // Printed to stdout as well, once, because a log nobody can find is a log nobody sends. This is
+    // the one line that makes "attach your log" an answerable request.
+    if (!logPath.empty()) std::printf("log: %s\n", logPath.c_str());
 
     QApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("vCAD"));
+    app.setOrganizationName(QStringLiteral("vCAD"));
 
     QString shotPath;
     int shotTab = -1;
