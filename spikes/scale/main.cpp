@@ -293,7 +293,16 @@ int main(int argc, char** argv) {
     // 5. Culling must actually cull. A zoomed-in camera sees a small fraction of a 100k-part
     //    grid, and if the same instance count still reaches the GPU then the cell tests are
     //    running and deciding nothing — which is worse than not culling, because it costs.
-    if (zoomed.instancesVisible >= zoomed.instancesTotal) {
+    //
+    //    Only meaningful with more than one cell. Culling decides per CELL, so a scene small
+    //    enough to fit in one bucket is all-or-nothing and a zoomed-in camera sitting inside that
+    //    bucket correctly keeps every instance. Asserting here anyway is how this reported
+    //    "frustum culling is not rejecting anything" for every run at n=8, against a culler that
+    //    is fine: at n=512 it draws 128 of 512, at n=4096 it draws 640 of 4096.
+    if (zoomed.cells < 2) {
+        std::printf("SKIP  culling not exercised: %zu cell holds the whole scene (raise n)\n",
+                    zoomed.cells);
+    } else if (zoomed.instancesVisible >= zoomed.instancesTotal) {
         std::fprintf(stderr,
                      "FAIL: zoomed in, culling still drew all %zu instances. Frustum culling is "
                      "not rejecting anything.\n",
