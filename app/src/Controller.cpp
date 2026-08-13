@@ -1,5 +1,7 @@
 #include "cad/app/Controller.h"
 
+#include "cad/io/DocumentStore.h"
+
 #include "cad/units/Units.h"
 
 #include <algorithm>
@@ -23,6 +25,7 @@ Controller::Controller() {
     viewport_.height = 800;
     scene_->setViewport(viewport_);
     registerCommands();
+    savedDigest_ = saveDigest();   // a new, untouched document is not "modified"
 }
 
 Controller::~Controller() = default;
@@ -382,6 +385,52 @@ void Controller::addEdgeFeature(const std::string& type, const std::string& labe
     } else {
         status(label + " applied to all edges (edge selection is not wired yet).");
     }
+}
+
+std::uint64_t Controller::saveDigest() const noexcept {
+    // Document::digest() covers ids, types and property values — deliberately NOT labels, because
+    // it feeds the recompute cache key and renaming a feature must not invalidate cached geometry.
+    // But a rename IS a change worth saving, so folding labels in here is the difference between
+    // "close without saving" losing a rename and preserving it. Two digests with two jobs.
+    std::uint64_t h = history_.current().digest();
+    const auto& doc = history_.current();
+    for (const auto id : doc.ids()) {
+        const auto object = doc.find(id);
+        if (!object) continue;
+        for (const char c : object->label()) {
+            h ^= static_cast<std::uint64_t>(c);
+            h *= 1099511628211ULL;
+        }
+    }
+    return h;
+}
+
+bool Controller::modified() const noexcept { return saveDigest() != savedDigest_; }
+
+kernel::Result<void> Controller::saveTo(const std::filesystem::path& path,
+                                       const std::string& kind) {
+    auto r = io::saveDocument(history_.current(), path, kind);
+    if (!r) return r.error();
+    savedDigest_ = saveDigest();
+    notifyDocument();   // the title bar's dirty marker is derived from modified()
+    status("Saved " + path.filename().string());
+    return {};
+}
+
+kernel::Result<void> Controller::loadFrom(const std::filesystem::path& path) {
+    auto loaded = io::loadDocument(path);
+    if (!loaded) return loaded.error();
+
+    // A fresh History rather than a commit. Recompute happens through refresh() below, which is
+    // the same path every edit takes, so a document that opens with a failed feature reports it
+    // exactly like one that acquired the failure interactively.
+    history_ = document::History{std::move(loaded.value())};
+    selection_.clear();
+    refresh();
+    savedDigest_ = saveDigest();
+    fitView();
+    status("Opened " + path.filename().string());
+    return {};
 }
 
 kernel::Result<ObjectId> Controller::importFile(const std::filesystem::path& path) {

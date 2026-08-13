@@ -89,6 +89,28 @@ public:
     void setVisible(document::ObjectId, bool);
     void remove(document::ObjectId);
 
+    /// Writes the feature tree to a native document (ADR 0003) and marks this controller clean.
+    /// `kind` is written into the file's header so openDocument can tell what it is without
+    /// trusting the extension. Defaulted because only Part documents have a Controller today;
+    /// passing it explicitly is what stops Assembly files being written as parts later.
+    kernel::Result<void> saveTo(const std::filesystem::path&, const std::string& kind = "Part");
+
+    /// Replaces this controller's document with one read from disk. Clears undo history: opening a
+    /// file is not an edit, and undoing past it into the previous document would be nonsense.
+    kernel::Result<void> loadFrom(const std::filesystem::path&);
+
+    /// Whether there are unsaved changes.
+    ///
+    /// Measured by comparing the document's content digest against the digest at the last save,
+    /// rather than by counting edits. That way undoing back to the saved state correctly reports
+    /// clean, and an edit that changes nothing (retyping the same dimension) does not mark the
+    /// document dirty — both of which a boolean flag flipped on every commit gets wrong.
+    [[nodiscard]] bool modified() const noexcept;
+
+    /// Digest used for dirty tracking only: the document digest plus labels. See the
+    /// implementation for why labels are in this one and not in Document::digest().
+    [[nodiscard]] std::uint64_t saveDigest() const noexcept;
+
     /// Imports a foreign CAD file (STEP, IGES, STL) as a new feature.
     ///
     /// Takes a path rather than being a plain command, because choosing a file needs a file
@@ -179,6 +201,10 @@ private:
     render::Viewport viewport_;
 
     document::History history_{document::Document{}};
+
+    /// Document digest as of the last save (or of the empty document, which is why a brand-new
+    /// document is not "modified" until it is actually edited).
+    std::uint64_t savedDigest_ = 0;   ///< set in the constructor from saveDigest()
     std::vector<document::ObjectId> selection_;
     std::vector<render::Placement> placements_;
     std::vector<Command> commands_;

@@ -6,6 +6,8 @@
 #include "ViewportPlaceholder.h"
 
 #include <QApplication>
+#include <QCloseEvent>
+#include <QFileInfo>
 #include <QButtonGroup>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -65,6 +67,7 @@ MainWindow::MainWindow() {
         refreshProperties();
         refreshCommandStates();
         refreshStatus();
+        syncTitle();
     });
 
     // syncWorkspace, not just the refreshes: it is what hides the docks for Home, and startup
@@ -127,12 +130,9 @@ void MainWindow::buildTopArea() {
 
     addQat(QStringLiteral("new"), tr("New part"),
            [this] { createDocument(DocumentKind::Part); }, QKeySequence::New);
-    addQat(QStringLiteral("open"), tr("Open"), [this] {
-        statusMessage_->setText(tr("Opening files is not implemented yet"));
-    }, QKeySequence::Open);
-    addQat(QStringLiteral("save"), tr("Save"), [this] {
-        statusMessage_->setText(tr("Saving is not implemented yet"));
-    }, QKeySequence::Save);
+    addQat(QStringLiteral("open"), tr("Open"), [this] { openDocument(); }, QKeySequence::Open);
+    addQat(QStringLiteral("save"), tr("Save"), [this] { saveDocument(false); },
+           QKeySequence::Save);
     qatRow->addSpacing(6);
     addQat(QStringLiteral("undo"), tr("Undo"), [this] {
         if (auto* c = controller()) c->undo();
@@ -209,6 +209,13 @@ void MainWindow::buildTopArea() {
         action->setEnabled(cad::app::implemented(kind));
     }
     fileMenu_->addSeparator();
+    fileMenu_->addAction(icon(QStringLiteral("open"), 16), tr("Open..."), QKeySequence::Open, this,
+                         [this] { openDocument(); });
+    fileMenu_->addAction(icon(QStringLiteral("save"), 16), tr("Save"), QKeySequence::Save, this,
+                         [this] { saveDocument(false); });
+    fileMenu_->addAction(tr("Save As..."), QKeySequence::SaveAs, this,
+                         [this] { saveDocument(true); });
+    fileMenu_->addSeparator();
     fileMenu_->addAction(tr("Home"), this, [this] { session_.activateHome(); });
     fileMenu_->addSeparator();
     fileMenu_->addAction(tr("Exit"), QKeySequence::Quit, this, &QWidget::close);
@@ -239,6 +246,108 @@ QAction* MainWindow::planned(const QString& label, const QString& iconName) {
 QAction* MainWindow::commandOr(const char* id, const QString& label, const QString& iconName) {
     if (auto* existing = command(id)) return existing;
     return planned(label, iconName);
+}
+
+namespace {
+/// Shared by Open and Save so the two dialogs cannot drift apart, which is how a user ends up
+/// unable to see in Open the file they just saved.
+constexpr const char* kDocumentFilter =
+    "vCAD documents (*.vpart *.vasm *.vdrw *.vpres);;Part (*.vpart);;All files (*)";
+}  // namespace
+
+void MainWindow::openDocument() {
+    const QString path = QFileDialog::getOpenFileName(this, tr("Open"), QString(),
+                                                      tr(kDocumentFilter));
+    if (path.isEmpty()) return;
+    openPath(path);
+}
+
+void MainWindow::openPath(const QString& path) {
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    // Opening recomputes the whole feature tree, which is not instant on a large part.
+    const auto result = session_.openDocument(std::filesystem::path(path.toStdString()));
+    QApplication::restoreOverrideCursor();
+
+    if (!result) {
+        QMessageBox::warning(this, tr("Could not open"),
+                             QString::fromStdString(result.error().message), QMessageBox::Ok);
+        statusMessage_->setText(tr("Open failed"));
+        return;
+    }
+    // Session::openDocument fires its changed callback, which rebuilds the tabs and the ribbon.
+    statusMessage_->setText(tr("Opened %1").arg(QFileInfo(path).fileName()));
+}
+
+bool MainWindow::saveDocument(bool saveAs) {
+    if (session_.homeActive() || session_.active() == nullptr) {
+        statusMessage_->setText(tr("There is no document to save"));
+        return false;
+    }
+
+    std::filesystem::path target = session_.activePath();
+    if (saveAs || target.empty()) {
+        // Seed the dialog with the document's title and the right extension, so Save on a new part
+        // is one keystroke rather than a naming exercise.
+        const auto& doc = session_.documents()[session_.activeIndex()];
+        const QString suggested =
+            QString::fromStdString(doc.title + cad::app::fileExtension(doc.kind));
+        const QString path =
+            QFileDialog::getSaveFileName(this, tr("Save As"), suggested, tr(kDocumentFilter));
+        if (path.isEmpty()) return false;
+        target = std::filesystem::path(path.toStdString());
+    }
+
+    const auto result = session_.saveActive(target);
+    if (!result) {
+        QMessageBox::warning(this, tr("Could not save"),
+                             QString::fromStdString(result.error().message), QMessageBox::Ok);
+        statusMessage_->setText(tr("Save failed"));
+        return false;
+    }
+    syncTitle();
+    return true;
+}
+
+/// Returns false if the user cancelled, i.e. "do not proceed with whatever prompted this".
+bool MainWindow::confirmDiscardChanges() {
+    if (!session_.activeModified()) return true;
+
+    const auto& doc = session_.documents()[session_.activeIndex()];
+    const auto choice = QMessageBox::warning(
+        this, tr("Unsaved changes"),
+        tr("Save changes to %1?").arg(QString::fromStdString(doc.title)),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+
+    if (choice == QMessageBox::Cancel) return false;
+    if (choice == QMessageBox::Discard) return true;
+    // Save may itself be cancelled at the file dialog, which must cancel the close too — otherwise
+    // "Save" silently behaves as "Discard", which is the worst possible outcome of this dialog.
+    return saveDocument(false);
+}
+
+void MainWindow::syncTitle() {
+    QString title = QStringLiteral("vCAD");
+    if (!session_.homeActive() && session_.activeIndex() < session_.count()) {
+        const auto& doc = session_.documents()[session_.activeIndex()];
+        title += QStringLiteral(" — ") + QString::fromStdString(doc.title);
+        // The asterisk is the platform-neutral dirty marker. Cheap, universally understood, and
+        // the only signal a user has that closing will cost them something.
+        if (session_.activeModified()) title += QStringLiteral("*");
+    }
+    setWindowTitle(title);
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    // Every open document, not just the active one: quitting must not silently drop edits in a tab
+    // the user is not looking at.
+    for (std::size_t i = 0; i < session_.count(); ++i) {
+        session_.activate(i);
+        if (!confirmDiscardChanges()) {
+            event->ignore();
+            return;
+        }
+    }
+    event->accept();
 }
 
 void MainWindow::importFile() {
@@ -505,6 +614,9 @@ void MainWindow::buildWorkspaces() {
     homeSplitter_->setStretchFactor(1, 1);
     homeSplitter_->setSizes({HomePage::sidebarDefaultWidth(), 1});
 
+    connect(home_, &HomePage::openBrowseRequested, this, [this] { openDocument(); });
+    connect(home_, &HomePage::openRequested, this,
+            [this](const QString& path) { openPath(path); });
     connect(home_, &HomePage::createRequested, this,
             [this](int kind) { createDocument(static_cast<DocumentKind>(kind)); });
 
@@ -580,6 +692,9 @@ void MainWindow::createDocument(DocumentKind kind) {
         refreshProperties();
         refreshCommandStates();
         refreshStatus();
+        // The title's dirty marker is derived from the document, so it has to be refreshed on
+        // every edit — not only when the active document changes.
+        syncTitle();
         if (auto* w = workspaces_->currentWidget()) w->update();
     });
     c->onViewChanged([this, c] {

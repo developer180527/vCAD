@@ -36,6 +36,10 @@ public:
     void selectRibbonTab(int index);
     void openDemoDocument();
 
+protected:
+    /// Prompts for unsaved work in EVERY open document before letting the window go.
+    void closeEvent(QCloseEvent*) override;
+
 private:
     void buildTopArea();          ///< QAT + ribbon, in ONE menu widget
     void buildDocks();
@@ -51,6 +55,17 @@ private:
     /// Import lives here rather than in Controller's command registry because it needs a file
     /// dialog, and app/ carries no toolkit. See the comment at the call site.
     void importFile();
+
+    // ── files ────────────────────────────────────────────────────────────────────────
+    void openDocument();
+    void openPath(const QString&);
+    /// `saveAs` forces the dialog; otherwise it appears only when the document has no path.
+    /// Returns false if the save did not happen, which callers must respect — see
+    /// confirmDiscardChanges.
+    bool saveDocument(bool saveAs);
+    /// Save / Discard / Cancel prompt. False means the user cancelled and the caller must abort.
+    bool confirmDiscardChanges();
+    void syncTitle();
 
     /// The action for a real command from `Controller::commands()`, or null if it has none.
     [[nodiscard]] QAction* command(const char* id);

@@ -84,6 +84,26 @@ public:
     }
     void noteRecent(const std::filesystem::path&);
 
+    /// Saves the active document, remembering the path so a later Save needs no dialog.
+    ///
+    /// The shell supplies the path — Session must not open a file dialog, for the same reason
+    /// Controller must not: this header compiles for the SwiftUI shell too.
+    kernel::Result<void> saveActive(const std::filesystem::path&);
+
+    /// Opens a document into a NEW tab and makes it active. Returns its index.
+    ///
+    /// A new tab rather than reusing the active one: Inventor opens documents alongside each
+    /// other, and silently replacing what the user was looking at is how unsaved work disappears.
+    /// The kind comes from the file's own header, not from its extension, so a renamed file still
+    /// opens as what it actually is.
+    kernel::Result<std::size_t> openDocument(const std::filesystem::path&);
+
+    /// Path of the active document, empty if it has never been saved. Also empty for Home.
+    [[nodiscard]] std::filesystem::path activePath() const;
+
+    /// Whether the active document has unsaved changes. False for Home, which has no file.
+    [[nodiscard]] bool activeModified() const;
+
     void onChanged(std::function<void()>);
 
 private:

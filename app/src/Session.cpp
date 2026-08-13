@@ -1,5 +1,7 @@
 #include "cad/app/Session.h"
 
+#include "cad/io/DocumentStore.h"
+
 #include <algorithm>
 
 namespace cad::app {
@@ -85,6 +87,79 @@ Controller* Session::active() noexcept {
 const Controller* Session::active() const noexcept {
     if (homeActive_ || active_ >= documents_.size()) return nullptr;
     return documents_[active_].controller.get();
+}
+
+std::filesystem::path Session::activePath() const {
+    if (homeActive_ || active_ >= documents_.size()) return {};
+    return documents_[active_].path;
+}
+
+bool Session::activeModified() const {
+    if (homeActive_ || active_ >= documents_.size()) return false;
+    const auto& doc = documents_[active_];
+    return doc.controller != nullptr && doc.controller->modified();
+}
+
+kernel::Result<void> Session::saveActive(const std::filesystem::path& path) {
+    if (homeActive_ || active_ >= documents_.size()) {
+        return kernel::Error{kernel::ErrorCode::InvalidInput, "There is no document to save."};
+    }
+    auto& doc = documents_[active_];
+    if (doc.controller == nullptr) {
+        return kernel::Error{kernel::ErrorCode::Unsupported,
+                             std::string(toString(doc.kind))
+                                 + " documents cannot be saved yet."};
+    }
+
+    auto r = doc.controller->saveTo(path, toString(doc.kind));
+    if (!r) return r;
+
+    doc.path = path;
+    doc.modified = false;
+    // The title follows the file once there is one. Before that it is "Part1"; after Save As it
+    // should read as the file the user chose, which is what every other application does.
+    doc.title = path.stem().string();
+    noteRecent(path);
+    notify();
+    return {};
+}
+
+kernel::Result<std::size_t> Session::openDocument(const std::filesystem::path& path) {
+    // Read the header first. The KIND comes from the file, not from the extension — a .vpart that
+    // is really an assembly must not open as a part, and refusing here is cheaper than discovering
+    // it after building a controller for the wrong kind.
+    auto info = io::readDocumentInfo(path);
+    if (!info) return info.error();
+
+    DocumentKind kind = DocumentKind::Part;
+    const std::string& name = info.value().kind;
+    if (name == "Assembly") kind = DocumentKind::Assembly;
+    else if (name == "Drawing") kind = DocumentKind::Drawing;
+    else if (name == "Presentation") kind = DocumentKind::Presentation;
+
+    if (!implemented(kind)) {
+        return kernel::Error{kernel::ErrorCode::Unsupported,
+                             name + " documents cannot be opened yet.", path.string()};
+    }
+
+    // Load into a controller BEFORE it becomes a tab. A file that fails to read must not leave an
+    // empty document open for the user to close — nothing visible should change on failure.
+    auto controller = std::make_unique<Controller>();
+    if (auto r = controller->loadFrom(path); !r) return r.error();
+
+    OpenDocument doc;
+    doc.kind = kind;
+    doc.title = path.stem().string();
+    doc.path = path;
+    doc.modified = false;
+    doc.controller = std::move(controller);
+    documents_.push_back(std::move(doc));
+
+    active_ = documents_.size() - 1;
+    homeActive_ = false;
+    noteRecent(path);
+    notify();
+    return active_;
 }
 
 void Session::noteRecent(const std::filesystem::path& path) {

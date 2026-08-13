@@ -10,6 +10,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
@@ -260,8 +261,33 @@ QWidget* HomePage::buildRecentToolbar() {
 
 // ── cards ───────────────────────────────────────────────────────────────────────────────
 
+/// A card that reports clicks.
+///
+/// No Q_OBJECT and no signal of its own — it takes a callback — so this needs no moc pass and can
+/// live in the .cpp where it belongs. A QPushButton would give clicks for free but not a
+/// thumbnail-over-two-labels layout without fighting its own painting.
+class ClickableCard : public QFrame {
+public:
+    ClickableCard(QWidget* parent, std::function<void()> onActivate)
+        : QFrame(parent), onActivate_(std::move(onActivate)) {}
+
+protected:
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        // Only a release that lands inside counts, so dragging off the card cancels — the standard
+        // button contract, and users do rely on it to back out of a misclick.
+        if (event->button() == Qt::LeftButton && rect().contains(event->pos()) && onActivate_) {
+            onActivate_();
+        }
+        QFrame::mouseReleaseEvent(event);
+    }
+
+private:
+    std::function<void()> onActivate_;
+};
+
 QWidget* HomePage::buildCard(const std::filesystem::path& path) {
-    auto* card = new QFrame(cardsHost_);
+    const QString asText = QString::fromStdString(path.string());
+    auto* card = new ClickableCard(cardsHost_, [this, asText] { emit openRequested(asText); });
     card->setObjectName(QStringLiteral("homeCard"));
     card->setFixedWidth(kCardWidth);
     card->setCursor(Qt::PointingHandCursor);
