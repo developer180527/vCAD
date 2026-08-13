@@ -29,7 +29,11 @@ add_library(cad::planegcs ALIAS planegcs)
 #     (FCConfig.h, Base/Console.h, boost_graph_adjacency_list.hpp)
 #   - `Mod/Sketcher/SketcherGlobal.h` is reached by upstream's own `../../SketcherGlobal.h`, so it
 #     needs no include path — only the mirrored directory layout, which is why the tree is nested.
-target_include_directories(planegcs
+# SYSTEM on the public include dir: planegcs's headers produce sign-conversion warnings under our
+# warning set, and they surface in every FILE THAT INCLUDES THEM, not in planegcs's own build.
+# Without SYSTEM, core/sketch inherits a wall of warnings from code we do not maintain -- which is
+# how real warnings in our own code get lost.
+target_include_directories(planegcs SYSTEM
   PUBLIC  "${PLANEGCS_DIR}"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/shim")
 
