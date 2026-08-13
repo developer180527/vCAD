@@ -169,6 +169,18 @@ private:
     document::ObjectId addPrimitive(const std::string& type,
                                     const std::vector<std::pair<std::string, double>>& lengths);
 
+    /// Adds a Sketch feature, seeded with a fully constrained rectangle.
+    ///
+    /// The seed is a STOPGAP and says so in the status line. A real Start Sketch enters a sketch
+    /// environment with a drawing canvas (DESKTOP_UX 3.1); until that exists, an empty sketch
+    /// feature would fail to compute and give the user a red error for doing what the button said.
+    /// A constrained rectangle is something you can immediately extrude and edit through the
+    /// properties grid, which exercises the whole parametric path.
+    document::ObjectId addSketch();
+
+    /// Extrudes the selected Sketch feature into a solid.
+    void addExtrude(double millimetres);
+
     /// Adds a two-input boolean over the current selection. Cut, Fuse and Common differ only in
     /// the feature type, so they share this rather than three copies of the same twelve lines.
     void addBoolean(const std::string& type, const std::string& label);

@@ -1,6 +1,7 @@
 #include "cad/app/Controller.h"
 
 #include "cad/io/DocumentStore.h"
+#include "cad/sketch/Sketch.h"
 
 #include "cad/units/Units.h"
 
@@ -338,6 +339,81 @@ std::vector<naming::ElementName> Controller::edgesOf(ObjectId id) const {
     return edges;
 }
 
+ObjectId Controller::addSketch() {
+    // A closed, fully constrained 40 x 25 rectangle on XY. Constrained rather than merely drawn:
+    // the point of a sketch is that its dimensions drive it, and a seed with 8 free degrees of
+    // freedom would extrude fine and then behave nothing like a sketch when edited.
+    sketch::Sketch sk(sketch::Plane::XY);
+    const auto bottom = sk.addLine(0, 0, 40, 0);
+    const auto right = sk.addLine(40, 0, 40, 25);
+    const auto top = sk.addLine(40, 25, 0, 25);
+    const auto left = sk.addLine(0, 25, 0, 0);
+    using PR = sketch::PointRef;
+    sk.coincident(bottom, PR::End, right, PR::Start);
+    sk.coincident(right, PR::End, top, PR::Start);
+    sk.coincident(top, PR::End, left, PR::Start);
+    sk.coincident(left, PR::End, bottom, PR::Start);
+    sk.horizontal(bottom);
+    sk.horizontal(top);
+    sk.vertical(left);
+    sk.vertical(right);
+    sk.lockX(bottom, PR::Start, 0.0);
+    sk.lockY(bottom, PR::Start, 0.0);
+    sk.distance(bottom, PR::Start, bottom, PR::End, 40.0);
+    sk.distance(right, PR::Start, right, PR::End, 25.0);
+    sk.solve();
+
+    auto [next, id] = history_.current().add("Sketch");
+    const auto object = next.find(id);
+    auto updated = object->withProperty("sketch", sk.serialize())
+                       .withProperty("plane", static_cast<std::int64_t>(sketch::Plane::XY));
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Sketch");
+
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+    if (history_.current().size() == 1) fitView();
+    status("Added Sketch — a placeholder 40 x 25 rectangle until the sketch editor exists");
+    return id;
+}
+
+void Controller::addExtrude(double millimetres) {
+    if (selection_.size() != 1) return;
+    const ObjectId profile = selection_.front();
+    const auto object = history_.current().find(profile);
+    if (!object || object->type() != "Sketch") {
+        status("Extrude needs a sketch selected.");
+        return;
+    }
+
+    // The direction comes from the sketch's plane, so carry it across. Extrude reads it from its own
+    // property rather than re-parsing the sketch text on every recompute.
+    std::int64_t plane = 0;
+    if (const auto* stored = object->find("plane")) {
+        if (const auto* v = std::get_if<std::int64_t>(stored)) plane = *v;
+    }
+
+    auto [next, id] = history_.current().add("Extrude");
+    const auto created = next.find(id);
+    auto updated = created->withProperty("a_profile", profile)
+                       .withProperty("distance", units::millimetres(millimetres))
+                       .withProperty("plane", plane);
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Extrude");
+
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    const auto result = history_.current().find(id);
+    if (result && result->output() == nullptr) {
+        status("Extrude failed — see the feature's error in the browser.");
+    } else {
+        status("Extruded " + std::to_string(static_cast<int>(millimetres)) + " mm");
+    }
+}
+
 void Controller::addBoolean(const std::string& type, const std::string& label) {
     if (selection_.size() != 2) return;
     auto [next, id] = history_.current().add(type);
@@ -477,6 +553,21 @@ void Controller::registerCommands() {
     // separately so each is reachable now, and the mode selector can fold them together once the
     // non-modal command surface exists (DESKTOP_UX 3.2).
     const auto twoSelected = [](const CommandContext& c) { return c.selectedObjects == 2; };
+    commands_.push_back({"feature.sketch", "Start Sketch",
+                         "Create a sketch on the XY plane", "sketch", always,
+                         [this] { addSketch(); }});
+    commands_.push_back({"feature.extrude", "Extrude",
+                         "Extrude the selected sketch into a solid", "extrude",
+                         [this](const CommandContext& c) {
+                             // Enabled only for a SKETCH selection. A generic "one thing selected"
+                             // predicate would offer Extrude on a box, which then fails -- and a
+                             // button that lights up and then refuses is worse than a dim one.
+                             if (c.selectedObjects != 1) return false;
+                             const auto object = history_.current().find(selection_.front());
+                             return object != nullptr && object->type() == "Sketch";
+                         },
+                         [this] { addExtrude(10.0); }});
+
     commands_.push_back({"feature.cut", "Cut", "Subtract the second selection from the first",
                          "cut", twoSelected, [this] { addBoolean("Cut", "Cut"); }});
     commands_.push_back({"feature.fuse", "Join", "Merge the selected bodies into one", "combine",

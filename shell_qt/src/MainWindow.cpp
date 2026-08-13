@@ -45,6 +45,8 @@ QString iconNameFor(const std::string& type) {
     if (type == "Box") return QStringLiteral("box");
     if (type == "Cylinder") return QStringLiteral("cylinder");
     if (type == "Cut") return QStringLiteral("cut");
+    if (type == "Sketch") return QStringLiteral("sketch");
+    if (type == "Extrude") return QStringLiteral("extrude");
     return {};
 }
 
@@ -426,7 +428,8 @@ void MainWindow::rebuildRibbon() {
     auto* model = ribbon_->addTab(tr("3D Model"));
 
     auto* sketchPanel = model->addPanel(tr("Sketch"));
-    sketchPanel->addLarge(planned(tr("Start\nSketch"), QStringLiteral("sketch")));
+    sketchPanel->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
+                                    QStringLiteral("sketch")));
 
     // Create and Modify are Inventor's, command for command and in Inventor's order — two large
     // buttons then small ones stacked three per column, which is why the column breaks below fall
@@ -444,7 +447,7 @@ void MainWindow::rebuildRibbon() {
     // for, so nothing moves when the commands arrive. Inventor's own layout is the specification
     // here — we are not designing a ribbon, we are copying one people already know.
     auto* create = model->addPanel(tr("Create"));
-    create->addLarge(planned(tr("Extrude"), QStringLiteral("extrude")));
+    create->addLarge(commandOr("feature.extrude", tr("Extrude"), QStringLiteral("extrude")));
     create->addLarge(planned(tr("Revolve"), QStringLiteral("revolve")));
     create->addSmall(planned(tr("Sweep"), QStringLiteral("sweep")));
     create->addSmall(planned(tr("Loft"), QStringLiteral("loft")));
@@ -526,7 +529,8 @@ void MainWindow::rebuildRibbon() {
     // ── Sketch ──────────────────────────────────────────────────────────────────────────
     auto* sketch = ribbon_->addTab(tr("Sketch"));
     auto* sketchManage = sketch->addPanel(tr("Manage"));
-    sketchManage->addLarge(planned(tr("Start\nSketch"), QStringLiteral("sketch")));
+    sketchManage->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
+                                     QStringLiteral("sketch")));
     sketchManage->addLarge(planned(tr("Edit\nSketch"), QStringLiteral("sketch-edit")));
     sketchManage->addLarge(planned(tr("Delete\nSketch"), QStringLiteral("delete")));
 
