@@ -208,3 +208,102 @@ fn importing_a_non_dxf_fails_cleanly() {
         .expect_err("a non-DXF file was imported");
     assert!(!err.message.is_empty());
 }
+
+/// Export then re-import, and compare. The strongest test available for either direction: the
+/// writer is ours and hand-rolled, the reader is dime, so a round trip is checked by an INDEPENDENT
+/// implementation rather than by the same code twice.
+#[test]
+fn dxf_export_round_trips_through_the_importer() {
+    let dir = std::env::temp_dir().join(format!("cad-dxf-out-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("profile.dxf");
+    let out = path.to_str().unwrap();
+
+    let mut s = session();
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+    // A solved shape, so the exported coordinates are the solver's own output.
+    let bottom = s.add_line(sk, (0.0, 0.0), (40.0, 0.0)).unwrap();
+    let _ = s.add_line(sk, (40.0, 0.0), (40.0, 25.0)).unwrap();
+    let circle = s.add_sketch_circle(sk, (20.0, 12.5), 5.0).unwrap();
+    let arc = s.add_sketch_arc(sk, (60.0, 0.0), 8.0, 0.0, std::f64::consts::FRAC_PI_2).unwrap();
+    s.constrain(sk, Con::Horizontal(bottom)).unwrap();
+    s.constrain(sk, Con::Radius(circle, 5.0)).unwrap();
+    s.solve(sk).unwrap();
+
+    s.export_dxf(sk, out, 1.0).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 0);
+
+    let mut t = session();
+    let back = t.import_dxf(out, Plane::Xy, 1.0).unwrap();
+    let before = s.sketch_geometry(sk).unwrap();
+    let after = t.sketch_geometry(back).unwrap();
+
+    assert_eq!(after.len(), before.len(), "geometry count changed: {after:?}");
+    for (a, b) in before.iter().zip(after.iter()) {
+        assert_eq!(a.kind, b.kind, "an entity changed kind through the round trip");
+        // RELATIVE 1e-6, because dime declares `typedef float dxfdouble` and reads coordinates in
+        // single precision. Our writer emits 17 digits, so the floor is the reader's, not the
+        // file's. A tighter assertion would pass here anyway -- every coordinate in this sketch is
+        // exactly representable in float32 -- and that is the trap: it would look like a guarantee
+        // of exactness that does not exist, then fail the moment a solved value is not dyadic.
+        for i in 0..5 {
+            let tol = 1e-6 * a.p[i].abs().max(1.0);
+            assert!(
+                (a.p[i] - b.p[i]).abs() < tol,
+                "parameter {i} drifted: {} -> {} (kind {})",
+                a.p[i], b.p[i], a.kind
+            );
+        }
+    }
+    // Arc angles specifically: radians out, degrees in the file, radians back.
+    let arcs: Vec<_> = after.iter().filter(|g| g.kind == cad::GEO_ARC).collect();
+    assert_eq!(arcs.len(), 1);
+    assert!((arcs[0].p[4] - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+    let _ = arc;
+
+    // Scale must invert: export at 25.4 writes inches, re-importing at 25.4 restores millimetres.
+    let inch_path = dir.join("inches.dxf");
+    s.export_dxf(sk, inch_path.to_str().unwrap(), 25.4).unwrap();
+    let restored = t.import_dxf(inch_path.to_str().unwrap(), Plane::Xy, 25.4).unwrap();
+    let r = t.sketch_geometry(restored).unwrap();
+    // 40/25.4 is not representable in float32, so this is where dime's precision floor shows.
+    assert!((r[0].p[2] - 40.0).abs() < 1e-4, "scale did not invert: {}", r[0].p[2]);
+}
+
+/// Construction geometry must survive a round trip on its own layer, not be silently promoted to
+/// profile geometry — which would turn a centreline into an edge of the solid.
+#[test]
+fn construction_geometry_survives_a_dxf_round_trip() {
+    let dir = std::env::temp_dir().join(format!("cad-dxf-con-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("c.dxf");
+
+    let mut s = session();
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+    let _ = s.add_line(sk, (0.0, 0.0), (10.0, 0.0)).unwrap();
+    s.add_construction_line(sk, (0.0, 5.0), (10.0, 5.0)).unwrap();
+
+    s.export_dxf(sk, path.to_str().unwrap(), 1.0).unwrap();
+
+    let mut t = session();
+    let back = t.import_dxf(path.to_str().unwrap(), Plane::Xy, 1.0).unwrap();
+    let geo = t.sketch_geometry(back).unwrap();
+    assert_eq!(geo.len(), 2);
+    assert_eq!(
+        geo.iter().filter(|g| g.construction == 1).count(),
+        1,
+        "construction geometry was not preserved through the layer"
+    );
+}
+
+#[test]
+fn exporting_an_empty_sketch_is_refused() {
+    let mut s = session();
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+    let path = std::env::temp_dir().join(format!("cad-empty-{}.dxf", std::process::id()));
+    let err = s
+        .export_dxf(sk, path.to_str().unwrap(), 1.0)
+        .expect_err("an empty sketch was exported as a valid file");
+    assert!(!err.message.is_empty());
+    assert!(!path.exists(), "a file was left behind by a refused export");
+}

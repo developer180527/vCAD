@@ -350,6 +350,17 @@ impl Session {
         Ok(Geo(g))
     }
 
+    /// Construction geometry: guides other geometry, never part of the profile.
+    pub fn add_construction_line(&mut self, sk: Sketch, a: (f64, f64), b: (f64, f64))
+        -> Result<Geo> {
+        let mut g = 0u32;
+        let st = unsafe {
+            sys::cad_sketch_add_line(self.handle, sk.0, a.0, a.1, b.0, b.1, 1, &mut g)
+        };
+        self.check(st)?;
+        Ok(Geo(g))
+    }
+
     pub fn add_sketch_circle(&mut self, sk: Sketch, c: (f64, f64), r: f64) -> Result<Geo> {
         let mut g = 0u32;
         let st = unsafe { sys::cad_sketch_add_circle(self.handle, sk.0, c.0, c.1, r, 0, &mut g) };
@@ -430,6 +441,12 @@ impl Session {
             unsafe { sys::cad_sketch_import_dxf(self.handle, c.as_ptr(), plane as i32, scale, &mut h) };
         self.check(st)?;
         Ok(Sketch(h))
+    }
+
+    pub fn export_dxf(&mut self, sk: Sketch, path: &str, scale: f64) -> Result<()> {
+        let c = cstr(path)?;
+        let st = unsafe { sys::cad_sketch_export_dxf(self.handle, sk.0, c.as_ptr(), scale) };
+        self.check(st)
     }
 
     pub fn infer(&mut self, sk: Sketch, point_tol: f64, angle_tol: f64, parallel_perp: bool)

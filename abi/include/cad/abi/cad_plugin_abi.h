@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 6
+#define CAD_ABI_VERSION_MINOR 7
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -336,6 +336,11 @@ CAD_API CadStatus cad_sketch_deserialize(CadSession, const char* text, CadSketch
  * every coordinate; DXF's own $INSUNITS is unreliable in the wild, so the caller decides. */
 CAD_API CadStatus cad_sketch_import_dxf(CadSession, const char* path, int32_t plane, double scale,
                                         CadSketch* out);
+
+/* Writes the sketch as DXF R12. `scale` DIVIDES coordinates, inverting import's multiply, so an
+ * import at 25.4 followed by an export at 25.4 returns the original numbers. Constraints are not
+ * written -- DXF cannot carry them. */
+CAD_API CadStatus cad_sketch_export_dxf(CadSession, CadSketch, const char* path, double scale);
 
 /* Infers constraints from near-relationships, then solves. Pass 0 for a tolerance to take the
  * default. `parallel_perpendicular` is off unless non-zero: it guesses wrong too often. */

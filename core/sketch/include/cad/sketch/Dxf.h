@@ -82,7 +82,53 @@ struct DxfImportReport {
     [[nodiscard]] std::string summary() const;
 };
 
+struct DxfExportOptions {
+    /// Divides every coordinate on the way out, inverting DxfImportOptions::scale. So importing at
+    /// 25.4 and exporting at 25.4 returns the original numbers.
+    double scale = 1.0;
+
+    /// Construction geometry is written to its own layer rather than dropped, so a round trip
+    /// through another application preserves it — and our own importer maps that layer back.
+    bool includeConstruction = true;
+    std::string constructionLayer = "construction";
+    std::string profileLayer = "0";
+};
+
+/// Writes a sketch as DXF R12 ASCII.
+///
+/// Written directly rather than through dime, and the reason is worth recording: dime reads DXF
+/// well, but building a model from nothing through its API means assembling header variables,
+/// layer tables and section objects by hand against sparse documentation. R12 output is a few dozen
+/// group-code pairs and a published format, so a direct writer is less code, has no dependency
+/// behaviour to discover, and is exactly as reusable.
+///
+/// It is also self-checking: the importer above uses dime, so an export/import round trip is
+/// verified by an INDEPENDENT implementation rather than by the same code twice — which is the one
+/// property a hand-rolled writer normally lacks.
+///
+/// R12 specifically, because it is the most widely readable DXF version in existence. Nothing here
+/// needs a later revision, and every CAM, laser and plotter toolchain accepts it.
+///
+/// Note what a DXF cannot carry: CONSTRAINTS. Exporting a fully constrained sketch and reading it
+/// back gives geometry at the solved positions with no relationships — the parametric intent is
+/// lost. That is the format, not the writer. Use the native document format to keep a sketch
+/// editable.
+kernel::Result<void> exportDxf(const Sketch&, const std::filesystem::path&,
+                              const DxfExportOptions& = {});
+
 /// Reads `path` into a new sketch. The sketch is UNSOLVED and unconstrained.
+///
+/// PRECISION FLOOR: dime declares `typedef float dxfdouble` — it holds DXF coordinates in SINGLE
+/// precision, and its double variant is commented out upstream. So an import carries roughly 7
+/// significant digits no matter how precisely the file was written. Our writer still emits 17,
+/// because the loss belongs to this reader rather than to the format, and other consumers deserve
+/// the full value.
+///
+/// Round-trip tests must therefore assert a relative tolerance near 1e-6, not exactness. Values
+/// that happen to be exactly representable in float32 (40, 25, 12.5, and every other small
+/// dyadic rational) survive bit-for-bit, which makes a tight assertion pass by accident and look
+/// like a guarantee it is not. Building dime with `dxfdouble = double` would lift the floor, at the
+/// cost of forking the vcpkg port.
 [[nodiscard]] kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
                                               const DxfImportOptions& options = {},
                                               DxfImportReport* report = nullptr);

@@ -5,6 +5,7 @@
 cad_core_library(cad_sketch
   src/Sketch.cpp
   src/Dxf.cpp
+  src/DxfExport.cpp
   src/Infer.cpp
 )
 

@@ -752,6 +752,22 @@ CadStatus cad_sketch_import_dxf(CadSession handle, const char* path, std::int32_
     });
 }
 
+CadStatus cad_sketch_export_dxf(CadSession handle, CadSketch sk, const char* path, double scale) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            if (path == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing path.");
+            cad::io::DxfExportOptions options;
+            if (scale > 0.0) options.scale = scale;
+            auto r = cad::io::exportDxf(sketch, path, options);
+            if (!r) {
+                s.lastError = r.error().message;
+                return toStatus(r.error().code);
+            }
+            return CAD_OK;
+        });
+    });
+}
+
 CadStatus cad_sketch_infer(CadSession handle, CadSketch sk, double pointTolerance,
                            double angleTolerance, std::int32_t parallelPerpendicular,
                            CadInferReport* out) {

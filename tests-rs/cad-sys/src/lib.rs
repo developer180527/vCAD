@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 6;
+pub const CAD_ABI_VERSION_MINOR: u32 = 7;
 
 pub type CadStatus = i32;
 
@@ -280,6 +280,8 @@ extern "C" {
                                   out: *mut CadSketch) -> CadStatus;
     pub fn cad_sketch_import_dxf(s: CadSession, path: *const c_char, plane: i32, scale: f64,
                                  out: *mut CadSketch) -> CadStatus;
+    pub fn cad_sketch_export_dxf(s: CadSession, sk: CadSketch, path: *const c_char,
+                                 scale: f64) -> CadStatus;
     pub fn cad_sketch_infer(s: CadSession, sk: CadSketch, point_tol: f64, angle_tol: f64,
                             parallel_perp: i32, out: *mut CadInferReport) -> CadStatus;
 
