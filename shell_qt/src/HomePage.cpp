@@ -23,7 +23,11 @@ namespace {
 
 using cad::app::DocumentKind;
 
+/// Default, and the range the drag handle allows. The default is what Inventor's rail measures;
+/// the bounds exist so a drag cannot hide the rail or swallow the page.
 constexpr int kSidebarWidth = 250;
+constexpr int kSidebarMinWidth = 190;
+constexpr int kSidebarMaxWidth = 420;
 constexpr int kCardWidth = 168;
 constexpr int kThumbHeight = 116;
 /// Four across before wrapping. Inventor reflows to the window; a fixed column count is the
@@ -60,21 +64,62 @@ HomePage::HomePage(cad::app::Session& session, QWidget* parent)
     : QWidget(parent), session_(session) {
     setObjectName(QStringLiteral("homePage"));
 
-    auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(0, 0, 0, 0);
-    row->setSpacing(0);
-    row->addWidget(buildSidebar(), 0);
-    row->addWidget(buildMain(), 1);
+    // Parentless on purpose: MainWindow takes ownership when it adds this to the window's left
+    // column. See sidebar().
+    sidebar_ = buildSidebar();
+
+    auto* column = new QVBoxLayout(this);
+    column->setContentsMargins(28, 0, 28, 20);
+    column->setSpacing(0);
+
+    column->addWidget(buildProjectStrip());
+    column->addSpacing(22);
+
+    auto* heading = new QLabel(tr("Recent"), this);
+    heading->setObjectName(QStringLiteral("homeHeading"));
+    column->addWidget(heading);
+    column->addSpacing(10);
+
+    column->addWidget(buildRecentToolbar());
+    column->addSpacing(16);
+
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("homeScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->viewport()->setAutoFillBackground(false);
+
+    cardsHost_ = new QWidget(scroll);
+    cardsHost_->setObjectName(QStringLiteral("homeCards"));
+    cardsHost_->setAutoFillBackground(false);
+    cards_ = new QGridLayout(cardsHost_);
+    cards_->setContentsMargins(0, 0, 0, 0);
+    cards_->setSpacing(14);
+    cards_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    scroll->setWidget(cardsHost_);
+    column->addWidget(scroll, 1);
 
     refresh();
 }
 
+int HomePage::sidebarDefaultWidth() noexcept { return kSidebarWidth; }
+
 // ── sidebar ─────────────────────────────────────────────────────────────────────────────
 
 QWidget* HomePage::buildSidebar() {
+    // Parented to the page for OWNERSHIP, even though MainWindow lays it out. In Qt a parent is
+    // ownership, not layout membership: QLayout::addWidget reparents whatever it is given, so the
+    // window can still place this in its left column. A parentless QWidget, by contrast, is a
+    // top-level window that nothing will ever delete — it leaks if the window does not adopt it,
+    // and flashes as a stray window if it is shown before it does.
     auto* side = new QWidget(this);
     side->setObjectName(QStringLiteral("homeSidebar"));
-    side->setFixedWidth(kSidebarWidth);
+
+    // Resizable, not fixed: a drag handle lives between this and the content (see
+    // MainWindow::buildWorkspaces). Bounds rather than a fixed width — narrow enough that the
+    // longest label, "Open file...", still fits, and wide enough to stop before it dominates.
+    side->setMinimumWidth(kSidebarMinWidth);
+    side->setMaximumWidth(kSidebarMaxWidth);
 
     auto* column = new QVBoxLayout(side);
     column->setContentsMargins(26, 30, 26, 22);
@@ -135,44 +180,6 @@ QWidget* HomePage::buildSidebar() {
 }
 
 // ── main area ───────────────────────────────────────────────────────────────────────────
-
-QWidget* HomePage::buildMain() {
-    auto* main = new QWidget(this);
-    main->setObjectName(QStringLiteral("homeMain"));
-
-    auto* column = new QVBoxLayout(main);
-    column->setContentsMargins(28, 0, 28, 20);
-    column->setSpacing(0);
-
-    column->addWidget(buildProjectStrip());
-    column->addSpacing(22);
-
-    auto* heading = new QLabel(tr("Recent"), main);
-    heading->setObjectName(QStringLiteral("homeHeading"));
-    column->addWidget(heading);
-    column->addSpacing(10);
-
-    column->addWidget(buildRecentToolbar());
-    column->addSpacing(16);
-
-    auto* scroll = new QScrollArea(main);
-    scroll->setObjectName(QStringLiteral("homeScroll"));
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-
-    scroll->viewport()->setAutoFillBackground(false);
-    cardsHost_ = new QWidget(scroll);
-    cardsHost_->setObjectName(QStringLiteral("homeCards"));
-    cardsHost_->setAutoFillBackground(false);
-    cards_ = new QGridLayout(cardsHost_);
-    cards_->setContentsMargins(0, 0, 0, 0);
-    cards_->setSpacing(14);
-    cards_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    scroll->setWidget(cardsHost_);
-    column->addWidget(scroll, 1);
-
-    return main;
-}
 
 QWidget* HomePage::buildProjectStrip() {
     // Ours, not Inventor's (DESKTOP_UX 3.7). "Open this project" also means "use the team's

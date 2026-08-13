@@ -89,6 +89,16 @@ public:
     void setVisible(document::ObjectId, bool);
     void remove(document::ObjectId);
 
+    /// Imports a foreign CAD file (STEP, IGES, STL) as a new feature.
+    ///
+    /// Takes a path rather than being a plain command, because choosing a file needs a file
+    /// dialog and dialogs are the shell's business — `app/` must stay free of any toolkit so the
+    /// iPad shell can reuse it. Same split will apply to Open and Save.
+    ///
+    /// Returns the error the import failed with, so the shell can show it. The document is left
+    /// untouched on failure rather than holding a feature that cannot compute.
+    kernel::Result<document::ObjectId> importFile(const std::filesystem::path&);
+
     bool undo();
     bool redo();
 
@@ -136,6 +146,24 @@ private:
     /// Adds a primitive and selects it — the behaviour a user expects from a ribbon button.
     document::ObjectId addPrimitive(const std::string& type,
                                     const std::vector<std::pair<std::string, double>>& lengths);
+
+    /// Adds a two-input boolean over the current selection. Cut, Fuse and Common differ only in
+    /// the feature type, so they share this rather than three copies of the same twelve lines.
+    void addBoolean(const std::string& type, const std::string& label);
+
+    /// Adds an edge-based feature (Fillet, Chamfer) over the selected body.
+    ///
+    /// Applies to EVERY edge of the body, because edge picking is not wired to the viewport yet.
+    /// That is a real limitation, not a placeholder: filleting all edges is what a user gets
+    /// until selection exists, and the status message says so. The alternative — leaving the
+    /// command disabled — hides a working kernel feature and leaves the naming layer untested
+    /// through the UI.
+    void addEdgeFeature(const std::string& type, const std::string& label,
+                        const std::string& sizeProperty, double millimetres);
+
+    /// Every edge of an object's computed shape, by stable element name. Empty if the object has
+    /// no output yet.
+    [[nodiscard]] std::vector<naming::ElementName> edgesOf(document::ObjectId) const;
 
     recompute::FeatureRegistry registry_ = recompute::FeatureRegistry::builtins();
     recompute::MemoryCache cache_;

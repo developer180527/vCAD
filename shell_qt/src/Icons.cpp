@@ -253,6 +253,128 @@ QIcon icon(const QString& name, int size) {
                 }
             }
         }
+    // ── 3D Model / Create ───────────────────────────────────────────────────────────────
+    //
+    // Each glyph shows the OPERATION, not a generic solid: a profile plus what happens to it.
+    // The accent colour marks the profile or path being consumed, the dark stroke the result.
+    // With 3-per-column small buttons a user scans these at 16px, so the silhouettes have to
+    // differ at a glance — near-identical glyphs are worse than no icons, because they read as
+    // an interface that does not know what its own commands do.
+    } else if (name == "sweep") {
+        // A profile swept along a path: the path is the accent curve.
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawEllipse(QRectF(size * 0.14, size * 0.52, size * 0.20, size * 0.20));
+        g.setPen(pen);
+        QPainterPath path;
+        path.moveTo(size * 0.24, size * 0.62);
+        path.cubicTo(size * 0.50, size * 0.30, size * 0.60, size * 0.86, size * 0.84, size * 0.40);
+        g.drawPath(path);
+    } else if (name == "loft") {
+        // Two profiles, blended. The two sections are the point.
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawEllipse(QRectF(size * 0.16, size * 0.16, size * 0.30, size * 0.14));
+        g.drawEllipse(QRectF(size * 0.50, size * 0.68, size * 0.34, size * 0.16));
+        g.setPen(pen);
+        g.drawLine(QPointF(size * 0.18, size * 0.26), QPointF(size * 0.52, size * 0.76));
+        g.drawLine(QPointF(size * 0.44, size * 0.24), QPointF(size * 0.82, size * 0.74));
+    } else if (name == "coil") {
+        // A helix. Three turns is enough to read; more becomes a scribble at 16px.
+        g.drawLine(QPointF(size * 0.30, size * 0.16), QPointF(size * 0.30, size * 0.84));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        for (int i = 0; i < 3; ++i) {
+            g.drawArc(QRectF(size * 0.30, size * (0.20 + i * 0.21), size * 0.42, size * 0.20),
+                      100 * 16, 220 * 16);
+        }
+    } else if (name == "emboss") {
+        // Raised text/profile standing off a face.
+        g.drawRect(QRectF(size * 0.16, size * 0.44, size * 0.68, size * 0.38));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.32, size * 0.22, size * 0.36, size * 0.22));
+        g.drawLine(QPointF(size * 0.32, size * 0.44), QPointF(size * 0.32, size * 0.22));
+    } else if (name == "derive") {
+        // One part becoming another: box, arrow, box.
+        g.drawRect(QRectF(size * 0.12, size * 0.34, size * 0.26, size * 0.32));
+        g.drawRect(QRectF(size * 0.62, size * 0.34, size * 0.26, size * 0.32));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.42, size * 0.50), QPointF(size * 0.58, size * 0.50));
+        g.drawLine(QPointF(size * 0.52, size * 0.44), QPointF(size * 0.58, size * 0.50));
+        g.drawLine(QPointF(size * 0.52, size * 0.56), QPointF(size * 0.58, size * 0.50));
+    } else if (name == "rib") {
+        // A thin web between two walls.
+        g.drawLine(QPointF(size * 0.18, size * 0.20), QPointF(size * 0.18, size * 0.80));
+        g.drawLine(QPointF(size * 0.82, size * 0.20), QPointF(size * 0.82, size * 0.80));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.18, size * 0.44, size * 0.64, size * 0.16));
+    } else if (name == "decal") {
+        // An image applied to a face — the sheet is the accent.
+        g.drawRect(QRectF(size * 0.14, size * 0.20, size * 0.50, size * 0.50));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.36, size * 0.40, size * 0.50, size * 0.42));
+        g.drawLine(QPointF(size * 0.36, size * 0.70), QPointF(size * 0.52, size * 0.54));
+        g.drawLine(QPointF(size * 0.52, size * 0.54), QPointF(size * 0.86, size * 0.78));
+    } else if (name == "import") {
+        // Into the part, from outside. Distinct from "open", which is a document.
+        g.drawRect(QRectF(size * 0.14, size * 0.16, size * 0.44, size * 0.44));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.80, size * 0.76), QPointF(size * 0.42, size * 0.76));
+        g.drawLine(QPointF(size * 0.52, size * 0.68), QPointF(size * 0.42, size * 0.76));
+        g.drawLine(QPointF(size * 0.52, size * 0.84), QPointF(size * 0.42, size * 0.76));
+    } else if (name == "unwrap") {
+        // A curved face flattened to a plane.
+        g.drawArc(QRectF(size * 0.10, size * 0.20, size * 0.40, size * 0.56), 90 * 16, 180 * 16);
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.52, size * 0.32, size * 0.34, size * 0.36));
+
+    // ── 3D Model / Modify ───────────────────────────────────────────────────────────────
+    } else if (name == "thread") {
+        // A threaded bore: the crest lines are what distinguishes it from Hole.
+        g.drawRect(QRectF(size * 0.28, size * 0.14, size * 0.44, size * 0.72));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        for (int i = 0; i < 4; ++i) {
+            const qreal y = size * (0.24 + i * 0.16);
+            g.drawLine(QPointF(size * 0.28, y), QPointF(size * 0.72, y + size * 0.07));
+        }
+    } else if (name == "split") {
+        // One body cut in two by a plane, with the halves parted.
+        g.drawRect(QRectF(size * 0.16, size * 0.16, size * 0.28, size * 0.68));
+        g.drawRect(QRectF(size * 0.56, size * 0.16, size * 0.28, size * 0.68));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.50, size * 0.10), QPointF(size * 0.50, size * 0.90));
+    } else if (name == "mark") {
+        // A scribed line on a face — no material removed, which is the whole distinction.
+        g.drawRect(QRectF(size * 0.16, size * 0.16, size * 0.68, size * 0.68));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.26, size * 0.70), QPointF(size * 0.74, size * 0.30));
+    } else if (name == "combine") {
+        // Two overlapping bodies: the boolean. Inventor's Combine is Join / Cut / Intersect.
+        g.drawRect(QRectF(size * 0.14, size * 0.30, size * 0.42, size * 0.42));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.42, size * 0.20, size * 0.42, size * 0.42));
+    } else if (name == "direct") {
+        // Direct editing: a face pushed by a handle.
+        g.drawRect(QRectF(size * 0.16, size * 0.24, size * 0.40, size * 0.52));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.60, size * 0.50), QPointF(size * 0.86, size * 0.50));
+        g.drawLine(QPointF(size * 0.78, size * 0.42), QPointF(size * 0.86, size * 0.50));
+        g.drawLine(QPointF(size * 0.78, size * 0.58), QPointF(size * 0.86, size * 0.50));
+    } else if (name == "finish") {
+        // A surface finish callout: a tick against a face.
+        g.drawLine(QPointF(size * 0.16, size * 0.76), QPointF(size * 0.84, size * 0.76));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawLine(QPointF(size * 0.40, size * 0.76), QPointF(size * 0.54, size * 0.28));
+        g.drawLine(QPointF(size * 0.54, size * 0.28), QPointF(size * 0.68, size * 0.76));
+    } else if (name == "thicken") {
+        // A face offset to a solid: original plus its offset copy.
+        g.drawRect(QRectF(size * 0.18, size * 0.28, size * 0.52, size * 0.34));
+        g.setPen(QPen(kAccent, pen.widthF()));
+        g.drawRect(QRectF(size * 0.30, size * 0.40, size * 0.52, size * 0.34));
+    } else if (name == "delete-face") {
+        // A face removed, leaving the opening. Dashed = what is gone.
+        g.drawRect(QRectF(size * 0.16, size * 0.16, size * 0.68, size * 0.68));
+        QPen dashed(kAccent, pen.widthF());
+        dashed.setStyle(Qt::DashLine);
+        g.setPen(dashed);
+        g.drawRect(QRectF(size * 0.32, size * 0.32, size * 0.36, size * 0.36));
     } else {
         g.drawRect(QRectF(size * 0.28, size * 0.28, size * 0.44, size * 0.44));
     }

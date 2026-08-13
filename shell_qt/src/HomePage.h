@@ -30,6 +30,18 @@ public:
     explicit HomePage(cad::app::Session& session, QWidget* parent = nullptr);
     void refresh();
 
+    /// The left rail.
+    ///
+    /// Built here but PLACED by MainWindow, because it has to own the full left column — from
+    /// under the ribbon down to the status bar, past the document tab bar rather than cut off by
+    /// it — and that layout lives a level up. A sidebar that stops short of the window edge reads
+    /// as a panel inside the page instead of a rail beside it.
+    [[nodiscard]] QWidget* sidebar() noexcept { return sidebar_; }
+
+    /// The rail's starting width. MainWindow needs it to set the splitter's initial sizes; the
+    /// min/max the drag respects are set on the widget itself.
+    [[nodiscard]] static int sidebarDefaultWidth() noexcept;
+
 signals:
     void createRequested(int kind);
     void openRequested(const QString& path);
@@ -38,7 +50,6 @@ signals:
 
 private:
     QWidget* buildSidebar();
-    QWidget* buildMain();
     QWidget* buildProjectStrip();
     QWidget* buildRecentToolbar();
 
@@ -51,6 +62,8 @@ private:
     void rebuildCards();
 
     cad::app::Session& session_;
+
+    QWidget* sidebar_ = nullptr;
 
     QLabel* projectName_ = nullptr;
     QLabel* projectPaths_ = nullptr;

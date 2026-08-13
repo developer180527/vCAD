@@ -134,6 +134,13 @@ void applyTheme(QApplication& app) {
 
         /* ── home, Inventor layout ─────────────────────────────────────────────── */
         #homeSidebar { background: #f1f0ee; border-right: 1px solid #dfdedb; }
+
+        /* The rail's own border-right IS the visible divider. The handle only needs to be a
+           grab zone next to it, so it takes the page colour rather than the default splitter
+           line — two divider lines four pixels apart looks like a mistake. */
+        #homeSplitter::handle { background: #fafaf9; }
+        #homeSplitter::handle:hover { background: #d7e5f3; }
+        #homeSplitter::handle:pressed { background: #a8c7e6; }
         #homeMain { background: #fafaf9; }
         #homeProduct { font-size: 24px; font-weight: 300; color: #33373b; }
         #homeProductSub { font-size: 12px; color: #83878c; }

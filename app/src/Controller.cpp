@@ -319,6 +319,101 @@ ObjectId Controller::addPrimitive(const std::string& type,
     return id;
 }
 
+std::vector<naming::ElementName> Controller::edgesOf(ObjectId id) const {
+    std::vector<naming::ElementName> edges;
+    const auto object = history_.current().find(id);
+    if (!object || object->output() == nullptr) return edges;
+    const auto& output = *object->output();
+
+    // Filter by resolved shape type rather than by anything in the name. A name records
+    // provenance, not topology — an edge and the face that bounds it can both come from the same
+    // feature and the same operation, so only the shape it resolves to tells them apart.
+    for (const auto& name : output.map.allNames()) {
+        const auto shape = output.map.resolve(name);
+        if (shape && shape->type() == kernel::ShapeType::Edge) edges.push_back(name);
+    }
+    return edges;
+}
+
+void Controller::addBoolean(const std::string& type, const std::string& label) {
+    if (selection_.size() != 2) return;
+    auto [next, id] = history_.current().add(type);
+    const auto object = next.find(id);
+    // Property names order the inputs: "a_base" sorts before "b_tool", and the engine passes
+    // inputs in property order.
+    auto updated = object->withProperty("a_base", selection_[0])
+                       .withProperty("b_tool", selection_[1]);
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), label);
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+    status(label);
+}
+
+void Controller::addEdgeFeature(const std::string& type, const std::string& label,
+                                const std::string& sizeProperty, double millimetres) {
+    if (selection_.size() != 1) return;
+    const ObjectId target = selection_.front();
+
+    auto edges = edgesOf(target);
+    if (edges.empty()) {
+        status("Nothing to " + label + ": that feature has no edges yet.");
+        return;
+    }
+
+    auto [next, id] = history_.current().add(type);
+    const auto object = next.find(id);
+    auto updated = object->withProperty("a_base", target)
+                       .withProperty(sizeProperty, units::millimetres(millimetres))
+                       .withProperty("edges", std::move(edges));
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), label);
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    // Report what actually happened. A fillet that silently failed on 3 of 12 edges is the kind
+    // of thing the engine records and the user would otherwise never learn: partial failure is a
+    // feature of the recompute engine, so it has to be a feature of the status line too.
+    const auto result = history_.current().find(id);
+    if (result && result->output() == nullptr) {
+        status(label + " failed — see the feature's error in the browser.");
+    } else {
+        status(label + " applied to all edges (edge selection is not wired yet).");
+    }
+}
+
+kernel::Result<ObjectId> Controller::importFile(const std::filesystem::path& path) {
+    auto [next, id] = history_.current().add("Import");
+    const auto object = next.find(id);
+    auto updated = object->withProperty("path", path.string());
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+
+    // Recompute BEFORE committing. An import that cannot be read must not land in history: the
+    // user would get an undo step for a feature that never produced geometry, and every later
+    // recompute would retry the same unreadable file.
+    recompute::Engine engine(registry_, cache_);
+    auto computed = engine.recompute(next);
+    if (!computed) return computed.error();
+
+    next = computed.value().first;
+    const auto imported = next.find(id);
+    if (!imported || imported->output() == nullptr) {
+        return kernel::Error{kernel::ErrorCode::InvalidInput,
+                             "That file could not be imported.",
+                             path.string()};
+    }
+
+    history_.commit(std::move(next), "Import " + path.filename().string());
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+    fitView();
+    status("Imported " + path.filename().string());
+    return id;
+}
+
 void Controller::registerCommands() {
     const auto always = [](const CommandContext&) { return true; };
 
@@ -329,25 +424,29 @@ void Controller::registerCommands() {
                              addPrimitive("Cylinder", {{"radius", 25}, {"height", 80}});
                          }});
 
+    // Booleans. Inventor exposes all three as modes of one "Combine" command; we register them
+    // separately so each is reachable now, and the mode selector can fold them together once the
+    // non-modal command surface exists (DESKTOP_UX 3.2).
+    const auto twoSelected = [](const CommandContext& c) { return c.selectedObjects == 2; };
     commands_.push_back({"feature.cut", "Cut", "Subtract the second selection from the first",
-                         "cut",
-                         [](const CommandContext& c) { return c.selectedObjects == 2; },
-                         [this] {
-                             if (selection_.size() != 2) return;
-                             auto [next, id] = history_.current().add("Cut");
-                             auto object = next.find(id);
-                             // Property names order the inputs: "a_base" sorts before "b_tool",
-                             // and the engine passes inputs in property order.
-                             auto updated = object->withProperty("a_base", selection_[0])
-                                                .withProperty("b_tool", selection_[1]);
-                             next = next.replace(std::make_shared<const document::ObjectData>(
-                                 std::move(updated)));
-                             history_.commit(std::move(next), "Cut");
-                             selection_.clear();
-                             selection_.push_back(id);
-                             refresh();
-                             status("Cut");
-                         }});
+                         "cut", twoSelected, [this] { addBoolean("Cut", "Cut"); }});
+    commands_.push_back({"feature.fuse", "Join", "Merge the selected bodies into one", "combine",
+                         twoSelected, [this] { addBoolean("Fuse", "Join"); }});
+    commands_.push_back({"feature.common", "Intersect",
+                         "Keep only the volume the selected bodies share", "combine", twoSelected,
+                         [this] { addBoolean("Common", "Intersect"); }});
+
+    // Edge features. Enabled on a single selection that HAS edges — asking for a fillet on a
+    // feature with no computed output should not offer itself as available.
+    const auto oneWithEdges = [this](const CommandContext& c) {
+        return c.selectedObjects == 1 && !edgesOf(selection_.front()).empty();
+    };
+    commands_.push_back({"feature.fillet", "Fillet", "Round every edge of the selected body",
+                         "fillet", oneWithEdges,
+                         [this] { addEdgeFeature("Fillet", "Fillet", "radius", 5.0); }});
+    commands_.push_back({"feature.chamfer", "Chamfer", "Bevel every edge of the selected body",
+                         "chamfer", oneWithEdges,
+                         [this] { addEdgeFeature("Chamfer", "Chamfer", "distance", 3.0); }});
 
     commands_.push_back({"edit.delete", "Delete", "Delete the selected features", "delete",
                          [](const CommandContext& c) { return c.selectedObjects > 0; },

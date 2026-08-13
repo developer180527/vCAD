@@ -11,6 +11,7 @@ class QButtonGroup;
 class QDockWidget;
 class QLabel;
 class QMenu;
+class QSplitter;
 class QStackedWidget;
 class QTabBar;
 class QTableWidget;
@@ -47,6 +48,9 @@ private:
     /// That is the anti-workbench decision made concrete: a user never selects a command set,
     /// they select a thing to edit and the commands follow.
     void rebuildRibbon();
+    /// Import lives here rather than in Controller's command registry because it needs a file
+    /// dialog, and app/ carries no toolkit. See the comment at the call site.
+    void importFile();
 
     /// The action for a real command from `Controller::commands()`, or null if it has none.
     [[nodiscard]] QAction* command(const char* id);
@@ -81,6 +85,11 @@ private:
     QTableWidget* properties_ = nullptr;
     QStackedWidget* workspaces_ = nullptr;
     HomePage* home_ = nullptr;
+    /// Home's left rail. Built by HomePage but laid out here, so it spans the full window height
+    /// past the document tab bar rather than being clipped by it.
+    QWidget* homeSidebar_ = nullptr;
+    /// Carries the drag handle between the rail and the content column.
+    QSplitter* homeSplitter_ = nullptr;
     QTabBar* documentTabs_ = nullptr;
 
     /// One editor widget per open document, parallel to Session::documents(). Held rather than

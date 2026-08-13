@@ -5,11 +5,15 @@
 #include "Ribbon.h"
 #include "ViewportPlaceholder.h"
 
+#include <QApplication>
 #include <QButtonGroup>
 #include <QDockWidget>
+#include <QFileDialog>
+#include <QMessageBox>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMenu>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
@@ -237,6 +241,36 @@ QAction* MainWindow::commandOr(const char* id, const QString& label, const QStri
     return planned(label, iconName);
 }
 
+void MainWindow::importFile() {
+    auto* c = controller();
+    if (c == nullptr) return;
+
+    // Filters name the formats core/io actually registers, and nothing else. A dialog offering
+    // .dxf or .obj that then fails to read them is worse than not listing them.
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import"), QString(),
+        tr("CAD files (*.step *.stp *.iges *.igs *.stl);;"
+           "STEP (*.step *.stp);;IGES (*.iges *.igs);;STL (*.stl);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    // Reading a large STEP file is not instant and blocks this thread. An hourglass is the
+    // honest minimum; moving import off the UI thread is its own piece of work.
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const auto result = c->importFile(std::filesystem::path(path.toStdString()));
+    QApplication::restoreOverrideCursor();
+
+    if (!result) {
+        // The kernel's message is written for a user, so show it rather than a generic failure.
+        QMessageBox::warning(this, tr("Import failed"),
+                             QString::fromStdString(result.error().message),
+                             QMessageBox::Ok);
+        statusMessage_->setText(tr("Import failed"));
+        return;
+    }
+    refreshTree();
+    refreshCommandStates();
+}
+
 void MainWindow::rebuildRibbon() {
     // Tabs are a function of the active workspace. Home contributes none of its own.
     ribbon_->clearTabs();
@@ -285,18 +319,90 @@ void MainWindow::rebuildRibbon() {
     auto* sketchPanel = model->addPanel(tr("Sketch"));
     sketchPanel->addLarge(planned(tr("Start\nSketch"), QStringLiteral("sketch")));
 
+    // Create and Modify are Inventor's, command for command and in Inventor's order — two large
+    // buttons then small ones stacked three per column, which is why the column breaks below fall
+    // where they do. Read down each column, not across:
+    //
+    //   Create   Extrude Revolve | Sweep  Emboss Decal
+    //                            | Loft   Derive Import
+    //                            | Coil   Rib    Unwrap
+    //
+    //   Modify   Hole    Fillet  | Chamfer Thread          Split       Mark
+    //                            | Shell   Combine         Direct      Finish
+    //                            | Draft   Thicken/Offset  Delete Face
+    //
+    // Almost all of it is disabled, and that is the point: the tab shows what a Part document is
+    // for, so nothing moves when the commands arrive. Inventor's own layout is the specification
+    // here — we are not designing a ribbon, we are copying one people already know.
     auto* create = model->addPanel(tr("Create"));
-    create->addLarge(commandOr("feature.box", tr("Box"), QStringLiteral("box")));
-    create->addLarge(commandOr("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
     create->addLarge(planned(tr("Extrude"), QStringLiteral("extrude")));
     create->addLarge(planned(tr("Revolve"), QStringLiteral("revolve")));
+    create->addSmall(planned(tr("Sweep"), QStringLiteral("sweep")));
+    create->addSmall(planned(tr("Loft"), QStringLiteral("loft")));
+    create->addSmall(planned(tr("Coil"), QStringLiteral("coil")));
+    create->addSmall(planned(tr("Emboss"), QStringLiteral("emboss")));
+    create->addSmall(planned(tr("Derive"), QStringLiteral("derive")));
+    create->addSmall(planned(tr("Rib"), QStringLiteral("rib")));
+    create->addSmall(planned(tr("Decal"), QStringLiteral("decal")));
+    // Import resolves to a command the day one is registered. The capability already exists —
+    // core/io reads STEP, IGES and STL, and FeatureRegistry::builtins() has an Import feature —
+    // but no Controller command wraps it yet, so commandOr falls back to disabled.
+    // Import is a shell action rather than a Controller command, because it needs a file dialog
+    // and app/ must stay toolkit-free for the iPad shell. The command registry deliberately has
+    // no way to pass a parameter; anything needing one is wired like this.
+    {
+        auto* action = new QAction(icon(QStringLiteral("import")), tr("Import"), this);
+        action->setToolTip(tr("Import a STEP, IGES or STL file into this part"));
+        connect(action, &QAction::triggered, this, &MainWindow::importFile);
+        create->addSmall(action);
+    }
+    create->addSmall(planned(tr("Unwrap"), QStringLiteral("unwrap")));
+
+    // Ours, not Inventor's, and deliberately a SEPARATE panel rather than smuggled into Create.
+    //
+    // Inventor has no primitive solids in the 3D Model tab: every solid starts as a sketch, so
+    // Create begins at Extrude. We cannot sketch yet, which would leave a Part document with no
+    // way to make geometry at all. Keeping them in their own panel means Create still matches the
+    // reference exactly, and this panel disappears the day Sketch + Extrude work rather than
+    // leaving a permanent wart inside a panel we are supposed to be copying.
+    auto* primitives = model->addPanel(tr("Primitives"));
+    primitives->addLarge(commandOr("feature.box", tr("Box"), QStringLiteral("box")));
+    primitives->addLarge(commandOr("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
 
     auto* modify = model->addPanel(tr("Modify"));
-    modify->addLarge(commandOr("feature.cut", tr("Cut"), QStringLiteral("cut")));
+    modify->addLarge(planned(tr("Hole"), QStringLiteral("hole")));
     modify->addLarge(commandOr("feature.fillet", tr("Fillet"), QStringLiteral("fillet")));
-    modify->addLarge(commandOr("feature.chamfer", tr("Chamfer"), QStringLiteral("chamfer")));
+    modify->addSmall(commandOr("feature.chamfer", tr("Chamfer"), QStringLiteral("chamfer")));
     modify->addSmall(planned(tr("Shell"), QStringLiteral("shell")));
-    modify->addSmall(planned(tr("Hole"), QStringLiteral("hole")));
+    modify->addSmall(planned(tr("Draft"), QStringLiteral("draft")));
+    modify->addSmall(planned(tr("Thread"), QStringLiteral("thread")));
+    // Inventor's Combine IS the boolean between solid bodies, and Join / Cut / Intersect are its
+    // three modes — exactly our Fuse, Cut and Common. All three are implemented, so the button
+    // gets a drop-down rather than silently exposing only one of them. Inventor puts drop-downs on
+    // ribbon buttons too (its own Fillet has one), so this is copying the reference, not diverging
+    // from it.
+    if (auto* combine = modify->addSmall(
+            commandOr("feature.cut", tr("Combine"), QStringLiteral("combine")))) {
+        auto* modes = new QMenu(combine);
+        for (const auto& [id, label] : {std::pair{"feature.cut", tr("Cut")},
+                                        std::pair{"feature.fuse", tr("Join")},
+                                        std::pair{"feature.common", tr("Intersect")}}) {
+            if (auto* action = command(id)) {
+                action->setText(label);
+                modes->addAction(action);
+            }
+        }
+        if (!modes->isEmpty()) {
+            combine->setMenu(modes);
+            combine->setPopupMode(QToolButton::MenuButtonPopup);
+        }
+    }
+    modify->addSmall(planned(tr("Thicken/Offset"), QStringLiteral("thicken")));
+    modify->addSmall(planned(tr("Split"), QStringLiteral("split")));
+    modify->addSmall(planned(tr("Direct"), QStringLiteral("direct")));
+    modify->addSmall(planned(tr("Delete Face"), QStringLiteral("delete-face")));
+    modify->addSmall(planned(tr("Mark"), QStringLiteral("mark")));
+    modify->addSmall(planned(tr("Finish"), QStringLiteral("finish")));
 
     auto* pattern = model->addPanel(tr("Pattern"));
     pattern->addSmall(planned(tr("Rectangular"), QStringLiteral("pattern-rect")));
@@ -360,21 +466,50 @@ void MainWindow::rebuildRibbon() {
 // ── workspaces ──────────────────────────────────────────────────────────────────────────
 
 void MainWindow::buildWorkspaces() {
+    // Two columns: Home's rail, then everything else stacked over the document tabs.
+    //
+    // The tab bar is deliberately INSIDE the right column rather than spanning the window. With
+    // one full-width bar the rail stopped above it and read as a panel sitting inside the page;
+    // owning the left column down to the status bar is what makes it a sidebar.
+    // A QSplitter rather than a plain layout, so the rail can be dragged. The handle is the
+    // divider the user grabs; the rail's own min/max width bound how far it can go, which is why
+    // those live on the widget instead of here.
     auto* centre = new QWidget(this);
-    auto* layout = new QVBoxLayout(centre);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    auto* columns = new QHBoxLayout(centre);
+    columns->setContentsMargins(0, 0, 0, 0);
+    columns->setSpacing(0);
 
-    workspaces_ = new QStackedWidget(centre);
+    homeSplitter_ = new QSplitter(Qt::Horizontal, centre);
+    homeSplitter_->setObjectName(QStringLiteral("homeSplitter"));
+    homeSplitter_->setChildrenCollapsible(false);   // dragging must not make the rail vanish
+    homeSplitter_->setHandleWidth(4);               // 1px reads as a border and cannot be grabbed
+    columns->addWidget(homeSplitter_, 1);
+
+    workspaces_ = new QStackedWidget(homeSplitter_);
     home_ = new HomePage(session_, workspaces_);
     workspaces_->addWidget(home_);
+
+    homeSidebar_ = home_->sidebar();
+    homeSplitter_->addWidget(homeSidebar_);
+
+    auto* right = new QWidget(homeSplitter_);
+    auto* layout = new QVBoxLayout(right);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
     layout->addWidget(workspaces_, 1);
+    homeSplitter_->addWidget(right);
+
+    // Only the content column absorbs window resizing; the rail keeps whatever width the user
+    // dragged it to, which is what every CAD sidebar does.
+    homeSplitter_->setStretchFactor(0, 0);
+    homeSplitter_->setStretchFactor(1, 1);
+    homeSplitter_->setSizes({HomePage::sidebarDefaultWidth(), 1});
 
     connect(home_, &HomePage::createRequested, this,
             [this](int kind) { createDocument(static_cast<DocumentKind>(kind)); });
 
     // Document tabs along the BOTTOM, as Inventor does.
-    documentTabs_ = new QTabBar(centre);
+    documentTabs_ = new QTabBar(right);
     documentTabs_->setObjectName(QStringLiteral("docTabs"));
     documentTabs_->setExpanding(false);
     documentTabs_->setDrawBase(false);
@@ -470,6 +605,7 @@ void MainWindow::syncWorkspace() {
     if (browserDock_ != nullptr) browserDock_->setVisible(!home);
     if (propertiesDock_ != nullptr) propertiesDock_->setVisible(!home);
     if (filterBar_ != nullptr) filterBar_->setVisible(!home);
+    if (homeSidebar_ != nullptr) homeSidebar_->setVisible(home);
 
     if (home) {
         workspaces_->setCurrentWidget(home_);
