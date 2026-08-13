@@ -45,6 +45,10 @@ find_package(Boost REQUIRED)
 # first consumer, which is the usual way an interface dependency gets mislabelled.
 target_link_libraries(planegcs PUBLIC Eigen3::Eigen Boost::headers)
 
+# The Base/Console shim routes the solver's diagnostics into our log instead of stderr. PRIVATE:
+# it is used by the shim only, and nothing about planegcs's interface exposes it.
+target_link_libraries(planegcs PRIVATE cad::log)
+
 # C++20: GCS.cpp uses <numbers>.
 target_compile_features(planegcs PUBLIC cxx_std_20)
 

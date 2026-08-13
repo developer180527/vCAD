@@ -1,5 +1,7 @@
 #include "cad/sketch/Dxf.h"
 
+#include "cad/log/Log.h"
+
 #include <dime/Input.h>
 #include <dime/Model.h>
 #include <dime/entities/Arc.h>
@@ -228,6 +230,9 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
 
     dimeModel model;
     if (!model.read(&input)) {
+        // dime has already printed its own parse diagnostic to stderr by this point. Ours records
+        // WHICH file, which its message does not, and puts both in the same log.
+        CAD_WARN(log::Category::Io) << "dime could not parse " << path.string();
         // dime returns false for a malformed file. Deliberately not partial: half a profile looks
         // like a complete one and there is no way for the user to tell which half is missing.
         return Error{ErrorCode::InvalidInput,
@@ -247,6 +252,8 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
         ctx.report.unsupported.emplace_back(kind, count);
     }
     if (report != nullptr) *report = ctx.report;
+    CAD_INFO(log::Category::Io) << "imported " << path.filename().string() << ": "
+                                << ctx.report.summary();
 
     if (ctx.report.imported() == 0) {
         return Error{ErrorCode::InvalidInput,

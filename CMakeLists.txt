@@ -37,6 +37,15 @@ option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 # assetlib: the content-addressed DDC (ADR 0004). Vendored in-tree — see
 # modules/assetlib/VENDORED.md for provenance, the sync procedure, and why this is a copy
 # rather than a submodule of the engine repository it comes from.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(CadWarnings)
+include(CadLayering)
+include(CadShaders)
+
+# core/log first, before the vendored modules: it depends on nothing, and planegcs's Base/Console
+# shim routes the solver's diagnostics into it. A target must exist before it is referenced.
+add_subdirectory(core/log)
+
 add_subdirectory(modules/assetlib EXCLUDE_FROM_ALL)
 
 # planegcs: FreeCAD's 2D constraint solver, LGPL-2.1-or-later, vendored unmodified.
@@ -45,11 +54,6 @@ add_subdirectory(modules/assetlib EXCLUDE_FROM_ALL)
 # vendored dependency that only compiles on the machine that added it is a dependency nobody else
 # can touch.
 add_subdirectory(modules/planegcs)
-
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include(CadWarnings)
-include(CadLayering)
-include(CadShaders)
 
 if(CAD_ENABLE_ASAN AND NOT MSVC)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)

@@ -10,7 +10,7 @@ cad_core_library(cad_sketch
 )
 
 target_include_directories(cad_sketch PUBLIC include)
-target_link_libraries(cad_sketch PUBLIC cad::kernel)
+target_link_libraries(cad_sketch PUBLIC cad::kernel cad::log)
 
 # PRIVATE: planegcs is an implementation detail. cad/sketch/Sketch.h exposes plain doubles and our
 # own enums, never a GCS type, so a consumer of this module never needs the solver's headers -- and

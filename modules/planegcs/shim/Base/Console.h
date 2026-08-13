@@ -14,6 +14,8 @@
 // moment a sketch fails to converge and the question is "what did the solver actually do", and it
 // costs one getenv per process rather than a rebuild.
 
+#include "cad/log/Log.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <type_traits>
@@ -26,7 +28,12 @@ public:
     /// themselves and pass `str.c_str()`, and a solver diagnostic containing a stray '%' must not
     /// be interpreted as a conversion — that reads adjacent stack as arguments.
     void log(const char* text) const {
-        if (text != nullptr && enabled()) std::fputs(text, stderr);
+        // Routed through the log's ThirdParty category rather than stderr. The environment variable
+        // still works and still defaults off -- the solver logs per iteration and a sketch drag
+        // solves on every mouse move -- but when it is on the output now lands in the same file as
+        // everything else, timestamped and interleaved correctly with our own messages.
+        if (text == nullptr || !enabled()) return;
+        CAD_DEBUG(cad::log::Category::ThirdParty) << text;
     }
 
     /// Format plus arguments, which upstream also uses ("...Group %d, index %d...").
