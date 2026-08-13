@@ -300,9 +300,15 @@ int main(int argc, char** argv) {
     //    bucket correctly keeps every instance. Asserting here anyway is how this reported
     //    "frustum culling is not rejecting anything" for every run at n=8, against a culler that
     //    is fine: at n=512 it draws 128 of 512, at n=4096 it draws 640 of 4096.
-    if (zoomed.cells < 2) {
-        std::printf("SKIP  culling not exercised: %zu cell holds the whole scene (raise n)\n",
-                    zoomed.cells);
+    //
+    //    The gate is cells PER BATCH, not cells overall. Cells are spatial bins WITHIN a batch,
+    //    so a batch holding fewer than a cell's worth of instances gets exactly one cell -- and
+    //    that cell spans wherever those instances are, which for a scattered mesh is the entire
+    //    assembly. Nothing can cull it, correctly. A first version gated on total cells and so
+    //    still fired at 512 instances of 20 meshes: 20 cells, one per batch, none cullable.
+    if (zoomed.cells < 2 * static_cast<std::size_t>(uniqueParts)) {
+        std::printf("SKIP  culling not exercised: %zu cells for %u batches, so no batch has "
+                    "more than one spatial bin (raise n)\n", zoomed.cells, uniqueParts);
     } else if (zoomed.instancesVisible >= zoomed.instancesTotal) {
         std::fprintf(stderr,
                      "FAIL: zoomed in, culling still drew all %zu instances. Frustum culling is "
@@ -366,11 +372,24 @@ int main(int argc, char** argv) {
         // measure a different footprint, which is the whole trap this is avoiding.
         std::optional<std::size_t> litOne;
         if (instanceCount > 1 && litAll) {
+            // Screen-size culling OFF for the baseline. One instance viewed at a zoom that
+            // frames the whole assembly is sub-pixel well before 100k parts, so minPixels
+            // legitimately culls it -- correct behaviour that leaves nothing drawn, and with
+            // nothing drawn the frame read back as a copy of the previous one. The measurement
+            // wanted here is one instance's FOOTPRINT, and a footprint that was culled is not a
+            // measurement of anything.
+            render::SceneBuilder::CullSettings baseline;
+            baseline.minPixels = 0.0f;
+            scene.setCullSettings(baseline);
+
             const std::vector<render::Placement> one{placements.front()};
             if (auto r = scene.update(doc, one); !r) {
                 std::printf("baseline update failed: %s\n", r.error().message.c_str());
             } else {
                 gpu.frames->submit(scene.frame());
+                const auto st = gpu.frames->lastFrameStats();
+                std::printf("baseline: scene says %zu instances, backend drew %u in %u calls\n",
+                            scene.stats().instances, st.instances, st.drawCalls);
                 litOne = litPixels("scale_one.ppm");
             }
         }
@@ -382,10 +401,16 @@ int main(int argc, char** argv) {
             ++failures;
         } else if (instanceCount == 1) {
             std::printf("PASS  %zu lit pixels for a single instance\n", *litAll);
-        } else if (!litOne || *litOne == 0) {
+        } else if (!litOne) {
             std::fprintf(stderr, "FAIL: could not render the one-instance baseline to compare "
                                  "against\n");
             ++failures;
+        } else if (*litOne == 0) {
+            // Genuinely sub-pixel: at this instance count one part covers less than a whole
+            // pixel at the fitted camera, so there is no unit to measure in. Skipped rather
+            // than failed -- an unmeasurable scene is not a broken one.
+            std::printf("SKIP  one instance is sub-pixel at this zoom; no baseline to calibrate "
+                        "against (lower n to check transforms)\n");
         } else {
             // Occlusion means N instances never cover N times one instance's pixels -- on an
             // isometric grid the front boxes hide much of what is behind them -- so the bar is

@@ -45,26 +45,38 @@ of ADR 0007 and they now have honest evidence behind them.
 The architecture does what ADR 0007 said it would. That is worth stating plainly, because this
 project has spent a lot of today discovering that things it believed were false.
 
-### The one alarming result
+### The one alarming result — resolved, and it was two bugs
 
-The pixel check **failed** at 100k:
+The pixel check failed at 100k with `101626 lit for 100000 instances, 101626 for one` — identical
+counts for the full scene and the one-instance baseline. **The renderer was not at fault.** Two
+separate faults produced one symptom:
 
-```
-pixels: 101626 lit for 100000 instances, 101626 for one at the same camera (x1.00)
-FAIL: 100000 instances cover only 1.00x the pixels of ONE instance
-```
+**1. A real renderer bug: an empty scene never cleared.** bgfx discards a view that receives no
+draw calls, and a discarded view never runs its clear — so the framebuffer silently kept the
+previous frame. `bgfx::touch` on both the shaded and pick views fixes it. On screen this bug meant
+**deleting every feature would leave the old model in the viewport**, and a pick would report hits
+on geometry that no longer exists. Worth far more than the test it was found through.
 
-Identical pixel counts for the full scene and for the one-instance baseline. At n=8 and n=512 this
-same check produces ×8.00 and ×337 and is demonstrably correct, including against a deliberately
-reintroduced bug. So either the baseline frame is not being re-rendered at 100k, or something in
-the rebuild path is drawing stale ranges over the new buffer.
+**2. A test that measured something impossible.** The baseline renders one instance at the camera
+fitted to the WHOLE assembly. Past roughly 16k parts, one part at that zoom is sub-pixel, so
+`minPixels = 2` culls it — correct behaviour — leaving nothing drawn, which (because of bug 1) read
+back as a copy of the previous frame. The baseline now disables screen-size culling, and reports
+SKIP rather than FAIL when one instance is genuinely sub-pixel.
 
-**I do not know which, and that matters more than it looks.** The whole lesson of the instancing
-bug is that a renderer can produce confident counters and a wrong image. Until this is resolved,
-**the 7.69 ms GPU figure above is not evidence that 100k parts render correctly** — it is evidence
-that something took 7.69 ms. The counters are trustworthy; the image is unverified at this size.
+**What is verified now:** transforms are pixel-verified up to 16,384 instances (×30,573 over the
+one-instance baseline). Beyond that the check honestly skips. The submission path does not vary
+with instance count, so this is good evidence — but it is not the same as verification at 100k, and
+should not be described as though it were. A baseline measured from a ZOOMED camera, where one part
+is comfortably visible at any n, would close the gap.
 
-This is the single highest-value thing to chase next, ahead of any optimisation.
+The same review also caught a third instance of the recurring flaw: the culling assertion gated on
+total cell count, when cells are spatial bins WITHIN a batch. At 512 instances across 20 meshes
+that is one cell per batch, each spanning the whole assembly and correctly unculllable. Gated on
+cells per batch now.
+
+That is three assertions in this harness that agreed with themselves rather than with the renderer.
+The pattern is worth naming: **every one of them compared a measurement against a threshold chosen
+from intuition, instead of against a second measurement taken under known-good conditions.**
 
 ---
 
@@ -186,8 +198,9 @@ content, because of the viewport path, not the renderer.**
 
 ### Ordered plan
 
-1. **Resolve the 100k pixel-check failure.** Nothing else should be trusted until this is known.
-   It is either a broken test or a broken renderer, and both matter.
+1. ~~Resolve the 100k pixel-check failure.~~ **Done** — an empty scene never cleared (`bgfx::touch`
+   missing) plus a baseline that measured a legitimately culled instance. See above. Remaining
+   nicety: a zoomed baseline, so the pixel check covers 100k rather than skipping.
 2. **Native surface for the viewport**, and with it the §3.6 decision on renderer-drawn overlays.
    This unblocks the entire shell.
 3. **Level of detail.** The largest lever for both memory and triangle count.

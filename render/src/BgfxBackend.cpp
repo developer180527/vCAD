@@ -537,6 +537,13 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
     bgfx::setViewRect(kViewShaded, 0, 0, static_cast<std::uint16_t>(w),
                       static_cast<std::uint16_t>(h));
     bgfx::setViewClear(kViewShaded, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, clear, 1.0f);
+
+    // touch(), or an EMPTY scene does not clear. bgfx discards a view that receives no draw
+    // calls, and a discarded view never runs its clear -- so the framebuffer silently keeps the
+    // previous frame. On screen that means deleting every feature leaves the old model sitting
+    // in the viewport; in the scale spike it made a culled-away baseline frame read back as an
+    // identical copy of the full scene, which looked exactly like an instancing failure.
+    bgfx::touch(kViewShaded);
     bgfx::setViewTransform(kViewShaded, frame.camera.view.m, frame.camera.projection.m);
     if (bgfx::isValid(impl_.colourFb)) bgfx::setViewFrameBuffer(kViewShaded, impl_.colourFb);
 
@@ -656,6 +663,9 @@ void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t
     // Clear to zero: the id encoding reserves 0 for "nothing here", so an unwritten pixel is
     // unambiguously a miss rather than element 0.
     bgfx::setViewClear(kViewPick, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x00000000, 1.0f);
+    // Same reason as the shaded view: an empty scene must clear the id target, or a pick reads
+    // the ids of whatever was drawn last and reports a hit on geometry that is gone.
+    bgfx::touch(kViewPick);
     bgfx::setViewFrameBuffer(kViewPick, impl_.pickFb);
     bgfx::setViewTransform(kViewPick, frame.camera.view.m, frame.camera.projection.m);
 
