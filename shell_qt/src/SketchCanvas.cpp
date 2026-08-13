@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 
 namespace cadqt {
 namespace {
@@ -44,6 +45,28 @@ const QColor kProfile(0x1f, 0x21, 0x24);
 const QColor kConstruction(0x9a, 0x9d, 0xa2);
 const QColor kPreview(0x0a, 0x6c, 0xc4);
 const QColor kSnapMark(0xd8, 0x7a, 0x0a);
+const QColor kGlyph(0x2e, 0x7d, 0x5b);      ///< green, as both reference applications use
+const QColor kDimension(0x8a, 0x5a, 0x0a);  ///< amber: a dimension is a value, not a relationship
+
+/// The short mark drawn beside constrained geometry.
+///
+/// Relationships get a GLYPH; dimensions get a measured annotation instead and return nothing here.
+/// The distinction is the one a user cares about: a glyph says "these are related", a dimension says
+/// "this is 40 mm", and drawing both the same way makes a sketch unreadable at a glance.
+const char* glyphFor(cad::sketch::ConstraintKind kind) {
+    using CK = cad::sketch::ConstraintKind;
+    switch (kind) {
+        case CK::Horizontal:    return "H";
+        case CK::Vertical:      return "V";
+        case CK::Parallel:      return "//";
+        case CK::Perpendicular: return "\u22a5";
+        case CK::EqualLength:   return "=";
+        case CK::PointOnLine:   return "\u2510";
+        case CK::LockX:         return "X";
+        case CK::LockY:         return "Y";
+        default:                return nullptr;   // Coincident, Distance, Radius draw themselves
+    }
+}
 
 }  // namespace
 
@@ -259,6 +282,98 @@ void SketchCanvas::paintEvent(QPaintEvent*) {
                 g.drawEllipse(toScreen(geo.p[0], geo.p[1]), 2.5, 2.5);
                 g.setBrush(Qt::NoBrush);
                 break;
+        }
+    }
+
+    // ── constraints ─────────────────────────────────────────────────────────────────────
+    //
+    // Drawn AFTER the geometry so glyphs sit on top of it, and before the rubber band so a curve
+    // being drawn stays the most prominent thing on screen.
+    {
+        QFont small = g.font();
+        small.setPointSizeF(std::max(7.0, small.pointSizeF() - 2.0));
+        g.setFont(small);
+
+        // Glyphs stack outward per geometry: a line with three constraints would otherwise draw
+        // all three marks on the same pixel.
+        std::map<std::uint32_t, int> stacked;
+
+        const auto anchorOf = [&](std::uint32_t id) -> QPointF {
+            const auto* geo = sketch->find(id);
+            if (geo == nullptr) return {};
+            switch (geo->kind) {
+                case GeoKind::Line:
+                    return toScreen((geo->p[0] + geo->p[2]) * 0.5, (geo->p[1] + geo->p[3]) * 0.5);
+                case GeoKind::Circle:
+                case GeoKind::Arc:
+                    return toScreen(geo->p[0], geo->p[1] + geo->p[2]);
+                case GeoKind::Point:
+                    return toScreen(geo->p[0], geo->p[1]);
+            }
+            return {};
+        };
+
+        for (const auto& con : sketch->constraints()) {
+            using CK = cad::sketch::ConstraintKind;
+
+            if (con.kind == CK::Coincident) {
+                // A filled dot at the shared point. No letter: coincidence is the most common
+                // constraint by far, and lettering every corner would bury the sketch in text.
+                if (const auto p = sketch->pointAt(con.a, con.aPoint)) {
+                    g.setPen(QPen(kGlyph, 1.0));
+                    g.setBrush(kGlyph);
+                    g.drawEllipse(toScreen(p.value()[0], p.value()[1]), 3.0, 3.0);
+                    g.setBrush(Qt::NoBrush);
+                }
+                continue;
+            }
+
+            if (con.kind == CK::Radius) {
+                const auto* geo = sketch->find(con.a);
+                if (geo == nullptr) continue;
+                const QPointF centre = toScreen(geo->p[0], geo->p[1]);
+                const QPointF rim = toScreen(geo->p[0] + geo->p[2], geo->p[1]);
+                g.setPen(QPen(kDimension, 1.2));
+                g.drawLine(centre, rim);
+                g.drawText(QPointF((centre.x() + rim.x()) * 0.5, centre.y() - 4),
+                           QStringLiteral("R%1").arg(con.value, 0, 'g', 4));
+                continue;
+            }
+
+            if (con.kind == CK::Distance) {
+                const auto a = sketch->pointAt(con.a, con.aPoint);
+                const auto b = sketch->pointAt(con.b, con.bPoint);
+                if (!a || !b) continue;
+                const QPointF pa = toScreen(a.value()[0], a.value()[1]);
+                const QPointF pb = toScreen(b.value()[0], b.value()[1]);
+                // Offset perpendicular to the measured span, which is what keeps a dimension line
+                // off the geometry it measures — the whole convention of engineering drawing.
+                const double dx = pb.x() - pa.x();
+                const double dy = pb.y() - pa.y();
+                const double len = std::hypot(dx, dy);
+                if (len < 1e-6) continue;
+                const QPointF normal(-dy / len * 18.0, dx / len * 18.0);
+                const QPointF oa = pa + normal;
+                const QPointF ob = pb + normal;
+                g.setPen(QPen(kDimension, 1.2));
+                g.drawLine(oa, ob);
+                g.drawLine(pa, oa);   // extension lines back to the points measured
+                g.drawLine(pb, ob);
+                g.drawText(QPointF((oa.x() + ob.x()) * 0.5 + 3, (oa.y() + ob.y()) * 0.5 - 3),
+                           QString::number(con.value, 'g', 5));
+                continue;
+            }
+
+            const char* glyph = glyphFor(con.kind);
+            if (glyph == nullptr) continue;
+            for (const std::uint32_t target : {con.a, con.b}) {
+                if (target == cad::sketch::kNoGeo) continue;
+                const QPointF at = anchorOf(target);
+                if (at.isNull()) continue;
+                const int slot = stacked[target]++;
+                g.setPen(QPen(kGlyph, 1.0));
+                g.drawText(at + QPointF(6, -6 - slot * 12), QString::fromUtf8(glyph));
+            }
         }
     }
 

@@ -1271,6 +1271,30 @@ void MainWindow::refreshStatus() {
                                   : tr("%1 document(s) open").arg(session_.count()));
         return;
     }
+    // In a sketch the stats that matter are the sketch's, not the model's. Degrees of freedom are
+    // the number that tells a user whether the sketch is finished, and it is the reason the solver
+    // reports it at all -- leaving it in a struct nobody displays wastes the one signal a sketcher
+    // gives you about your own work.
+    if (c->environment() == cad::app::Environment::Sketch) {
+        const auto& report = c->lastSketchSolve();
+        const auto* sketch = c->activeSketch();
+        const std::size_t curves = sketch != nullptr ? sketch->geometry().size() : 0;
+        const std::size_t constraints = sketch != nullptr ? sketch->constraints().size() : 0;
+        QString text = tr("%1 curves · %2 constraints · ").arg(curves).arg(constraints);
+        if (!report.conflicting.empty()) {
+            text += tr("OVER-CONSTRAINED (%1)").arg(report.conflicting.size());
+        } else if (report.dofs == 0) {
+            text += tr("fully constrained");
+        } else {
+            text += tr("%1 degrees of freedom").arg(report.dofs);
+        }
+        if (!c->sketchSelection().empty()) {
+            text += tr("  ·  %1 selected").arg(c->sketchSelection().size());
+        }
+        statusStats_->setText(text);
+        return;
+    }
+
     const auto s = c->stats();
     QString text = tr("%1 features").arg(s.objects);
     if (s.instances > 0) {
