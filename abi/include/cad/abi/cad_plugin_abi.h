@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 4
+#define CAD_ABI_VERSION_MINOR 5
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -233,6 +233,16 @@ CAD_API CadStatus cad_undo(CadSession, int32_t* out_did_undo);
 CAD_API CadStatus cad_redo(CadSession, int32_t* out_did_redo);
 CAD_API CadStatus cad_document_digest(CadSession, uint64_t* out);
 CAD_API CadStatus cad_object_count(CadSession, uint64_t* out);
+
+/* --- native documents (ADR 0003) ---
+ *
+ * The FEATURE TREE, not geometry: saving records how the part was built, so reopening restores an
+ * editable model rather than a dead solid. Use cad_object_export for geometry interchange.
+ *
+ * cad_document_open REPLACES the session's document and clears its undo history — opening a file
+ * is not an edit you can undo past. */
+CAD_API CadStatus cad_document_save(CadSession, const char* path);
+CAD_API CadStatus cad_document_open(CadSession, const char* path);
 
 /* --- file interchange --- */
 

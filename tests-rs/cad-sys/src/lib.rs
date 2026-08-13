@@ -201,6 +201,9 @@ extern "C" {
     pub fn cad_document_digest(s: CadSession, out: *mut u64) -> CadStatus;
     pub fn cad_object_count(s: CadSession, out: *mut u64) -> CadStatus;
 
+    pub fn cad_document_save(s: CadSession, path: *const c_char) -> CadStatus;
+    pub fn cad_document_open(s: CadSession, path: *const c_char) -> CadStatus;
+
     pub fn cad_object_export(s: CadSession, id: CadObject, path: *const c_char) -> CadStatus;
     pub fn cad_import_probe(
         s: CadSession,

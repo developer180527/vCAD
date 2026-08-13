@@ -13,7 +13,8 @@
         "tools"
       ]
     },
-    "glfw3"
+    "glfw3",
+    "sqlite3"
   ],
   "default-features": [
     "tests"
@@ -34,5 +35,6 @@
   },
   "builtin-baseline": "dc31f86a441067d6c2e9e4ad52988eb41ef4f442",
   "overrides": [],
+  "$comment-sqlite3": "The native document format (ADR 0003). Requested explicitly rather than relying on the platform's copy: macOS and most Linux ship libsqlite3, Windows ships nothing, and assetlib's find_package(SQLite3 QUIET) was silently picking up the system one. A single C file -- seconds to build, and it does not touch OCCT.",
   "$comment-bgfx": "bgfx 1.129 with [tools] for shaderc. The tools feature pulls glslang and spirv-tools -- a real but one-time build. Compiling shaders from source beats checking in per-platform binary blobs nobody can regenerate. glfw3 is for the dev viewer only."
 }

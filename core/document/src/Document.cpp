@@ -157,6 +157,25 @@ Document Document::replace(ObjectPtr object) const {
     return Document(next);
 }
 
+Document Document::insert(ObjectPtr object) const {
+    if (!object) return *this;
+    auto next = std::make_shared<Impl>(*impl_);
+    const ObjectId id = object->id();
+    next->objects[id] = std::move(object);
+    next->nextId = std::max(next->nextId, id.value + 1);
+    return Document(next);
+}
+
+std::uint64_t Document::nextId() const noexcept { return impl_->nextId; }
+
+Document Document::withNextId(std::uint64_t value) const {
+    auto next = std::make_shared<Impl>(*impl_);
+    // Only ever forward. A loader that passed a stale value must not be able to walk the
+    // allocator backwards into ids that are already in use.
+    next->nextId = std::max(next->nextId, value);
+    return Document(next);
+}
+
 Document Document::remove(ObjectId id) const {
     auto next = std::make_shared<Impl>(*impl_);
     next->objects.erase(id);

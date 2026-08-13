@@ -9,6 +9,7 @@
 #include "cad/document/Document.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/naming/ElementMap.h"
+#include "cad/io/DocumentStore.h"
 #include "cad/io/Format.h"
 #include "cad/recompute/DdcCache.h"
 #include "cad/recompute/Engine.h"
@@ -523,6 +524,50 @@ CadStatus cad_object_count(CadSession handle, uint64_t* out) {
     return withSession(handle, [&](Session& s) {
         if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
         *out = s.doc().size();
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_document_save(CadSession handle, const char* path) {
+    return withSession(handle, [&](Session& s) {
+        if (path == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing path.");
+        auto r = cad::io::saveDocument(s.doc(), path);
+        if (!r) {
+            s.lastError = r.error().message;
+            return toStatus(r.error().code);
+        }
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_document_open(CadSession handle, const char* path) {
+    return withSession(handle, [&](Session& s) {
+        if (path == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing path.");
+        auto loaded = cad::io::loadDocument(path);
+        if (!loaded) {
+            s.lastError = loaded.error().message;
+            return toStatus(loaded.error().code);
+        }
+
+        // Recompute BEFORE the document is installed. A file whose features cannot rebuild — a
+        // missing referenced file, geometry a newer kernel produced differently — must not replace
+        // the session's document with a broken one; the caller still has what it had.
+        //
+        // Note this does NOT reject a document with individually failed features. The engine
+        // supports partial failure, so a part with one broken fillet opens with that fillet marked
+        // and everything else intact, which is the behaviour a user needs when a file arrives
+        // slightly wrong.
+        Engine engine(s.registry, *s.cache);
+        auto computed = engine.recompute(loaded.value());
+        if (!computed) {
+            s.lastError = computed.error().message;
+            return toStatus(computed.error().code);
+        }
+
+        // A fresh History, not a commit: opening a file is not an edit, and being able to undo
+        // past an open back into the previous document would be nonsense.
+        s.history = History{std::move(computed.value().first)};
+        s.placements.clear();
         return CAD_OK;
     });
 }

@@ -265,6 +265,23 @@ impl Session {
         self.check(st)
     }
 
+    /// Writes the feature tree to a native `.vpart` document (ADR 0003).
+    ///
+    /// Not the same as [`Self::export_file`], which writes geometry for other applications. This
+    /// records how the part was built, so opening it gives back an editable model.
+    pub fn save(&self, path: &str) -> Result<()> {
+        let c = cstr(path)?;
+        let st = unsafe { sys::cad_document_save(self.handle, c.as_ptr()) };
+        self.check(st)
+    }
+
+    /// Opens a native document, replacing this session's document and clearing its undo history.
+    pub fn open(&mut self, path: &str) -> Result<()> {
+        let c = cstr(path)?;
+        let st = unsafe { sys::cad_document_open(self.handle, c.as_ptr()) };
+        self.check(st)
+    }
+
     /// Reads a file and reports on it without adding anything to the document.
     pub fn probe_import(&self, path: &str, assumed: UnitSystem) -> Result<ImportReport> {
         let c = cstr(path)?;
@@ -751,6 +768,13 @@ impl Session {
         self.set_length(o, "dx", dx)?;
         self.set_length(o, "dy", dy)?;
         self.set_length(o, "dz", dz)?;
+        Ok(o)
+    }
+
+    pub fn add_cylinder(&mut self, radius: f64, height: f64) -> Result<Object> {
+        let o = self.add("Cylinder")?;
+        self.set_length(o, "radius", radius)?;
+        self.set_length(o, "height", height)?;
         Ok(o)
     }
 

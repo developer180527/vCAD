@@ -109,6 +109,30 @@ public:
     /// via the with*() builders.
     [[nodiscard]] Document replace(ObjectPtr) const;
 
+    /// Inserts an object keeping the id it already carries. For LOADING a saved document.
+    ///
+    /// Object ids cannot be reassigned on load, and this is not a preference. The recompute
+    /// engine uses the object's id as the naming serial (`Engine.cpp`, ComputeContext), so every
+    /// ElementName produced by a feature has that feature's id baked into it. A saved fillet
+    /// stores the element names of the edges it rounds; renumbering its base feature on load
+    /// makes every one of those names resolve to nothing, and the fillet fails with
+    /// ErrorCode::NamingLost. Renumbering is silent, plausible, and destroys the file.
+    ///
+    /// Raises the id allocator past the inserted id, so a later add() cannot collide with it.
+    [[nodiscard]] Document insert(ObjectPtr) const;
+
+    /// The id the next add() will assign.
+    [[nodiscard]] std::uint64_t nextId() const noexcept;
+
+    /// Restores the id allocator, which a loader must do explicitly.
+    ///
+    /// insert() only ever raises the mark past the ids present, which is not enough: if the
+    /// highest-numbered object was DELETED before saving, reloading would hand its id to the next
+    /// new object. Element names recorded against the old object would then resolve against the
+    /// new one's geometry — a wrong reference rather than a lost one, which is worse. Ids are
+    /// never reused within a session, and must not be reused across one either.
+    [[nodiscard]] Document withNextId(std::uint64_t) const;
+
     /// Removes an object. Objects still referencing it are marked Failed on the next
     /// recompute rather than silently losing the reference.
     [[nodiscard]] Document remove(ObjectId) const;
