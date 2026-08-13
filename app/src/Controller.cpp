@@ -91,6 +91,18 @@ void Controller::clearSelection() {
     notifyDocument();
 }
 
+void Controller::rename(ObjectId id, const std::string& label) {
+    const auto object = history_.current().find(id);
+    if (!object || label.empty() || object->label() == label) return;
+    auto next = history_.current().replace(
+        std::make_shared<const document::ObjectData>(object->withLabel(label)));
+    // A commit, so renaming is undoable. NOT invalidated: a label does not affect geometry, and
+    // Document::digest deliberately excludes labels so a rename cannot throw away cached results.
+    history_.commit(std::move(next), "Rename");
+    notifyDocument();
+    status("Renamed to " + label);
+}
+
 void Controller::setVisible(ObjectId id, bool visible) {
     for (auto& p : placements_) {
         if (p.object == id) p.visible = visible;
@@ -730,6 +742,10 @@ void Controller::setRollback(std::optional<ObjectId> marker) {
     } else {
         status("Rolled forward to the end");
     }
+}
+
+bool Controller::isRolledBack(ObjectId id) const {
+    return history_.current().isRolledBack(id);
 }
 
 std::optional<ObjectId> Controller::rollback() const {

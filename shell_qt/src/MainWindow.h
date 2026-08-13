@@ -90,6 +90,7 @@ private:
                                      const QString& iconName);
 
     void refreshTree();
+    void showBrowserMenu(const QPoint&);
     void refreshProperties();
     void refreshCommandStates();
     void refreshStatus();

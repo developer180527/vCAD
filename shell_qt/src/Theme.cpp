@@ -132,6 +132,10 @@ void applyTheme(QApplication& app) {
         #homeTile:disabled { background: #f4f3f1; color: #a8abaf; }
         #homeRecent { background: #fafaf9; }
 
+        /* The browser's badge column. Smaller than the name so the tree still reads as a list of
+           features with annotations, rather than two columns of equal weight. */
+        QTreeView::item:!selected { }
+
         /* ── command property panel: the left dock while a command runs ─────────── */
         #commandPanel { background: #fafaf9; }
         #commandTitle { font-weight: 600; color: #1f2124; }

@@ -13,6 +13,8 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <algorithm>
+#include <set>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -43,6 +45,21 @@ QColor stateColour(cad::document::ObjectState state) {
         case cad::document::ObjectState::Blocked: return QColor(0x8a, 0x6d, 0x3f);
     }
     return QColor(0x1f, 0x21, 0x24);
+}
+
+/// Short state badge for the tree's second column.
+///
+/// Text, not just colour. Blocked and Failed read very differently to a user: Failed means "this
+/// feature is wrong", Blocked means "something above it is wrong and this never got a chance",
+/// and telling them apart is the difference between fixing the right feature and the wrong one.
+QString badgeFor(cad::document::ObjectState state) {
+    switch (state) {
+        case cad::document::ObjectState::Failed:  return QStringLiteral("ERR");
+        case cad::document::ObjectState::Blocked: return QStringLiteral("BLOCKED");
+        case cad::document::ObjectState::Dirty:   return QStringLiteral("•");
+        case cad::document::ObjectState::Clean:   return {};
+    }
+    return {};
 }
 
 QString iconNameFor(const std::string& type) {
@@ -1022,6 +1039,10 @@ void MainWindow::buildDocks() {
     browserDock->setFeatures(QDockWidget::DockWidgetMovable);
     browser_ = new QTreeWidget(browserDock);
     browser_->setHeaderHidden(true);
+    browser_->setColumnCount(2);
+    browser_->header()->setStretchLastSection(false);
+    browser_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    browser_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     browser_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     browser_->setIndentation(14);
 
@@ -1038,6 +1059,10 @@ void MainWindow::buildDocks() {
     browserDock->setWidget(leftStack_);
     addDockWidget(Qt::LeftDockWidgetArea, browserDock);
     resizeDocks({browserDock}, {290}, Qt::Horizontal);
+
+    browser_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(browser_, &QTreeWidget::customContextMenuRequested, this,
+            [this](const QPoint& at) { showBrowserMenu(at); });
 
     connect(browser_, &QTreeWidget::itemSelectionChanged, this, [this] {
         if (updatingUi_) return;
@@ -1088,11 +1113,61 @@ void MainWindow::buildStatusBar() {
 
 // ── refresh ─────────────────────────────────────────────────────────────────────────────
 
+void MainWindow::showBrowserMenu(const QPoint& at) {
+    auto* c = controller();
+    QTreeWidgetItem* item = browser_->itemAt(at);
+    if (c == nullptr || item == nullptr) return;
+    const QVariant raw = item->data(0, Qt::UserRole);
+    if (!raw.isValid()) return;   // the document root, which has no feature actions
+    const cad::document::ObjectId id{raw.toULongLong()};
+
+    const auto object = c->tree();
+    const auto found = std::find_if(object.begin(), object.end(),
+                                    [&](const auto& t) { return t.id == id; });
+    if (found == object.end()) return;
+
+    QMenu menu(this);
+    // Edit Sketch first and only for sketches: the most common reason to right-click one, and
+    // offering it on a box would be a menu entry that exists to be refused.
+    if (found->type == "Sketch") {
+        menu.addAction(icon(QStringLiteral("sketch-edit"), 16), tr("Edit Sketch"), this,
+                       [this, id] { if (auto* ctl = controller()) ctl->editSketch(id); });
+        menu.addSeparator();
+    }
+    menu.addAction(tr("Rename..."), this, [this, id, found] {
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, tr("Rename"), tr("Name:"),
+                                                   QLineEdit::Normal,
+                                                   QString::fromStdString(found->label), &ok);
+        if (ok && !name.trimmed().isEmpty()) {
+            if (auto* ctl = controller()) ctl->rename(id, name.trimmed().toStdString());
+        }
+    });
+    menu.addAction(icon(QStringLiteral("rollback"), 16), tr("Roll Back to Here"), this,
+                   [this, id] { if (auto* ctl = controller()) ctl->setRollback(id); });
+    if (c->rollback().has_value()) {
+        menu.addAction(icon(QStringLiteral("rollforward"), 16), tr("Roll Forward"), this,
+                       [this] { if (auto* ctl = controller()) ctl->setRollback(std::nullopt); });
+    }
+    menu.addSeparator();
+    menu.addAction(icon(QStringLiteral("delete"), 16), tr("Delete"), this,
+                   [this, id] { if (auto* ctl = controller()) ctl->remove(id); });
+
+    menu.exec(browser_->viewport()->mapToGlobal(at));
+}
+
 void MainWindow::refreshTree() {
     updatingUi_ = true;
     browser_->clear();
 
     auto* c = controller();
+    // Which features the rollback marker suspends. Collected once rather than asked per row.
+    std::set<std::uint64_t> rolledBack;
+    if (c != nullptr) {
+        for (const auto& item : c->tree()) {
+            if (c->isRolledBack(item.id)) rolledBack.insert(item.id.value);
+        }
+    }
     if (c != nullptr) {
         auto* root = new QTreeWidgetItem(browser_);
         const std::size_t index = session_.activeIndex();
@@ -1105,6 +1180,24 @@ void MainWindow::refreshTree() {
             node->setData(0, Qt::UserRole, QVariant::fromValue<qulonglong>(item.id.value));
             node->setIcon(0, icon(iconNameFor(item.type), 16));
             node->setForeground(0, stateColour(item.state));
+
+            // A badge in the second column, not a coloured name alone. Colour is not enough on its
+            // own: it is invisible to a colour-blind user and disappears entirely in a screenshot
+            // pasted into a bug report, which is exactly when the state matters most.
+            const QString badge = badgeFor(item.state);
+            if (!badge.isEmpty()) {
+                node->setText(1, badge);
+                node->setForeground(1, stateColour(item.state));
+                node->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+            }
+            // Suspended by the rollback marker: struck through, as Inventor greys everything below
+            // its End-of-Part marker. Distinct from failed, because nothing is wrong.
+            if (rolledBack.count(item.id.value) != 0) {
+                QFont font = node->font(0);
+                font.setStrikeOut(true);
+                node->setFont(0, font);
+                node->setForeground(0, QColor(0xa8, 0xab, 0xaf));
+            }
             if (!item.error.empty()) {
                 node->setToolTip(0, QString::fromStdString(item.error));
                 node->setText(0, node->text(0) + QStringLiteral("  ⚠"));

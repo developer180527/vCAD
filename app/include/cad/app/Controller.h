@@ -114,6 +114,10 @@ public:
         return selection_;
     }
 
+    /// Renames a feature. Cosmetic to the geometry, but NOT to the file: labels are saved, and
+    /// Controller::saveDigest folds them in so a rename marks the document modified.
+    void rename(document::ObjectId, const std::string& label);
+
     void setVisible(document::ObjectId, bool);
     void remove(document::ObjectId);
 
@@ -304,6 +308,12 @@ public:
     /// undo stack full of marker moves would bury the edits a user actually wants to undo.
     void setRollback(std::optional<document::ObjectId>);
     [[nodiscard]] std::optional<document::ObjectId> rollback() const;
+
+    /// Whether the marker suspends this feature. Delegated to Document rather than left for the
+    /// shell to recompute: "everything after the marker" is a model rule, and a shell that
+    /// reimplements the comparison is a shell that can disagree with the engine about what is
+    /// suspended.
+    [[nodiscard]] bool isRolledBack(document::ObjectId) const;
 
 private:
     /// Adds a Sketch feature, seeded with a fully constrained rectangle.
