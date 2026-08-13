@@ -101,6 +101,7 @@ struct Session {
     /// break by holding two results at once.
     std::string scratch;
     std::string lastError;
+    std::mutex mutex;
 
     /// The mesh from the most recent tessellate call, so element slots can be read back
     /// without re-entering the cache per slot.
@@ -111,12 +112,21 @@ struct Session {
 };
 
 std::mutex g_mutex;
-std::unordered_map<std::uint64_t, std::unique_ptr<Session>> g_sessions;
+/// shared_ptr, not unique_ptr, and that is load-bearing for the per-session locking below.
+///
+/// A caller takes a COPY of the shared_ptr under g_mutex, then locks that session. Between those
+/// two steps another thread may release the same handle -- with unique_ptr the Session would be
+/// destroyed and the very next line would lock a dangling mutex. The shared_ptr keeps it alive
+/// until the in-flight call finishes, so release() means "no new calls can find it" rather than
+/// "destroy it now, whoever is inside".
+std::unordered_map<std::uint64_t, std::shared_ptr<Session>> g_sessions;
 std::uint64_t g_nextSession = 1;
 
-Session* lookup(CadSession handle) {
+/// Call with g_mutex held. Returns a shared owner, so the session cannot be destroyed while the
+/// caller is using it.
+std::shared_ptr<Session> lookup(CadSession handle) {
     const auto it = g_sessions.find(handle);
-    return it == g_sessions.end() ? nullptr : it->second.get();
+    return it == g_sessions.end() ? nullptr : it->second;
 }
 
 CadStatus toStatus(cad::kernel::ErrorCode c) {
@@ -139,9 +149,16 @@ CadStatus toStatus(cad::kernel::ErrorCode c) {
 /// into a status code plus a readable message.
 template <class Fn>
 CadStatus withSession(CadSession handle, Fn&& fn) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    Session* s = lookup(handle);
-    if (s == nullptr) return CAD_ERR_BAD_HANDLE;
+    // Shared owner taken under g_mutex, so a concurrent cad_session_release cannot destroy this
+    // session out from under the lock we are about to take.
+    std::shared_ptr<Session> owner;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        owner = lookup(handle);
+    }
+    if (!owner) return CAD_ERR_BAD_HANDLE;
+    Session* s = owner.get();
+    std::lock_guard<std::mutex> lock(s->mutex);
     try {
         s->lastError.clear();
         return fn(*s);
@@ -157,9 +174,16 @@ CadStatus withSession(CadSession handle, Fn&& fn) {
 /// For the const char*-returning calls, which have no status channel.
 template <class Fn>
 const char* withSessionStr(CadSession handle, Fn&& fn) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    Session* s = lookup(handle);
-    if (s == nullptr) return "";
+    // Shared owner taken under g_mutex, so a concurrent cad_session_release cannot destroy this
+    // session out from under the lock we are about to take.
+    std::shared_ptr<Session> owner;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        owner = lookup(handle);
+    }
+    if (!owner) return "";
+    Session* s = owner.get();
+    std::lock_guard<std::mutex> lock(s->mutex);
     try {
         s->scratch.clear();
         fn(*s);
@@ -236,7 +260,7 @@ static CadSession createSession(const std::string& cacheDir) {
     std::lock_guard<std::mutex> lock(g_mutex);
     try {
         const std::uint64_t id = g_nextSession++;
-        g_sessions[id] = std::make_unique<Session>(cacheDir);
+        g_sessions[id] = std::make_shared<Session>(cacheDir);
         return id;
     } catch (...) {
         return 0;
@@ -261,7 +285,7 @@ void cad_session_release(CadSession handle) {
 
 const char* cad_session_last_error(CadSession handle) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    Session* s = lookup(handle);
+    const auto s = lookup(handle);
     return s ? s->lastError.c_str() : "invalid session handle";
 }
 
@@ -909,15 +933,15 @@ CadStatus cad_import_probe(CadSession handle, const char* path, int32_t assumed,
 
 const char* cad_import_summary(CadSession handle) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    Session* s = lookup(handle);
+    const auto s = lookup(handle);
     // Deliberately does NOT clear the scratch: this reads what cad_import_probe just left.
     return s ? s->scratch.c_str() : "";
 }
 
 static const char* joinExtensions(CadSession handle, bool writable) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    Session* s = lookup(handle);
-    if (s == nullptr) return "";
+    const auto s = lookup(handle);
+    if (!s) return "";
     s->scratch.clear();
     const auto list = writable ? s->formats.writableExtensions()
                                : s->formats.readableExtensions();

@@ -17,8 +17,8 @@ Result<Operation> runBoolean(const char* what, const Shape& a, const Shape& b) {
         return Error{ErrorCode::InvalidInput, "Boolean operands must not be empty."};
     }
     auto r = guard(what, [&] {
-        auto algo = std::make_shared<Algo>(occt(const_cast<Shape&>(a)),
-                                           occt(const_cast<Shape&>(b)));
+        auto algo = std::make_shared<Algo>(TopoDS_Shape(occt(a)),
+                                           TopoDS_Shape(occt(b)));
         algo->Build();
         if (!algo->IsDone()) {
             throw std::runtime_error("boolean algorithm reported not-done");
@@ -26,7 +26,7 @@ Result<Operation> runBoolean(const char* what, const Shape& a, const Shape& b) {
         Operation op;
         op.impl().algo = algo;
         op.impl().result = algo->Shape();
-        op.impl().inputs = {occt(const_cast<Shape&>(a)), occt(const_cast<Shape&>(b))};
+        op.impl().inputs = {TopoDS_Shape(occt(a)), TopoDS_Shape(occt(b))};
         return op;
     });
     if (!r) {
@@ -59,13 +59,13 @@ Result<Operation> unifySameDomain(const Shape& s) {
     // recover it, because a merged face has neither the area nor the centroid of either
     // parent. Dropping the history here would make every merge anonymous.
     return guard("unifySameDomain", [&] {
-        ShapeUpgrade_UnifySameDomain unifier(occt(const_cast<Shape&>(s)), true, true, false);
+        ShapeUpgrade_UnifySameDomain unifier(TopoDS_Shape(occt(s)), true, true, false);
         unifier.Build();
         Operation op;
         op.impl().algo = nullptr;
         op.impl().history = unifier.History();
         op.impl().result = unifier.Shape();
-        op.impl().inputs = {occt(const_cast<Shape&>(s))};
+        op.impl().inputs = {TopoDS_Shape(occt(s))};
         return op;
     });
 }

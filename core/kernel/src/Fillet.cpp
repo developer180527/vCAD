@@ -27,12 +27,12 @@ Result<Operation> filletEdges(const Shape& base,
     }
 
     return guard("filletEdges", [&] {
-        auto algo = std::make_shared<BRepFilletAPI_MakeFillet>(occt(const_cast<Shape&>(base)));
+        auto algo = std::make_shared<BRepFilletAPI_MakeFillet>(TopoDS_Shape(occt(base)));
         for (const auto& e : edges) {
             if (e.isNull() || e.type() != ShapeType::Edge) {
                 throw std::runtime_error("fillet input is not an edge");
             }
-            algo->Add(radius, TopoDS::Edge(occt(const_cast<Shape&>(e))));
+            algo->Add(radius, TopoDS::Edge(TopoDS_Shape(occt(e))));
         }
         algo->Build();
         if (!algo->IsDone()) {
@@ -41,7 +41,7 @@ Result<Operation> filletEdges(const Shape& base,
         Operation op;
         op.impl().algo = algo;
         op.impl().result = algo->Shape();
-        op.impl().inputs = {occt(const_cast<Shape&>(base))};
+        op.impl().inputs = {TopoDS_Shape(occt(base))};
         return op;
     });
 }

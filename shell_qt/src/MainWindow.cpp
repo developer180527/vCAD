@@ -687,6 +687,12 @@ void MainWindow::buildWorkspaces() {
         editors_.erase(editors_.begin() + static_cast<std::ptrdiff_t>(docIndex));
         workspaces_->removeWidget(editor);
         editor->deleteLater();
+        
+        auto* canvas = sketchCanvases_[docIndex];
+        sketchCanvases_.erase(sketchCanvases_.begin() + static_cast<std::ptrdiff_t>(docIndex));
+        workspaces_->removeWidget(canvas);
+        canvas->deleteLater();
+
         session_.close(docIndex);
     });
 

@@ -142,6 +142,7 @@ bool visit(const dimeState* /*state*/, dimeEntity* entity, void* userdata) {
         const int count = poly->getNumVertices();
         const dxfdouble* xs = poly->getXCoords();
         const dxfdouble* ys = poly->getYCoords();
+        const dxfdouble* bulges = poly->getBulges();
         if (count >= 2 && xs != nullptr && ys != nullptr) {
             const double scale = ctx.options.scale;
             // Bulges make a polyline segment an arc. dime exposes them, but reconstructing an arc
@@ -149,6 +150,9 @@ bool visit(const dimeState* /*state*/, dimeEntity* entity, void* userdata) {
             // worse than a straight line the user can see is straight. Flattened and COUNTED, so
             // the report can say the profile lost curvature.
             for (int i = 0; i + 1 < count; ++i) {
+                // getBulgeS, plural, and it can be null: a polyline with no curved segments
+                // stores no bulge array at all rather than an array of zeros.
+                if (bulges != nullptr && bulges[i] != 0.0) ++ctx.report.flattenedBulges;
                 addLine(ctx, {xs[i] * scale, ys[i] * scale},
                         {xs[i + 1] * scale, ys[i + 1] * scale}, construction);
             }

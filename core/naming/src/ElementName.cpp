@@ -1,6 +1,7 @@
 #include "cad/naming/ElementName.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <sstream>
 
@@ -145,7 +146,10 @@ ElementName ElementName::parse(std::string_view text) {
             std::string item;
             while (std::getline(is, item, ',')) {
                 if (item.empty()) continue;
-                step.parents.push_back(std::stoull(item, nullptr, 16));
+                std::uint64_t val = 0;
+                auto [ptr, ec] = std::from_chars(item.data(), item.data() + item.size(), val, 16);
+                if (ec != std::errc{}) return {};
+                step.parents.push_back(val);
             }
         }
         steps.push_back(std::move(step));

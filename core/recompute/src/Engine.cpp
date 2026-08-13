@@ -102,6 +102,7 @@ kernel::Result<std::uint64_t> Engine::cacheKeyOf(const Document& doc,
                 return kernel::Error{kernel::ErrorCode::InvalidInput,
                                      "This feature refers to something that no longer exists."};
             }
+            mix(h, ref->value);
             mix(h, target->cacheKey());
         } else if (const auto* list =
                        std::get_if<std::vector<document::ObjectId>>(&p.value)) {
@@ -111,6 +112,7 @@ kernel::Result<std::uint64_t> Engine::cacheKeyOf(const Document& doc,
                     return kernel::Error{kernel::ErrorCode::InvalidInput,
                                          "This feature refers to something that no longer exists."};
                 }
+                mix(h, ref2.value);
                 mix(h, target->cacheKey());
             }
         } else {

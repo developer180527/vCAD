@@ -457,13 +457,18 @@ SolveReport Sketch::solve() {
                     g.p[1] = *circles[m.index].center.y;
                     g.p[2] = *circles[m.index].rad;
                     break;
-                case GeoKind::Arc:
+                case GeoKind::Arc: {
                     g.p[0] = *arcs[m.index].center.x;
                     g.p[1] = *arcs[m.index].center.y;
                     g.p[2] = *arcs[m.index].rad;
-                    g.p[3] = *arcs[m.index].startAngle;
-                    g.p[4] = *arcs[m.index].endAngle;
+                    const double dx1 = *arcs[m.index].start.x - g.p[0];
+                    const double dy1 = *arcs[m.index].start.y - g.p[1];
+                    const double dx2 = *arcs[m.index].end.x - g.p[0];
+                    const double dy2 = *arcs[m.index].end.y - g.p[1];
+                    g.p[3] = std::atan2(dy1, dx1);
+                    g.p[4] = std::atan2(dy2, dx2);
                     break;
+                }
             }
         }
     }
