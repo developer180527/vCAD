@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 4;
+pub const CAD_ABI_VERSION_MINOR: u32 = 6;
 
 pub type CadStatus = i32;
 
@@ -32,6 +32,63 @@ pub const CAD_ERR_INTERNAL: CadStatus = 99;
 
 pub type CadSession = u64;
 pub type CadObject = u64;
+pub type CadSketch = u64;
+
+/// Mirrors the header's `CadStr`: a borrowed (pointer, length) pair owned by the session and valid
+/// only until the next call on it. Returned by value, so it must be declared here rather than
+/// approximated as `*const c_char` — a struct return and a pointer return are different ABIs.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CadStr {
+    pub data: *const c_char,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CadSolveReport {
+    pub solved: i32,
+    pub dofs: i32,
+    pub conflicting: u64,
+    pub redundant: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CadSketchGeo {
+    pub kind: i32,
+    pub construction: i32,
+    pub p: [f64; 5],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CadInferReport {
+    pub coincident: u64,
+    pub horizontal: u64,
+    pub vertical: u64,
+    pub parallel: u64,
+    pub perpendicular: u64,
+    pub dofs_before: i32,
+    pub dofs_after: i32,
+    pub conflicting: u64,
+}
+
+/// Compares the constants above against the version the linked library reports.
+///
+/// The module comment has claimed since M1 that this function was "the tripwire". It did not exist,
+/// and the constant sat at 4 while the C header reached 6 -- exactly the silent drift it was
+/// supposed to prevent. Now it is real and `abi_version_is_current` asserts it.
+pub fn abi_version_matches() -> Result<(), (u32, u32)> {
+    let mut major = 0u32;
+    let mut minor = 0u32;
+    unsafe { cad_abi_version(&mut major, &mut minor) };
+    if major == CAD_ABI_VERSION_MAJOR && minor == CAD_ABI_VERSION_MINOR {
+        Ok(())
+    } else {
+        Err((major, minor))
+    }
+}
 
 /// Mirrors `cad::document::ObjectState`. The numeric values are part of the ABI.
 pub const CAD_STATE_CLEAN: i32 = 0;
@@ -123,6 +180,7 @@ pub struct CadRecomputeReport {
 }
 
 extern "C" {
+    pub fn cad_abi_version(major: *mut u32, minor: *mut u32);
     pub fn cad_session_create() -> CadSession;
     pub fn cad_session_create_cached(dir: *const c_char) -> CadSession;
     pub fn cad_session_release(s: CadSession);
@@ -200,6 +258,30 @@ extern "C" {
     pub fn cad_redo(s: CadSession, out: *mut i32) -> CadStatus;
     pub fn cad_document_digest(s: CadSession, out: *mut u64) -> CadStatus;
     pub fn cad_object_count(s: CadSession, out: *mut u64) -> CadStatus;
+
+    // --- sketches ---
+    pub fn cad_sketch_create(s: CadSession, plane: i32, out: *mut CadSketch) -> CadStatus;
+    pub fn cad_sketch_release(s: CadSession, sk: CadSketch);
+    pub fn cad_sketch_add_line(s: CadSession, sk: CadSketch, x1: f64, y1: f64, x2: f64, y2: f64,
+                               construction: i32, out: *mut u32) -> CadStatus;
+    pub fn cad_sketch_add_circle(s: CadSession, sk: CadSketch, cx: f64, cy: f64, radius: f64,
+                                 construction: i32, out: *mut u32) -> CadStatus;
+    pub fn cad_sketch_add_arc(s: CadSession, sk: CadSketch, cx: f64, cy: f64, radius: f64,
+                              start: f64, end: f64, construction: i32, out: *mut u32) -> CadStatus;
+    pub fn cad_sketch_constrain(s: CadSession, sk: CadSketch, kind: i32, a: u32, a_point: i32,
+                                b: u32, b_point: i32, value: f64, out: *mut u64) -> CadStatus;
+    pub fn cad_sketch_solve(s: CadSession, sk: CadSketch, out: *mut CadSolveReport) -> CadStatus;
+    pub fn cad_sketch_geometry_count(s: CadSession, sk: CadSketch, out: *mut u64) -> CadStatus;
+    pub fn cad_sketch_geometry(s: CadSession, sk: CadSketch, index: u64,
+                               out: *mut CadSketchGeo) -> CadStatus;
+    pub fn cad_sketch_constraint_count(s: CadSession, sk: CadSketch, out: *mut u64) -> CadStatus;
+    pub fn cad_sketch_serialize(s: CadSession, sk: CadSketch) -> CadStr;
+    pub fn cad_sketch_deserialize(s: CadSession, text: *const c_char,
+                                  out: *mut CadSketch) -> CadStatus;
+    pub fn cad_sketch_import_dxf(s: CadSession, path: *const c_char, plane: i32, scale: f64,
+                                 out: *mut CadSketch) -> CadStatus;
+    pub fn cad_sketch_infer(s: CadSession, sk: CadSketch, point_tol: f64, angle_tol: f64,
+                            parallel_perp: i32, out: *mut CadInferReport) -> CadStatus;
 
     pub fn cad_document_save(s: CadSession, path: *const c_char) -> CadStatus;
     pub fn cad_document_open(s: CadSession, path: *const c_char) -> CadStatus;

@@ -205,6 +205,68 @@ pub struct CacheStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Object(pub sys::CadObject);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sketch(pub sys::CadSketch);
+
+/// A piece of sketch geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geo(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plane {
+    Xy = 0,
+    Xz = 1,
+    Yz = 2,
+}
+
+/// Geometry kinds, mirroring the ABI's CAD_GEO_*.
+pub const GEO_POINT: i32 = 0;
+pub const GEO_LINE: i32 = 1;
+pub const GEO_CIRCLE: i32 = 2;
+pub const GEO_ARC: i32 = 3;
+
+/// Which point of a geometry a constraint refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pt {
+    Start = 0,
+    End = 1,
+    Center = 2,
+}
+
+/// A constraint to apply. Modelled as one enum rather than a method per kind so adding a kind is
+/// one variant, matching how the ABI takes it.
+#[derive(Debug, Clone, Copy)]
+pub enum Con {
+    Coincident(Geo, Pt, Geo, Pt),
+    Horizontal(Geo),
+    Vertical(Geo),
+    Parallel(Geo, Geo),
+    Perpendicular(Geo, Geo),
+    Distance(Geo, Pt, Geo, Pt, f64),
+    Radius(Geo, f64),
+    EqualLength(Geo, Geo),
+    LockX(Geo, Pt, f64),
+    LockY(Geo, Pt, f64),
+}
+
+impl Con {
+    /// (kind, a, a_point, b, b_point, value)
+    fn raw(self) -> (i32, u32, i32, u32, i32, f64) {
+        match self {
+            Con::Coincident(a, ap, b, bp) => (0, a.0, ap as i32, b.0, bp as i32, 0.0),
+            Con::Horizontal(a) => (1, a.0, 0, 0, 0, 0.0),
+            Con::Vertical(a) => (2, a.0, 0, 0, 0, 0.0),
+            Con::Parallel(a, b) => (3, a.0, 0, b.0, 0, 0.0),
+            Con::Perpendicular(a, b) => (4, a.0, 0, b.0, 0, 0.0),
+            Con::Distance(a, ap, b, bp, v) => (5, a.0, ap as i32, b.0, bp as i32, v),
+            Con::Radius(a, v) => (6, a.0, 2, 0, 0, v),
+            Con::EqualLength(a, b) => (8, a.0, 0, b.0, 0, 0.0),
+            Con::LockX(a, ap, v) => (9, a.0, ap as i32, 0, 0, v),
+            Con::LockY(a, ap, v) => (10, a.0, ap as i32, 0, 0, v),
+        }
+    }
+}
+
 // --- session -------------------------------------------------------------------------------
 
 /// Owns a document, a feature registry and a recompute cache. Released on drop.
@@ -263,6 +325,122 @@ impl Session {
         let c = cstr(path)?;
         let st = unsafe { sys::cad_object_export(self.handle, o.0, c.as_ptr()) };
         self.check(st)
+    }
+
+    // ── sketches ──────────────────────────────────────────────────────────────────────────
+
+    pub fn new_sketch(&mut self, plane: Plane) -> Result<Sketch> {
+        let mut h: sys::CadSketch = 0;
+        let st = unsafe { sys::cad_sketch_create(self.handle, plane as i32, &mut h) };
+        self.check(st)?;
+        Ok(Sketch(h))
+    }
+
+    /// Releases a sketch. Idempotent, like every release in this ABI.
+    pub fn release_sketch(&mut self, sk: Sketch) {
+        unsafe { sys::cad_sketch_release(self.handle, sk.0) };
+    }
+
+    pub fn add_line(&mut self, sk: Sketch, a: (f64, f64), b: (f64, f64)) -> Result<Geo> {
+        let mut g = 0u32;
+        let st = unsafe {
+            sys::cad_sketch_add_line(self.handle, sk.0, a.0, a.1, b.0, b.1, 0, &mut g)
+        };
+        self.check(st)?;
+        Ok(Geo(g))
+    }
+
+    pub fn add_sketch_circle(&mut self, sk: Sketch, c: (f64, f64), r: f64) -> Result<Geo> {
+        let mut g = 0u32;
+        let st = unsafe { sys::cad_sketch_add_circle(self.handle, sk.0, c.0, c.1, r, 0, &mut g) };
+        self.check(st)?;
+        Ok(Geo(g))
+    }
+
+    pub fn add_sketch_arc(&mut self, sk: Sketch, c: (f64, f64), r: f64, a0: f64, a1: f64)
+        -> Result<Geo> {
+        let mut g = 0u32;
+        let st =
+            unsafe { sys::cad_sketch_add_arc(self.handle, sk.0, c.0, c.1, r, a0, a1, 0, &mut g) };
+        self.check(st)?;
+        Ok(Geo(g))
+    }
+
+    /// One entry point per constraint kind would be a dozen near-identical wrappers; the kind is
+    /// data here for the same reason it is in the ABI.
+    pub fn constrain(&mut self, sk: Sketch, c: Con) -> Result<u64> {
+        let mut index = 0u64;
+        let (kind, a, ap, b, bp, value) = c.raw();
+        let st = unsafe {
+            sys::cad_sketch_constrain(self.handle, sk.0, kind, a, ap, b, bp, value, &mut index)
+        };
+        self.check(st)?;
+        Ok(index)
+    }
+
+    pub fn solve(&mut self, sk: Sketch) -> Result<sys::CadSolveReport> {
+        let mut r = sys::CadSolveReport::default();
+        let st = unsafe { sys::cad_sketch_solve(self.handle, sk.0, &mut r) };
+        self.check(st)?;
+        Ok(r)
+    }
+
+    pub fn sketch_geometry(&self, sk: Sketch) -> Result<Vec<sys::CadSketchGeo>> {
+        let mut count = 0u64;
+        self.check(unsafe { sys::cad_sketch_geometry_count(self.handle, sk.0, &mut count) })?;
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut g = sys::CadSketchGeo::default();
+            self.check(unsafe { sys::cad_sketch_geometry(self.handle, sk.0, i, &mut g) })?;
+            out.push(g);
+        }
+        Ok(out)
+    }
+
+    pub fn sketch_constraint_count(&self, sk: Sketch) -> Result<u64> {
+        let mut n = 0u64;
+        self.check(unsafe { sys::cad_sketch_constraint_count(self.handle, sk.0, &mut n) })?;
+        Ok(n)
+    }
+
+    pub fn sketch_text(&self, sk: Sketch) -> String {
+        let s = unsafe { sys::cad_sketch_serialize(self.handle, sk.0) };
+        if s.data.is_null() {
+            return String::new();
+        }
+        unsafe { std::slice::from_raw_parts(s.data as *const u8, s.len) }
+            .to_vec()
+            .into_iter()
+            .map(|b| b as char)
+            .collect()
+    }
+
+    pub fn sketch_from_text(&mut self, text: &str) -> Result<Sketch> {
+        let c = cstr(text)?;
+        let mut h: sys::CadSketch = 0;
+        let st = unsafe { sys::cad_sketch_deserialize(self.handle, c.as_ptr(), &mut h) };
+        self.check(st)?;
+        Ok(Sketch(h))
+    }
+
+    pub fn import_dxf(&mut self, path: &str, plane: Plane, scale: f64) -> Result<Sketch> {
+        let c = cstr(path)?;
+        let mut h: sys::CadSketch = 0;
+        let st =
+            unsafe { sys::cad_sketch_import_dxf(self.handle, c.as_ptr(), plane as i32, scale, &mut h) };
+        self.check(st)?;
+        Ok(Sketch(h))
+    }
+
+    pub fn infer(&mut self, sk: Sketch, point_tol: f64, angle_tol: f64, parallel_perp: bool)
+        -> Result<sys::CadInferReport> {
+        let mut r = sys::CadInferReport::default();
+        let st = unsafe {
+            sys::cad_sketch_infer(self.handle, sk.0, point_tol, angle_tol,
+                                  if parallel_perp { 1 } else { 0 }, &mut r)
+        };
+        self.check(st)?;
+        Ok(r)
     }
 
     /// Writes the feature tree to a native `.vpart` document (ADR 0003).

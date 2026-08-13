@@ -10,6 +10,9 @@
 #include "cad/kernel/Primitives.h"
 #include "cad/naming/ElementMap.h"
 #include "cad/io/DocumentStore.h"
+#include "cad/sketch/Dxf.h"
+#include "cad/sketch/Infer.h"
+#include "cad/sketch/Sketch.h"
 #include "cad/io/Format.h"
 #include "cad/recompute/DdcCache.h"
 #include "cad/recompute/Engine.h"
@@ -20,6 +23,7 @@
 #include "cad/units/Units.h"
 
 #include <exception>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -62,6 +66,11 @@ struct Session {
     std::vector<cad::render::Placement> placements;
 
     History history{Document{}};
+
+    /// Sketches, by handle. std::map rather than a vector so a released handle does not shift the
+    /// others -- handles are opaque to the caller and must stay valid until released.
+    std::map<std::uint64_t, cad::sketch::Sketch> sketches;
+    std::uint64_t nextSketch = 1;
 
     explicit Session(const std::string& cacheDir) {
         auto l0 = std::make_unique<MemoryCache>();
@@ -169,6 +178,33 @@ CadStatus fail(Session& s, CadStatus code, std::string message) {
     return code;
 }
 
+/// Resolves a sketch handle, or reports a bad handle. Every sketch entry point goes through this:
+/// a stale handle must be an error the caller sees, not a crash.
+template <class Fn>
+CadStatus withSketch(Session& s, CadSketch handle, Fn&& fn) {
+    const auto it = s.sketches.find(handle);
+    if (it == s.sketches.end()) {
+        return fail(s, CAD_ERR_BAD_HANDLE, "That sketch no longer exists.");
+    }
+    return fn(it->second);
+}
+
+cad::sketch::Plane planeOf(std::int32_t raw) {
+    switch (raw) {
+        case CAD_SKETCH_PLANE_XZ: return cad::sketch::Plane::XZ;
+        case CAD_SKETCH_PLANE_YZ: return cad::sketch::Plane::YZ;
+        default:                  return cad::sketch::Plane::XY;
+    }
+}
+
+CadSketch registerSketch(Session& s, cad::sketch::Sketch sketch) {
+    const CadSketch handle = s.nextSketch++;
+    s.sketches.emplace(handle, std::move(sketch));
+    return handle;
+}
+
+
+
 /// Edits `id` in place through the persistent document, marks the subgraph dirty, and
 /// commits a new history version.
 template <class Fn>
@@ -204,6 +240,11 @@ static CadSession createSession(const std::string& cacheDir) {
     } catch (...) {
         return 0;
     }
+}
+
+void cad_abi_version(std::uint32_t* major, std::uint32_t* minor) {
+    if (major != nullptr) *major = CAD_ABI_VERSION_MAJOR;
+    if (minor != nullptr) *minor = CAD_ABI_VERSION_MINOR;
 }
 
 CadSession cad_session_create(void) { return createSession({}); }
@@ -525,6 +566,215 @@ CadStatus cad_object_count(CadSession handle, uint64_t* out) {
         if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
         *out = s.doc().size();
         return CAD_OK;
+    });
+}
+
+CadStatus cad_sketch_create(CadSession handle, std::int32_t plane, CadSketch* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        *out = registerSketch(s, cad::sketch::Sketch(planeOf(plane)));
+        return CAD_OK;
+    });
+}
+
+void cad_sketch_release(CadSession handle, CadSketch sketch) {
+    (void)withSession(handle, [&](Session& s) {
+        s.sketches.erase(sketch);
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_sketch_add_line(CadSession handle, CadSketch sk, double x1, double y1, double x2,
+                              double y2, std::int32_t construction, std::uint32_t* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            const auto id = sketch.addLine(x1, y1, x2, y2, construction != 0);
+            if (out != nullptr) *out = id;
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_add_circle(CadSession handle, CadSketch sk, double cx, double cy,
+                                double radius, std::int32_t construction, std::uint32_t* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            const auto id = sketch.addCircle(cx, cy, radius, construction != 0);
+            if (out != nullptr) *out = id;
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_add_arc(CadSession handle, CadSketch sk, double cx, double cy, double radius,
+                             double startAngle, double endAngle, std::int32_t construction,
+                             std::uint32_t* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            const auto id = sketch.addArc(cx, cy, radius, startAngle, endAngle, construction != 0);
+            if (out != nullptr) *out = id;
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_constrain(CadSession handle, CadSketch sk, std::int32_t kind, std::uint32_t a,
+                               std::int32_t aPoint, std::uint32_t b, std::int32_t bPoint,
+                               double value, std::uint64_t* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            using PR = cad::sketch::PointRef;
+            const auto ap = static_cast<PR>(aPoint);
+            const auto bp = static_cast<PR>(bPoint);
+            std::size_t index = 0;
+            switch (kind) {
+                case CAD_CON_COINCIDENT:    index = sketch.coincident(a, ap, b, bp); break;
+                case CAD_CON_HORIZONTAL:    index = sketch.horizontal(a); break;
+                case CAD_CON_VERTICAL:      index = sketch.vertical(a); break;
+                case CAD_CON_PARALLEL:      index = sketch.parallel(a, b); break;
+                case CAD_CON_PERPENDICULAR: index = sketch.perpendicular(a, b); break;
+                case CAD_CON_DISTANCE:      index = sketch.distance(a, ap, b, bp, value); break;
+                case CAD_CON_RADIUS:        index = sketch.radius(a, value); break;
+                case CAD_CON_POINT_ON_LINE: index = sketch.pointOnLine(a, ap, b); break;
+                case CAD_CON_EQUAL_LENGTH:  index = sketch.equalLength(a, b); break;
+                case CAD_CON_LOCK_X:        index = sketch.lockX(a, ap, value); break;
+                case CAD_CON_LOCK_Y:        index = sketch.lockY(a, ap, value); break;
+                default:
+                    return fail(s, CAD_ERR_UNSUPPORTED, "That constraint kind is not known.");
+            }
+            if (out != nullptr) *out = index;
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_solve(CadSession handle, CadSketch sk, CadSolveReport* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            const auto report = sketch.solve();
+            if (out != nullptr) {
+                out->solved = report.solved ? 1 : 0;
+                out->dofs = report.dofs;
+                out->conflicting = report.conflicting.size();
+                out->redundant = report.redundant.size();
+            }
+            s.lastError = report.message;
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_geometry_count(CadSession handle, CadSketch sk, std::uint64_t* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+            *out = sketch.geometry().size();
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_geometry(CadSession handle, CadSketch sk, std::uint64_t index,
+                              CadSketchGeo* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+            if (index >= sketch.geometry().size()) {
+                return fail(s, CAD_ERR_INVALID_INPUT, "That geometry index is out of range.");
+            }
+            const auto& g = sketch.geometry()[index];
+            out->kind = static_cast<std::int32_t>(g.kind);
+            out->construction = g.construction ? 1 : 0;
+            for (int i = 0; i < 5; ++i) out->p[i] = g.p[static_cast<std::size_t>(i)];
+            return CAD_OK;
+        });
+    });
+}
+
+CadStatus cad_sketch_constraint_count(CadSession handle, CadSketch sk, std::uint64_t* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+            *out = sketch.constraints().size();
+            return CAD_OK;
+        });
+    });
+}
+
+CadStr cad_sketch_serialize(CadSession handle, CadSketch sk) {
+    CadStr result{nullptr, 0};
+    (void)withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            s.scratch = sketch.serialize();
+            result.data = s.scratch.c_str();
+            result.len = s.scratch.size();
+            return CAD_OK;
+        });
+    });
+    return result;
+}
+
+CadStatus cad_sketch_deserialize(CadSession handle, const char* text, CadSketch* out) {
+    return withSession(handle, [&](Session& s) {
+        if (text == nullptr || out == nullptr) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "Missing text or output pointer.");
+        }
+        auto parsed = cad::sketch::Sketch::deserialize(text);
+        if (!parsed) {
+            s.lastError = parsed.error().message;
+            return toStatus(parsed.error().code);
+        }
+        *out = registerSketch(s, std::move(parsed.value()));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_sketch_import_dxf(CadSession handle, const char* path, std::int32_t plane,
+                                double scale, CadSketch* out) {
+    return withSession(handle, [&](Session& s) {
+        if (path == nullptr || out == nullptr) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "Missing path or output pointer.");
+        }
+        cad::io::DxfImportOptions options;
+        options.plane = planeOf(plane);
+        if (scale > 0.0) options.scale = scale;
+        cad::io::DxfImportReport report;
+        auto imported = cad::io::importDxf(path, options, &report);
+        if (!imported) {
+            s.lastError = imported.error().message;
+            return toStatus(imported.error().code);
+        }
+        // The report goes into lastError so a caller can read the fidelity summary -- including
+        // which entity types were NOT imported -- rather than only learning it succeeded.
+        s.lastError = report.summary();
+        *out = registerSketch(s, std::move(imported.value()));
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_sketch_infer(CadSession handle, CadSketch sk, double pointTolerance,
+                           double angleTolerance, std::int32_t parallelPerpendicular,
+                           CadInferReport* out) {
+    return withSession(handle, [&](Session& s) {
+        return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
+            cad::sketch::InferenceOptions options;
+            if (pointTolerance > 0.0) options.pointTolerance = pointTolerance;
+            if (angleTolerance > 0.0) options.angleToleranceDeg = angleTolerance;
+            options.parallelPerpendicular = parallelPerpendicular != 0;
+            const auto report = cad::sketch::infer(sketch, options);
+            if (out != nullptr) {
+                out->coincident = report.coincident;
+                out->horizontal = report.horizontal;
+                out->vertical = report.vertical;
+                out->parallel = report.parallel;
+                out->perpendicular = report.perpendicular;
+                out->dofs_before = report.dofsBefore;
+                out->dofs_after = report.dofsAfter;
+                out->conflicting = report.conflicting;
+            }
+            s.lastError = report.summary();
+            return CAD_OK;
+        });
     });
 }
 

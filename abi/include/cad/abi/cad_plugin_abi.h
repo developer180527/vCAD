@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 5
+#define CAD_ABI_VERSION_MINOR 6
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -171,6 +171,10 @@ CAD_API const CadPluginDesc* cad_plugin_main(void);
 typedef uint64_t CadSession;   /* owns a document, a feature registry, and a cache */
 typedef uint64_t CadObject;    /* an object id within a session's document */
 
+/* The version this library was BUILT with. Exists so a binding can verify its own constants
+ * against the real thing instead of restating them and drifting silently. */
+CAD_API void cad_abi_version(uint32_t* out_major, uint32_t* out_minor);
+
 /* --- lifecycle --- */
 CAD_API CadSession cad_session_create(void);
 
@@ -233,6 +237,111 @@ CAD_API CadStatus cad_undo(CadSession, int32_t* out_did_undo);
 CAD_API CadStatus cad_redo(CadSession, int32_t* out_did_redo);
 CAD_API CadStatus cad_document_digest(CadSession, uint64_t* out);
 CAD_API CadStatus cad_object_count(CadSession, uint64_t* out);
+
+/* --- sketches -------------------------------------------------------------------------
+ *
+ * A sketch is 2D geometry plus CONSTRAINTS between it, solved by planegcs. Handles are
+ * session-scoped like everything else here.
+ *
+ * Sketches are not document objects yet, so these live on the session directly. When a Sketch
+ * feature exists, that becomes the owner and these stay as the editing surface. */
+
+typedef uint64_t CadSketch;
+
+/* Plane the sketch is drawn on. */
+#define CAD_SKETCH_PLANE_XY 0
+#define CAD_SKETCH_PLANE_XZ 1
+#define CAD_SKETCH_PLANE_YZ 2
+
+/* Geometry kinds, matching cad::sketch::GeoKind. */
+#define CAD_GEO_POINT  0
+#define CAD_GEO_LINE   1
+#define CAD_GEO_CIRCLE 2
+#define CAD_GEO_ARC    3
+
+/* Which characteristic point of a geometry a constraint refers to. */
+#define CAD_POINT_START  0
+#define CAD_POINT_END    1
+#define CAD_POINT_CENTER 2
+
+/* Constraint kinds, matching cad::sketch::ConstraintKind. */
+#define CAD_CON_COINCIDENT    0
+#define CAD_CON_HORIZONTAL    1
+#define CAD_CON_VERTICAL      2
+#define CAD_CON_PARALLEL      3
+#define CAD_CON_PERPENDICULAR 4
+#define CAD_CON_DISTANCE      5
+#define CAD_CON_RADIUS        6
+#define CAD_CON_POINT_ON_LINE 7
+#define CAD_CON_EQUAL_LENGTH  8
+#define CAD_CON_LOCK_X        9
+#define CAD_CON_LOCK_Y       10
+
+typedef struct {
+    int32_t  solved;
+    int32_t  dofs;            /* 0 == fully constrained; negative == over-constrained */
+    uint64_t conflicting;     /* constraints that cannot all hold */
+    uint64_t redundant;
+} CadSolveReport;
+
+typedef struct {
+    int32_t kind;             /* CAD_GEO_* */
+    int32_t construction;
+    double  p[5];             /* meaning depends on kind -- see cad::sketch::Geometry */
+} CadSketchGeo;
+
+typedef struct {
+    uint64_t coincident;
+    uint64_t horizontal;
+    uint64_t vertical;
+    uint64_t parallel;
+    uint64_t perpendicular;
+    int32_t  dofs_before;
+    int32_t  dofs_after;
+    uint64_t conflicting;
+} CadInferReport;
+
+CAD_API CadStatus cad_sketch_create(CadSession, int32_t plane, CadSketch* out);
+CAD_API void      cad_sketch_release(CadSession, CadSketch);
+
+CAD_API CadStatus cad_sketch_add_line(CadSession, CadSketch, double x1, double y1, double x2,
+                                      double y2, int32_t construction, uint32_t* out_geo);
+CAD_API CadStatus cad_sketch_add_circle(CadSession, CadSketch, double cx, double cy, double radius,
+                                        int32_t construction, uint32_t* out_geo);
+CAD_API CadStatus cad_sketch_add_arc(CadSession, CadSketch, double cx, double cy, double radius,
+                                     double start_angle, double end_angle, int32_t construction,
+                                     uint32_t* out_geo);
+
+/* One entry point for every constraint kind. Unused parameters are ignored per kind, which keeps
+ * the ABI from growing a function per constraint -- there will eventually be dozens. */
+CAD_API CadStatus cad_sketch_constrain(CadSession, CadSketch, int32_t kind, uint32_t a,
+                                       int32_t a_point, uint32_t b, int32_t b_point, double value,
+                                       uint64_t* out_index);
+
+CAD_API CadStatus cad_sketch_solve(CadSession, CadSketch, CadSolveReport* out);
+CAD_API CadStatus cad_sketch_geometry_count(CadSession, CadSketch, uint64_t* out);
+CAD_API CadStatus cad_sketch_geometry(CadSession, CadSketch, uint64_t index, CadSketchGeo* out);
+CAD_API CadStatus cad_sketch_constraint_count(CadSession, CadSketch, uint64_t* out);
+
+/* Serialised form -- the text a document stores. Host-owned, valid until the next call. */
+CAD_API CadStr   cad_sketch_serialize(CadSession, CadSketch);
+CAD_API CadStatus cad_sketch_deserialize(CadSession, const char* text, CadSketch* out);
+
+/* Deliberately absent for now: a call returning the profile as a CadShape. This ABI has no shape
+ * handle registry, and inventing one to serve a single call would be the wrong shape for the
+ * problem -- Extrude needs shapes to become document FEATURES, not loose handles. Added with
+ * Extrude, designed once. */
+
+/* DXF import. The result is UNCONSTRAINED -- a DXF carries no constraints. `scale` multiplies
+ * every coordinate; DXF's own $INSUNITS is unreliable in the wild, so the caller decides. */
+CAD_API CadStatus cad_sketch_import_dxf(CadSession, const char* path, int32_t plane, double scale,
+                                        CadSketch* out);
+
+/* Infers constraints from near-relationships, then solves. Pass 0 for a tolerance to take the
+ * default. `parallel_perpendicular` is off unless non-zero: it guesses wrong too often. */
+CAD_API CadStatus cad_sketch_infer(CadSession, CadSketch, double point_tolerance,
+                                   double angle_tolerance_deg, int32_t parallel_perpendicular,
+                                   CadInferReport* out);
 
 /* --- native documents (ADR 0003) ---
  *
