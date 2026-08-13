@@ -413,3 +413,72 @@ fn an_open_profile_fails_at_the_sketch_feature() {
     // The extrude is blocked by its failed input rather than failing on its own terms.
     assert_eq!(s.state(solid).unwrap(), State::Blocked);
 }
+
+/// An arc's angles must agree with its endpoints after solving.
+///
+/// Written as a regression test for a reported stale-angle bug, and it is NOT one: it passes
+/// against both implementations. That is worth recording rather than quietly deleting.
+///
+/// The report assumed startAngle/endAngle are not solver variables. In our setup they are —
+/// Sketch::solve declares both with addParam, so they are unknowns, and addConstraintArcRules ties
+/// them to the endpoints. planegcs therefore updates them itself, and recomputing them with atan2
+/// afterwards lands on the same numbers. The atan2 is kept as a cheap invariant, not a fix.
+///
+/// What this test does guard is the invariant everything downstream depends on: toWire() derives an
+/// arc's midpoint from these angles, so if they ever stop agreeing with the endpoints — a different
+/// solver, a dropped ArcRules, a loose convergence tolerance — the wire build silently produces an
+/// inverted arc. Centre and radius stay correct in that failure, so only an angle check catches it.
+#[test]
+fn arc_angles_follow_the_solved_endpoints() {
+    let mut s = session();
+    let sk = s.new_sketch(Plane::Xy).unwrap();
+
+    // A quarter arc of radius 10 about the origin: starts at (10,0), ends at (0,10).
+    let arc = s
+        .add_sketch_arc(sk, (0.0, 0.0), 10.0, 0.0, std::f64::consts::FRAC_PI_2)
+        .unwrap();
+    s.constrain(sk, Con::LockX(arc, Pt::Center, 0.0)).unwrap();
+    s.constrain(sk, Con::LockY(arc, Pt::Center, 0.0)).unwrap();
+
+    // Drag the END round to (-10, 0) — half a turn instead of a quarter. Nothing here mentions an
+    // angle; the solver has to derive it from the endpoint position.
+    //
+    // Note there is deliberately NO radius constraint. Pinning centre, radius AND both end
+    // coordinates is one equation more than the arc has freedom — the end lies on the circle, so
+    // its two coordinates carry only one independent unknown — and planegcs correctly reports that
+    // as a conflict. Letting the radius follow from the endpoint is both consistent and closer to
+    // how the constraint would arrive from a real sketch.
+    s.constrain(sk, Con::LockX(arc, Pt::End, -10.0)).unwrap();
+    s.constrain(sk, Con::LockY(arc, Pt::End, 0.0)).unwrap();
+
+    let report = s.solve(sk).unwrap();
+    assert_eq!(report.solved, 1, "the arc sketch did not solve");
+    assert_eq!(report.conflicting, 0, "over-constrained: {report:?}");
+
+    let geo = s.sketch_geometry(sk).unwrap();
+    let a = geo.iter().find(|g| g.kind == cad::GEO_ARC).expect("no arc");
+
+    // Centre and radius are unchanged, which is exactly why the stale-angle bug hid here.
+    assert!(a.p[0].abs() < 1e-6 && a.p[1].abs() < 1e-6, "centre moved");
+    // Radius follows from the constrained endpoint rather than being asserted directly.
+    assert!((a.p[2] - 10.0).abs() < 1e-6, "radius should have followed to 10, got {}", a.p[2]);
+
+    // THE assertion: the end angle must now be pi, not the pi/2 it was placed with.
+    let end = a.p[4];
+    assert!(
+        (end - std::f64::consts::PI).abs() < 1e-6,
+        "end angle is {end}, expected pi — it was left at its placement value of pi/2, so the \
+         arc's sweep no longer matches its endpoints"
+    );
+    // The start angle is still free (nothing constrains it), so it is not asserted — only that the
+    // END angle tracked its endpoint.
+
+    // And the angles must agree with the endpoints they describe, which is the invariant the whole
+    // downstream wire build depends on.
+    let ex = a.p[0] + a.p[2] * end.cos();
+    let ey = a.p[1] + a.p[2] * end.sin();
+    assert!(
+        (ex + 10.0).abs() < 1e-6 && ey.abs() < 1e-6,
+        "the end angle points at ({ex}, {ey}), not the constrained (-10, 0)"
+    );
+}

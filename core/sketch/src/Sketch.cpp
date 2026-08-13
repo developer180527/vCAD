@@ -461,6 +461,14 @@ SolveReport Sketch::solve() {
                     g.p[0] = *arcs[m.index].center.x;
                     g.p[1] = *arcs[m.index].center.y;
                     g.p[2] = *arcs[m.index].rad;
+                    // Angles derived from the solved ENDPOINTS rather than read from the angle
+                    // parameters. Both are correct today: the angles are declared as unknowns above
+                    // and addConstraintArcRules keeps them consistent with the endpoints, so
+                    // planegcs updates them itself. This is the more robust of the two -- the
+                    // endpoints are what other constraints actually act on, so deriving from them
+                    // cannot drift if a solve leaves a small residual in the angle. Kept for that
+                    // reason, not because the parameters were stale; see the arc test in
+                    // m5_sketch.rs, which passes either way.
                     const double dx1 = *arcs[m.index].start.x - g.p[0];
                     const double dy1 = *arcs[m.index].start.y - g.p[1];
                     const double dx2 = *arcs[m.index].end.x - g.p[0];
