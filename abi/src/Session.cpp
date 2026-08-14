@@ -57,8 +57,29 @@ struct Session {
     ///
     /// Ids are never reused. Reuse would make a stale handle silently address a DIFFERENT shape,
     /// which is worse than either alternative: no error, wrong geometry.
-    std::unordered_map<std::uint64_t, cad::kernel::Shape> shapes;
+    /// A shape and, when it has one, the element map that names its faces and edges. The map
+    /// travels WITH the shape because a plugin holding a face reference across a rebuild is the
+    /// entire point of the naming system, and a shape handed over without its names can only be
+    /// referenced positionally -- which is precisely FreeCAD's topological naming failure.
+    struct StoredShape {
+        cad::kernel::Shape shape;
+        cad::naming::ElementMap names;
+    };
+    std::unordered_map<std::uint64_t, StoredShape> shapes;
     std::uint64_t nextShape = 1;
+
+    /// Computes currently on the stack. A CadComputeCtx indexes this rather than pointing at a
+    /// ComputeContext, so a plugin that stores one and uses it later gets a clean rejection
+    /// instead of a dangling reference into a frame that has returned.
+    struct ActiveCompute {
+        const cad::recompute::ComputeContext* ctx = nullptr;
+        CadShape output = 0;
+        bool hasOutput = false;
+        std::string failMessage;
+        std::string failDetail;
+    };
+    std::unordered_map<std::uint64_t, ActiveCompute> computes;
+    std::uint64_t nextCompute = 1;
 
     /// The vtable handed to plugins. Built once per session, on demand.
     std::unique_ptr<CadHost> host;
@@ -324,15 +345,20 @@ CadStr hostLastError(void* ctx) {
 }
 
 /// Interns a shape and returns its handle. 0 is reserved for "none", so ids start at 1.
-CadShape intern(Session& s, cad::kernel::Shape shape) {
+CadShape intern(Session& s, cad::kernel::Shape shape, cad::naming::ElementMap names = {}) {
     const std::uint64_t id = s.nextShape++;
-    s.shapes.emplace(id, std::move(shape));
+    s.shapes.emplace(id, Session::StoredShape{std::move(shape), std::move(names)});
     return id;
 }
 
-cad::kernel::Shape* lookup(Session& s, CadShape handle) {
+Session::StoredShape* lookupStored(Session& s, CadShape handle) {
     const auto it = s.shapes.find(handle);
     return it == s.shapes.end() ? nullptr : &it->second;
+}
+
+cad::kernel::Shape* lookup(Session& s, CadShape handle) {
+    Session::StoredShape* stored = lookupStored(s, handle);
+    return stored == nullptr ? nullptr : &stored->shape;
 }
 
 CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out) {
@@ -343,7 +369,19 @@ CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out)
         s->hostError = built.error().message;
         return CAD_ERR_INVALID_INPUT;
     }
-    *out = intern(*s, built.value().op.shape());
+
+    // NAMED, not just built. A shape handed to a plugin without its element map can only be
+    // referenced positionally, and a positional reference breaks on the next edit -- so a host
+    // call that produced anonymous geometry would hand plugins the FreeCAD problem by default.
+    // The serial is per-shape here because a host-built shape has no feature to belong to yet;
+    // once register_feature lands, a plugin's compute output takes its feature's serial instead.
+    cad::naming::NamingContext naming(static_cast<std::uint32_t>(s->nextShape), 0);
+    auto map = naming.nameprimitive(built.value().op.shape(), built.value().taggedFaces);
+    if (!map) {
+        s->hostError = map.error().message;
+        return CAD_ERR_NAMING_LOST;
+    }
+    *out = intern(*s, built.value().op.shape(), std::move(map).value());
     return CAD_OK;
 }
 
@@ -389,6 +427,62 @@ CadStatus hostValidate(void* ctx, CadShape handle) {
     return CAD_OK;
 }
 
+// ── naming ──────────────────────────────────────────────────────────────────────────────
+//
+// The reason plugins can hold a reference to a face across a rebuild at all. Without these two,
+// a plugin could only refer to geometry positionally -- "face 3" -- and every edit that changed
+// face order would break it. That is FreeCAD's topological naming problem, and it is a PLUGIN API
+// problem there rather than only a modelling one, because every addon holding a face reference
+// suffers it.
+
+CadStatus hostElementNameOf(void* ctx, CadShape shape, CadShape sub, CadElementId* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::StoredShape* stored = lookupStored(*s, shape);
+    cad::kernel::Shape* subShape = lookup(*s, sub);
+    if (stored == nullptr || subShape == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    const auto name = stored->names.nameOf(*subShape);
+    if (!name) {
+        // Named as lost rather than guessed at. A positional fallback here would be the exact
+        // failure this API exists to prevent, and it would be invisible until an edit reordered
+        // the faces.
+        s->hostError = "That sub-shape has no stable name in this shape.";
+        return CAD_ERR_NAMING_LOST;
+    }
+    s->scratch = name->toString();
+    out->digest = name->digest();
+    out->text = s->scratch.c_str();
+    out->text_len = s->scratch.size();
+    return CAD_OK;
+}
+
+CadStatus hostElementResolve(void* ctx, CadShape shape, const CadElementId* id, CadShape* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || id == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::StoredShape* stored = lookupStored(*s, shape);
+    if (stored == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+
+    // By digest first, by text second. The digest is the fast path; the text is what survives a
+    // save/reload and what a plugin may have persisted in its own parameters, so both must work.
+    auto found = stored->names.resolve(cad::naming::ElementId{id->digest});
+    if (!found && id->text != nullptr && id->text_len > 0) {
+        found = stored->names.resolve(
+            cad::naming::ElementName::parse(std::string_view(id->text, id->text_len)));
+    }
+    if (!found) {
+        s->hostError = "That face or edge no longer exists in this shape.";
+        return CAD_ERR_NAMING_LOST;
+    }
+    *out = intern(*s, *found);
+    return CAD_OK;
+}
+
 void hostReleaseShape(void* ctx, CadShape handle) {
     Session* s = hostSession(ctx);
     if (s == nullptr) return;
@@ -419,7 +513,9 @@ const CadHost* cad_plugin_host(CadSession handle) {
             h.boolean_cut = &hostCut;
             h.shape_validate = &hostValidate;
             h.shape_release = &hostReleaseShape;
-            // fillet_edges, element_*, txn_* and register_* stay NULL for now. See the note above:
+            h.element_resolve = &hostElementResolve;
+            h.element_name_of = &hostElementNameOf;
+            // fillet_edges, txn_* and register_* stay NULL for now. See the note above:
             // plugins are required to check, and this makes them do it from the start.
         }
         result = s.host.get();

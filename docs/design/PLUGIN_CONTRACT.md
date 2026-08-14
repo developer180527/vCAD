@@ -130,7 +130,14 @@ class of crash nobody can reproduce.
    is a host bug.
 3. **Existing behaviour never changes.** Additive-only, per ADR 0011. A call that worked in 1.9
    works identically in 1.40 and in 2.x through the compatibility shim.
-4. **The naming system is available.** `element_resolve` and `element_name_of` are in the vtable
+4. **The naming system is available. (PARTIAL)** `element_resolve` and `element_name_of` are wired
+   and tested for their negatives — an unknown name is refused rather than approximated, and a
+   released shape cannot resolve. **But there is no sub-shape enumeration**, so a plugin has no way
+   to obtain a face handle to name in the first place. Found by writing the tests, not by reviewing
+   the design. Until it lands, `element_*` are usable only for a name a plugin already holds, and
+   `shape_faces`/`shape_edges` are the next thing the vtable needs.
+
+   `element_resolve` and `element_name_of` are in the vtable
    because a plugin must be able to hold a reference to a face across a rebuild — the same
    guarantee built-in features get. A plugin restricted to indices would break on every edit, which
    is exactly the FreeCAD failure mode vCAD exists to avoid.

@@ -16,6 +16,7 @@ pub type CadStatus = i32;
 
 const CAD_OK: CadStatus = 0;
 const CAD_ERR_INVALID_INPUT: CadStatus = 1;
+const CAD_ERR_NAMING_LOST: CadStatus = 6;
 const CAD_ERR_BAD_HANDLE: CadStatus = 9;
 
 #[repr(C)]
@@ -48,6 +49,27 @@ pub struct CadHostPrefix {
     pub fillet_edges: Option<extern "C" fn()>,
     pub shape_validate: Option<extern "C" fn(*mut c_void, CadShape) -> CadStatus>,
     pub shape_release: Option<extern "C" fn(*mut c_void, CadShape)>,
+
+    pub element_resolve: Option<
+        extern "C" fn(*mut c_void, CadShape, *const CadElementId, *mut CadShape) -> CadStatus,
+    >,
+    pub element_name_of: Option<
+        extern "C" fn(*mut c_void, CadShape, CadShape, *mut CadElementId) -> CadStatus,
+    >,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CadElementId {
+    pub digest: u64,
+    pub text: *const c_char,
+    pub text_len: usize,
+}
+
+impl Default for CadElementId {
+    fn default() -> Self {
+        CadElementId { digest: 0, text: std::ptr::null(), text_len: 0 }
+    }
 }
 
 extern "C" {
@@ -219,4 +241,70 @@ fn two_sessions_do_not_share_shape_handles() {
         CAD_ERR_BAD_HANDLE,
         "a handle from another session must not resolve"
     );
+}
+
+// --- naming ---------------------------------------------------------------------------------
+//
+// The trap these exist to avoid: FreeCAD's topological naming problem is a PLUGIN API problem,
+// because every addon holding a face reference breaks when an edit reorders faces. A plugin that
+// can only say "face 3" is a plugin that breaks.
+//
+// element_resolve and element_name_of are now wired. What is NOT yet possible is obtaining a
+// sub-shape handle to hand them: the vtable has no face or edge enumeration, so a plugin cannot
+// reach a face in order to name it. Found by writing these tests -- the design reviewed clean and
+// the gap only appeared when something tried to use it.
+//
+// Until enumeration lands, what is testable is the negative half, and the negative half is the
+// half that matters most: an unknown name must be REFUSED rather than approximated.
+
+#[test]
+fn an_unknown_name_is_reported_lost_not_guessed() {
+    // Falling back to "some nearby face" would be invisible until an edit reordered the geometry,
+    // and would hand plugins the exact failure this API exists to prevent.
+    let host = Host::new();
+    let (_, shape) = host.box_of(10.0, 10.0, 10.0);
+
+    let bogus = CadElementId { digest: 0xDEAD_BEEF, text: std::ptr::null(), text_len: 0 };
+    let mut resolved: CadShape = 0;
+    let status = (host.h().element_resolve.expect("naming is offered"))(
+        host.ctx(),
+        shape,
+        &bogus,
+        &mut resolved,
+    );
+
+    assert_eq!(status, CAD_ERR_NAMING_LOST, "an unknown name must be refused, never approximated");
+    assert_eq!(resolved, 0, "and must not write an output handle");
+    assert!(!host.last_error().is_empty());
+}
+
+#[test]
+fn naming_a_shape_that_carries_no_name_is_lost_not_invented() {
+    // A solid is not itself a named element -- nameprimitive binds the FACES. The honest answer is
+    // NAMING_LOST, and it must stay honest: inventing a name here would make every plugin
+    // reference look valid and break silently later.
+    let host = Host::new();
+    let (_, shape) = host.box_of(10.0, 20.0, 30.0);
+
+    let mut id = CadElementId::default();
+    let status = (host.h().element_name_of.expect("naming is offered"))(
+        host.ctx(),
+        shape,
+        shape,
+        &mut id,
+    );
+    assert_eq!(status, CAD_ERR_NAMING_LOST);
+    assert!(!host.last_error().is_empty(), "and it must say which");
+}
+
+#[test]
+fn resolving_against_a_released_shape_is_refused() {
+    let host = Host::new();
+    let (_, shape) = host.box_of(10.0, 10.0, 10.0);
+    (host.h().shape_release.unwrap())(host.ctx(), shape);
+
+    let id = CadElementId::default();
+    let mut resolved: CadShape = 0;
+    let status = (host.h().element_resolve.unwrap())(host.ctx(), shape, &id, &mut resolved);
+    assert_eq!(status, CAD_ERR_BAD_HANDLE, "a dead shape cannot resolve names");
 }
