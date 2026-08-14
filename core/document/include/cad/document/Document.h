@@ -61,7 +61,17 @@ public:
                                           bool cosmetic = false) const;
     [[nodiscard]] ObjectData withLabel(std::string) const;
     [[nodiscard]] ObjectData withState(ObjectState) const;
+    /// Failed, with the reason. Sets the state as well as the error, because a feature carrying
+    /// an error is by definition not clean.
     [[nodiscard]] ObjectData withError(kernel::Error) const;
+
+    /// Blocked, with the reason — this feature is fine, something it depends on is not.
+    ///
+    /// Exists so callers do not have to know that `withError` forces Failed, and that
+    /// `withError(e).withState(Blocked)` is therefore the only ordering that produces a blocked
+    /// object WITH a message. The reverse silently downgrades Blocked to Failed, which is how
+    /// blocked features ended up indistinguishable from broken ones.
+    [[nodiscard]] ObjectData withBlocked(kernel::Error) const;
     [[nodiscard]] ObjectData withOutput(Output, std::uint64_t cacheKey) const;
     [[nodiscard]] ObjectData withoutOutput() const;
 

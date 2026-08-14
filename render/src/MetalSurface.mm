@@ -26,6 +26,7 @@
 
 #if defined(__APPLE__)
 
+#include <AppKit/NSView.h>
 #include <QuartzCore/CAMetalLayer.h>
 
 namespace cad::render {
@@ -52,6 +53,42 @@ void* createOffscreenMetalLayer(std::uint32_t width, std::uint32_t height) {
         layer.displaySyncEnabled = NO;
     }
     return static_cast<void*>(layer);
+}
+
+void* createMetalLayerForView(void* nsView, std::uint32_t width, std::uint32_t height,
+                              double scale) {
+    if (nsView == nullptr) return nullptr;
+    NSView* view = static_cast<NSView*>(nsView);
+
+    CAMetalLayer* layer = [[CAMetalLayer alloc] init];
+    if (layer == nil) return nullptr;
+
+    // contentsScale AND drawableSize both matter, and they mean different things. contentsScale
+    // is how the layer maps to points when composited; drawableSize is the pixel dimensions of
+    // the texture bgfx draws into. Set only the first and the surface renders at half resolution
+    // on a Retina display; set only the second and it is scaled wrongly on screen.
+    layer.contentsScale = scale;
+    layer.drawableSize = CGSizeMake(width, height);
+    layer.needsDisplayOnBoundsChange = YES;
+
+    // Layer-hosting, not layer-backed: assigning the layer BEFORE setWantsLayer makes AppKit
+    // adopt ours rather than create its own and put ours underneath. The other order gives a
+    // view whose visible content is an empty AppKit layer, which reads as "bgfx renders nothing"
+    // while bgfx is in fact rendering perfectly into a layer nobody composites.
+    [view setLayer:layer];
+    [view setWantsLayer:YES];
+
+    // Deliberately NOT disabling displaySync here, unlike the offscreen layer. This one IS
+    // composited to the screen, so pacing it to the display is correct: it is what stops the
+    // renderer running flat out to produce frames nobody sees.
+    return static_cast<void*>(layer);
+}
+
+void resizeMetalLayer(void* handle, std::uint32_t width, std::uint32_t height, double scale) {
+    if (handle == nullptr) return;
+    CAMetalLayer* layer = static_cast<CAMetalLayer*>(handle);
+    layer.contentsScale = scale;
+    layer.drawableSize = CGSizeMake(width, height);
 }
 
 void destroyMetalLayer(void* handle) {

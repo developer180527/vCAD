@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Theme.h"
+#include "Viewport.h"
 
 #include "cad/kernel/Diagnostics.h"
 #include "cad/log/Log.h"
@@ -194,6 +195,10 @@ int main(int argc, char** argv) {
             shotHome = true;
         }
     }
+
+    // Before the window, and therefore before any viewport: the choice has to be made once, at
+    // startup, rather than discovered by a viewport that has already picked a path.
+    cadqt::Viewport::setForceOffscreen(!shotPath.isEmpty());
 
     cadqt::applyTheme(app);
 

@@ -614,6 +614,13 @@ CadStatus cad_sketch_add_line(CadSession handle, CadSketch sk, double x1, double
     return withSession(handle, [&](Session& s) {
         return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
             const auto id = sketch.addLine(x1, y1, x2, y2, construction != 0);
+            // Refused: a non-finite coordinate. Reported as an error rather than passed back as
+            // an id, because an id that indexes no geometry is the kind of value that gets stored
+            // and dereferenced three operations later.
+            if (id == cad::sketch::kInvalidGeo) {
+                return fail(s, CAD_ERR_INVALID_INPUT,
+                            "Sketch geometry needs finite coordinates.");
+            }
             if (out != nullptr) *out = id;
             return CAD_OK;
         });
@@ -625,6 +632,13 @@ CadStatus cad_sketch_add_circle(CadSession handle, CadSketch sk, double cx, doub
     return withSession(handle, [&](Session& s) {
         return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
             const auto id = sketch.addCircle(cx, cy, radius, construction != 0);
+            // Refused: a non-finite coordinate. Reported as an error rather than passed back as
+            // an id, because an id that indexes no geometry is the kind of value that gets stored
+            // and dereferenced three operations later.
+            if (id == cad::sketch::kInvalidGeo) {
+                return fail(s, CAD_ERR_INVALID_INPUT,
+                            "Sketch geometry needs finite coordinates.");
+            }
             if (out != nullptr) *out = id;
             return CAD_OK;
         });
@@ -637,6 +651,11 @@ CadStatus cad_sketch_add_arc(CadSession handle, CadSketch sk, double cx, double 
     return withSession(handle, [&](Session& s) {
         return withSketch(s, sk, [&](cad::sketch::Sketch& sketch) {
             const auto id = sketch.addArc(cx, cy, radius, startAngle, endAngle, construction != 0);
+            // Refused: a non-finite coordinate. See the note on addLine above.
+            if (id == cad::sketch::kInvalidGeo) {
+                return fail(s, CAD_ERR_INVALID_INPUT,
+                            "Sketch geometry needs finite coordinates.");
+            }
             if (out != nullptr) *out = id;
             return CAD_OK;
         });

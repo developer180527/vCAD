@@ -17,6 +17,25 @@ void mix(std::uint64_t& h, std::uint64_t v) {
     }
 }
 
+/// The reason a blocked feature carries, naming the upstream feature responsible.
+///
+/// Blocked objects used to get `withState(Blocked)` and nothing else, so `error()` stayed empty
+/// and the shell showed a red feature with no tooltip. To a user that is indistinguishable from a
+/// crash — the torture suite calls it failing illegibly, and it is the difference between "go fix
+/// Sketch3" and "something is wrong somewhere".
+///
+/// The NAME matters more than the category. A deleted input has no object left to name, so it
+/// falls back to the id, which is still an anchor a developer can search for.
+kernel::Error blockedBy(const Document& doc, ObjectId input, const char* what) {
+    const auto source = doc.find(input);
+    const std::string who = source && !source->label().empty()
+                                ? source->label()
+                                : "feature #" + std::to_string(input.value);
+    return kernel::Error{kernel::ErrorCode::InvalidInput,
+                         "Blocked: " + who + " " + what + ".",
+                         "upstream object " + std::to_string(input.value)};
+}
+
 }  // namespace
 
 // --- FeatureRegistry ---------------------------------------------------------------------
@@ -181,16 +200,25 @@ kernel::Result<std::pair<Document, RecomputeReport>> Engine::recompute(
         }
 
         //    other forty-nine.
-        bool blocked = false;
+        ObjectId blocker{};
+        const char* reason = nullptr;
         for (const ObjectId in : object->inputs()) {
-            if (poisoned.count(in) != 0) { blocked = true; break; }
-            if (!doc.contains(in)) { blocked = true; break; }
+            if (poisoned.count(in) != 0) {
+                blocker = in;
+                reason = "could not be computed";
+                break;
+            }
+            if (!doc.contains(in)) {
+                blocker = in;
+                reason = "was deleted";
+                break;
+            }
         }
-        if (blocked) {
+        if (reason != nullptr) {
             poisoned.insert(id);
             ++report.blocked;
             doc = doc.replace(std::make_shared<const document::ObjectData>(
-                object->withState(document::ObjectState::Blocked).withoutOutput()));
+                object->withBlocked(blockedBy(doc, blocker, reason)).withoutOutput()));
             continue;
         }
 
@@ -221,17 +249,23 @@ kernel::Result<std::pair<Document, RecomputeReport>> Engine::recompute(
         // 4. Compute.
         const FeatureType* type = registry_.find(object->type());
         ComputeContext ctx{{}, *object, static_cast<std::uint32_t>(id.value)};
+        ObjectId missing{};
         bool inputsOk = true;
         for (const ObjectId in : object->inputs()) {
             const auto source = doc.find(in);
-            if (!source || source->output() == nullptr) { inputsOk = false; break; }
+            if (!source || source->output() == nullptr) {
+                missing = in;
+                inputsOk = false;
+                break;
+            }
             ctx.inputs.push_back(source->output());
         }
         if (!inputsOk) {
             poisoned.insert(id);
             ++report.blocked;
             doc = doc.replace(std::make_shared<const document::ObjectData>(
-                object->withState(document::ObjectState::Blocked).withoutOutput()));
+                object->withBlocked(blockedBy(doc, missing, "produced no shape"))
+                    .withoutOutput()));
             continue;
         }
 

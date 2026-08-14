@@ -3,6 +3,9 @@
 #include "cad/kernel/Guard.h"
 #include "cad/kernel/internal/Occt.h"
 
+#include <TopExp_Explorer.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
@@ -23,9 +26,30 @@ Result<Operation> runBoolean(const char* what, const Shape& a, const Shape& b) {
         if (!algo->IsDone()) {
             throw std::runtime_error("boolean algorithm reported not-done");
         }
+        const TopoDS_Shape result = algo->Shape();
+
+        // An EMPTY result is not a success.
+        //
+        // A cut whose tool exactly covers its base removes everything, and OCCT reports that as
+        // done: IsDone() is true, Shape() is a valid compound, and BRepCheck_Analyzer is
+        // perfectly happy with it — because a compound containing nothing is a legal shape. It
+        // just has no solids, no faces and no volume.
+        //
+        // Left alone, that flows downstream as a feature marked Clean whose shape is nothing:
+        // every later boolean quietly does nothing, the mesh has no triangles, and the part
+        // disappears from the viewport with no error anywhere. Found by the geometry torture
+        // suite, which cut a 40mm box with an identical 40mm box.
+        //
+        // Checked on FACE rather than SOLID: a boolean can legitimately reduce a solid to a
+        // shell or a face in degenerate-but-meaningful cases, and rejecting those would be
+        // stricter than the kernel needs to be. No faces at all is unambiguous.
+        if (result.IsNull() || !TopExp_Explorer(result, TopAbs_FACE).More()) {
+            throw std::runtime_error("the operation removed all geometry; the result is empty");
+        }
+
         Operation op;
         op.impl().algo = algo;
-        op.impl().result = algo->Shape();
+        op.impl().result = result;
         op.impl().inputs = {TopoDS_Shape(occt(a)), TopoDS_Shape(occt(b))};
         return op;
     });

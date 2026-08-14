@@ -2,12 +2,32 @@
 
 #include "cad/kernel/Result.h"
 
+#include <cmath>
 #include <exception>
 #include <string>
 #include <type_traits>
 #include <utility>
 
 namespace cad::kernel {
+
+/// True when `v` is a usable positive dimension: finite, and greater than zero.
+///
+/// Written as `v > 0.0 && std::isfinite(v)` rather than as a rejection test, because EVERY
+/// comparison with NaN is false — so the natural-looking `if (v <= 0.0) reject;` accepts NaN and
+/// hands it to OCCT. That guard was in five places in this kernel, and a NaN dimension therefore
+/// built a "box" that OCCT reported as done and BRepCheck_Analyzer rejected: a feature marked
+/// Clean carrying an invalid shape, which then propagated into every boolean and mesh downstream.
+/// Found by the geometry torture suite; see tests-rs/cad-bench/tests/torture.rs.
+///
+/// Infinity is excluded too. OCCT will happily build with it and produce unbounded geometry whose
+/// bounding box poisons zoom-to-fit and the render path's float32 conversion.
+[[nodiscard]] inline bool isPositiveFinite(double v) noexcept {
+    return v > 0.0 && std::isfinite(v);
+}
+
+/// True when `v` is finite. For quantities that may legitimately be zero or negative — an offset,
+/// a translation — where the only unacceptable value is a non-finite one.
+[[nodiscard]] inline bool isFinite(double v) noexcept { return std::isfinite(v); }
 
 /// Every single call into OCCT goes through here. No exceptions.
 ///

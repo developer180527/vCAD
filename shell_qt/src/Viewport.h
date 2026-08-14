@@ -10,6 +10,7 @@
 #include <vector>
 
 class QPainter;
+class QPaintEngine;
 
 namespace cadqt {
 
@@ -34,6 +35,18 @@ public:
     /// usable device — not fatal: the shell stays usable and rendererError() says why.
     bool attachRenderer();
 
+    /// Makes every viewport use the offscreen-and-blit path, whatever the platform supports.
+    ///
+    /// Set by `--shot`. A natively-presenting viewport hands its pixels to a CAMetalLayer, and
+    /// QWidget::grab() cannot capture that: paintEngine() returns null precisely so Qt does not
+    /// draw the widget, so a grab renders the window with a hole where the model is. Worse, grab
+    /// drives a nested synchronous paint, which is the same main-thread stall that deferring
+    /// document creation into the event loop exists to avoid.
+    ///
+    /// The consequence is worth stating plainly: screenshots therefore never exercise the native
+    /// path. They verify the shell around the viewport, not the presentation route the user gets.
+    static void setForceOffscreen(bool) noexcept;
+
     [[nodiscard]] bool rendererAttached() const noexcept { return attached_; }
 
     /// Marks the rendered frame stale. Repainting does NOT re-render by itself: an offscreen
@@ -43,6 +56,11 @@ public:
     void markDirty();
     /// Empty unless attachRenderer() failed, in which case it is the user-facing reason.
     [[nodiscard]] const QString& rendererError() const noexcept { return rendererError_; }
+
+    /// Null while presenting to a native surface, which is how a widget tells Qt "I own these
+    /// pixels, do not bring a paint engine". Without it Qt paints its own background over the
+    /// Metal layer and the viewport flickers between the two.
+    [[nodiscard]] QPaintEngine* paintEngine() const override;
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -68,6 +86,8 @@ private:
     cad::render::Drag drag_ = cad::render::Drag::None;
 
     bool attached_ = false;
+    /// Presenting straight to a native surface, rather than blitting a read-back image.
+    bool native_ = false;
     QString rendererError_;
 
     /// The last rendered frame, reused until something actually changes it.

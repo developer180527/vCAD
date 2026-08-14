@@ -96,6 +96,13 @@ ObjectData ObjectData::withError(kernel::Error e) const {
     return copy;
 }
 
+ObjectData ObjectData::withBlocked(kernel::Error e) const {
+    ObjectData copy = *this;
+    copy.error_ = std::move(e);
+    copy.state_ = ObjectState::Blocked;
+    return copy;
+}
+
 ObjectData ObjectData::withOutput(Output o, std::uint64_t key) const {
     ObjectData copy = *this;
     copy.output_ = std::move(o);

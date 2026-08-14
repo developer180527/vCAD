@@ -39,6 +39,9 @@ Result<Operation> extrude(const Shape& profile, double dx, double dy, double dz)
     if (profile.isNull()) {
         return Error{ErrorCode::InvalidInput, "Cannot extrude an empty profile."};
     }
+    if (!isFinite(dx) || !isFinite(dy) || !isFinite(dz)) {
+        return Error{ErrorCode::InvalidInput, "A translation must be a finite distance."};
+    }
     if (dx == 0.0 && dy == 0.0 && dz == 0.0) {
         // Caught here rather than inside OCCT, which builds a degenerate solid of zero volume and
         // reports success -- a "solid" that then fails every downstream operation for no stated

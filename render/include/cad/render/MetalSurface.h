@@ -16,7 +16,20 @@ namespace cad::render {
 /// to destroyMetalLayer.
 [[nodiscard]] void* createOffscreenMetalLayer(std::uint32_t width, std::uint32_t height);
 
-/// Releases a layer from createOffscreenMetalLayer. Null-safe.
+/// Attaches a fresh CAMetalLayer to an NSView and returns it, for ON-SCREEN rendering.
+///
+/// `nsView` is what Qt's winId() yields for a widget with WA_NativeWindow. The layer is what gets
+/// handed to bgfx — never the view itself, for the deadlock reason above.
+///
+/// Must be called on the main thread: it touches the view hierarchy.
+[[nodiscard]] void* createMetalLayerForView(void* nsView, std::uint32_t width,
+                                            std::uint32_t height, double scale);
+
+/// Resizes a layer's drawable. Call on resize, before bgfx::reset, or the swap chain and the
+/// layer disagree about how big the surface is. Null-safe.
+void resizeMetalLayer(void* handle, std::uint32_t width, std::uint32_t height, double scale);
+
+/// Releases a layer from either constructor. Null-safe.
 void destroyMetalLayer(void* handle);
 
 #endif

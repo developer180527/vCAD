@@ -21,7 +21,8 @@ endif()
 cad_core_library(cad_render ${CAD_RENDER_SOURCES})
 
 if(APPLE)
-  target_link_libraries(cad_render PRIVATE "-framework QuartzCore" "-framework Metal")
+  target_link_libraries(cad_render PRIVATE "-framework QuartzCore" "-framework Metal"
+                                      "-framework AppKit")
 endif()
 
 # Shaders land next to the build's binaries; BgfxBackend looks for them under CAD_SHADER_DIR,

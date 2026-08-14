@@ -482,6 +482,15 @@ void SketchCanvas::mousePressEvent(QMouseEvent* event) {
         if (radius > 1e-9) sketch->addCircle(startU_, startV_, radius);
     } else {
         const auto line = sketch->addLine(startU_, startV_, u, v);
+        // Refused geometry must not become a constraint operand. Canvas coordinates come from a
+        // mouse and are finite in practice, so this is a guard rather than a fix -- but the two
+        // coincidences below would otherwise be built against a sentinel, and a constraint
+        // referring to geometry that does not exist is a far worse thing than a dropped segment.
+        if (!cad::sketch::isValidGeo(line)) {
+            drawing_ = false;
+            update();
+            return;
+        }
         // Snapped endpoints become real CONSTRAINTS, not just matching coordinates. Coordinates
         // drift the moment anything else solves; a coincidence does not, and it is what makes the
         // profile stay closed while the user keeps editing.

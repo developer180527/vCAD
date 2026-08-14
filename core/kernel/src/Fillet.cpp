@@ -22,7 +22,7 @@ Result<Operation> filletEdges(const Shape& base,
                      "No edges to fillet — the referenced edge could not be found.",
                      "filletEdges called with an empty edge list"};
     }
-    if (radius <= 0.0) {
+    if (!isPositiveFinite(radius)) {
         return Error{ErrorCode::InvalidInput, "Fillet radius must be positive."};
     }
 

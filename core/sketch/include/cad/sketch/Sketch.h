@@ -41,7 +41,35 @@ enum class GeoKind : std::uint8_t { Point, Line, Circle, Arc };
 enum class PointRef : std::uint8_t { Start, End, Center };
 
 using GeoId = std::uint32_t;
+
+/// Returned by the `add*` methods when the geometry was refused. Only non-finite coordinates are
+/// refused today: a NaN or an infinity accepted here reaches planegcs, whose convergence test is
+/// a comparison — and every comparison with NaN is false, so it reports the system SOLVED while
+/// the geometry is nonsense. From there the NaN spreads to the DXF export, the saved document and
+/// any extrude built on the profile, each failing far from the cause.
+///
+/// Refusing at the door is the only place the value can be stopped without leaving the sketch in
+/// a state its own solver cannot describe.
+inline constexpr GeoId kInvalidGeo = 0xFFFFFFFEu;
+
+/// "This constraint has no second operand" — Horizontal, Radius, LockX and the rest take one
+/// piece of geometry, and this fills the unused slot.
 constexpr GeoId kNoGeo = 0xFFFFFFFFu;
+
+// Two sentinels that mean genuinely different things, so they must not BE the same thing.
+// kInvalidGeo was written as static_cast<GeoId>(-1), which is 0xFFFFFFFF, which is kNoGeo — two
+// names for one value on adjacent lines. Nothing was visibly broken, because the equality checks
+// against each still worked; what it left behind was a refused id that is indistinguishable from
+// an empty operand slot, so storing one into a constraint would have read as "no geometry here"
+// rather than as an error. Held apart by an assertion so it cannot quietly close again.
+static_assert(kInvalidGeo != kNoGeo,
+              "a refused GeoId must not be confusable with an empty constraint operand");
+
+/// Whether an `add*` call returned usable geometry. Prefer this to comparing against either
+/// sentinel: callers should not have to know which one they might get.
+[[nodiscard]] inline constexpr bool isValidGeo(GeoId id) noexcept {
+    return id != kInvalidGeo && id != kNoGeo;
+}
 
 /// One piece of sketch geometry.
 ///

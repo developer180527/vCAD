@@ -242,7 +242,27 @@ public:
     ///
     /// "Offscreen" does NOT mean "no window" — bgfx still needs a Metal device, and on macOS
     /// render/src/MetalSurface.mm creates a standalone CAMetalLayer for exactly this case.
-    kernel::Result<void> attachRenderer(std::uint32_t width, std::uint32_t height);
+    /// `nativeView` is the shell's own native view handle — on macOS the NSView behind
+    /// QWidget::winId(). Pass it and the renderer draws STRAIGHT TO THE SCREEN with no readback,
+    /// which is the difference between 27 fps and the display's refresh rate. Pass null and it
+    /// falls back to the offscreen path, which runs everywhere and composites with Qt overlays.
+    ///
+    /// The shell hands over a view, not a surface: turning one into the other is platform work,
+    /// and doing it here keeps Metal out of shell_qt. The same call will take an HWND or an
+    /// X11 Window when those land.
+    kernel::Result<void> attachRenderer(std::uint32_t width, std::uint32_t height,
+                                        void* nativeView = nullptr, double scale = 1.0);
+
+    /// True when the renderer presents directly to a native surface rather than being blitted.
+    /// The shell needs to know: presenting is submit-only, blitting needs a paint.
+    [[nodiscard]] bool presentsDirectly() const noexcept { return presenting_; }
+
+    /// Submits a frame straight to the native surface. Only valid when presentsDirectly().
+    ///
+    /// Separate from renderFrame() because it is a genuinely different operation, not an option
+    /// on the same one: there is no image, nothing is copied back, and the cost is the draw calls
+    /// alone.
+    void presentFrame();
 
     [[nodiscard]] bool rendererAttached() const noexcept { return gpu_ != nullptr; }
 
@@ -462,6 +482,19 @@ private:
     /// which one it holds.
     render::Backend active_;
     RenderTiming timing_;
+    bool presenting_ = false;
+
+    /// Drops our reference to the presentation surface and forgets it. Null-safe, and a no-op
+    /// where the surface belongs to the shell.
+    void releaseSurface() noexcept;
+
+    /// The platform surface the renderer presents into.
+    ///
+    /// OWNED only on Apple, where attachRenderer creates the CAMetalLayer. Elsewhere it is the
+    /// shell's own window handle, which is not ours to destroy — hence releaseSurface() rather
+    /// than a destroy call at each site.
+    void* surface_ = nullptr;
+    double viewportScale_ = 1.0;   ///< device pixel ratio, kept for layer resizes
 
     std::unique_ptr<render::SceneBuilder> scene_;
     render::CameraController camera_;

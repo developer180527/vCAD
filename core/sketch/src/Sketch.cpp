@@ -78,6 +78,10 @@ const char* toString(ConstraintKind k) noexcept {
 // ── geometry ────────────────────────────────────────────────────────────────────────────
 
 GeoId Sketch::addPoint(double x, double y, bool construction) {
+    // The same guard its three siblings carry. A point is the one piece of geometry that can be
+    // referenced by a coincidence without ever being drawn, so a non-finite one propagates into
+    // the solver just as readily as a line does.
+    if (!std::isfinite(x) || !std::isfinite(y)) return kInvalidGeo;
     Geometry g;
     g.kind = GeoKind::Point;
     g.construction = construction;
@@ -89,6 +93,9 @@ GeoId Sketch::addPoint(double x, double y, bool construction) {
 }
 
 GeoId Sketch::addLine(double x1, double y1, double x2, double y2, bool construction) {
+    if (!std::isfinite(x1) || !std::isfinite(y1) || !std::isfinite(x2) || !std::isfinite(y2)) {
+        return kInvalidGeo;
+    }
     Geometry g;
     g.kind = GeoKind::Line;
     g.construction = construction;
@@ -99,6 +106,9 @@ GeoId Sketch::addLine(double x1, double y1, double x2, double y2, bool construct
 }
 
 GeoId Sketch::addCircle(double cx, double cy, double radius, bool construction) {
+    if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(radius)) {
+        return kInvalidGeo;
+    }
     Geometry g;
     g.kind = GeoKind::Circle;
     g.construction = construction;
@@ -110,6 +120,10 @@ GeoId Sketch::addCircle(double cx, double cy, double radius, bool construction) 
 
 GeoId Sketch::addArc(double cx, double cy, double radius, double startAngle, double endAngle,
                      bool construction) {
+    if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(radius)
+        || !std::isfinite(startAngle) || !std::isfinite(endAngle)) {
+        return kInvalidGeo;
+    }
     Geometry g;
     g.kind = GeoKind::Arc;
     g.construction = construction;
@@ -211,6 +225,9 @@ void Sketch::removeConstraint(std::size_t index) {
 
 SolveReport Sketch::solve() {
     SolveReport report;
+    // Kept so a solve that produces nonsense can put the sketch back exactly as it was. See the
+    // finiteness check at the end.
+    const std::vector<Geometry> before = geometry_;
     if (geometry_.empty()) {
         report.solved = true;
         report.message = "Empty sketch.";
@@ -478,6 +495,38 @@ SolveReport Sketch::solve() {
                     break;
                 }
             }
+        }
+    }
+
+    // A solve that produced a non-finite coordinate did NOT succeed.
+    //
+    // planegcs reported solved=1 over geometry containing NaN, because a NaN propagates through
+    // its residuals without ever comparing greater than the convergence tolerance — every
+    // comparison with NaN is false, so the loop reads "converged". The NaN itself arrives either
+    // from input we accepted (a line typed with a bad coordinate) or from a diverging solve.
+    //
+    // The geometry is REVERTED rather than left as it is. Leaving NaN in the sketch poisons every
+    // later solve, the DXF export, the serialised document and any extrude built on the profile —
+    // and each of those would then fail somewhere far from the cause. A sketch that refuses an
+    // edit and stays as it was is one the user can carry on working in.
+    //
+    // Found by the geometry torture suite; see tests-rs/cad-bench/tests/torture.rs.
+    {
+        bool finite = true;
+        for (const Geometry& g : geometry_) {
+            for (const double v : g.p) {
+                if (!std::isfinite(v)) { finite = false; break; }
+            }
+            if (!finite) break;
+        }
+        if (!finite) {
+            geometry_ = before;
+            report.solved = false;
+            report.dofs = 0;
+            report.message =
+                "The sketch could not be solved: the solution contained a value that is not a "
+                "number. The sketch is unchanged.";
+            return report;
         }
     }
 

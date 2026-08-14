@@ -1,5 +1,7 @@
 #include "cad/app/Controller.h"
 
+#include "cad/render/MetalSurface.h"
+
 #include "cad/io/DocumentStore.h"
 #include "cad/sketch/Sketch.h"
 
@@ -34,7 +36,23 @@ Controller::Controller() {
     savedDigest_ = saveDigest();   // a new, untouched document is not "modified"
 }
 
-Controller::~Controller() = default;
+Controller::~Controller() {
+    // Order matters. bgfx presents into the surface, so the backend has to be down before the
+    // surface goes; releasing first leaves the render thread holding a dangling layer for as long
+    // as it takes to notice. Relying on member destruction order would work today and break the
+    // day someone reorders the declarations.
+    gpu_.reset();
+    releaseSurface();
+}
+
+void Controller::releaseSurface() noexcept {
+#if defined(__APPLE__)
+    // Balances the alloc/init in createMetalLayerForView. NOT a teardown of the layer: the NSView
+    // retains it too via setLayer:, so this drops our reference and leaves the view's intact.
+    render::destroyMetalLayer(surface_);
+#endif
+    surface_ = nullptr;
+}
 
 void Controller::onDocumentChanged(std::function<void()> fn) { documentChanged_ = std::move(fn); }
 void Controller::onViewChanged(std::function<void()> fn) { viewChanged_ = std::move(fn); }
@@ -306,6 +324,11 @@ void Controller::setViewportSize(std::uint32_t width, std::uint32_t height) {
     scene_->setCamera(camera_.matrices(viewport_));
     // The backend owns the framebuffer being read back, so it has to be told too. Skipping this
     // reads back the OLD size and the shell blits a stale, wrongly-shaped image.
+#if defined(__APPLE__)
+    // Before the backend's resize: bgfx::reset builds a swap chain against the layer, and a layer
+    // still at the old drawableSize gives a surface that disagrees with the backbuffer.
+    if (surface_ != nullptr) render::resizeMetalLayer(surface_, width, height, viewportScale_);
+#endif
     if (active_.frames != nullptr) active_.frames->resize(viewport_);
     notifyView();
 }
@@ -328,18 +351,49 @@ void Controller::setViewportBackground(int r, int g, int b) {
 
 // ── the GPU renderer ────────────────────────────────────────────────────────────────────
 
-kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32_t height) {
+kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32_t height,
+                                                void* nativeView, double scale) {
     // bgfx is a process singleton, so this is idempotent rather than an error: two viewports
     // share one backend and differ by view id.
     if (gpu_) return {};
 
-    auto gpu = std::make_unique<render::BgfxBackend>();
-    render::BgfxConfig config;
-    config.offscreen = true;
-    config.viewport.width = width != 0 ? width : viewport_.width;
-    config.viewport.height = height != 0 ? height : viewport_.height;
+    // A failed attempt must not leak into the next one. The shell's fallback retries with
+    // nativeView = nullptr expecting the offscreen path, and a surface left over from the native
+    // attempt would silently rebuild the SAME on-screen configuration — so the fallback would
+    // fail identically, or succeed on-screen while the shell believed it was blitting.
+    releaseSurface();
 
-    if (auto r = gpu->initialise(config); !r) return r.error();
+    auto gpu = std::make_unique<render::BgfxBackend>();
+    const std::uint32_t w = width != 0 ? width : viewport_.width;
+    const std::uint32_t h = height != 0 ? height : viewport_.height;
+
+    // Outside the platform guard: every platform needs the scale for later layer/backbuffer
+    // resizes, and keeping it Apple-only means Windows and X11 silently render at 1.0 on a
+    // high-DPI display.
+    viewportScale_ = scale;
+
+#if defined(__APPLE__)
+    // A CAMetalLayer, never the view: bgfx::init parks the calling thread waiting for the render
+    // thread, and given a view the render thread must build the layer on the main thread and
+    // wait for it. Both wait forever. See render/src/MetalSurface.mm.
+    if (nativeView != nullptr) surface_ = render::createMetalLayerForView(nativeView, w, h, scale);
+#else
+    // Windows and X11 take the window handle directly; no intermediate surface object.
+    surface_ = nativeView;
+#endif
+
+    render::BgfxConfig config;
+    config.nativeWindow = surface_;
+    // Mutually exclusive, and bgfx enforces it: offscreen init demands a 0x0 backbuffer, so a
+    // surface handle and offscreen mode cannot both be set.
+    config.offscreen = surface_ == nullptr;
+    config.viewport.width = w;
+    config.viewport.height = h;
+
+    if (auto r = gpu->initialise(config); !r) {
+        releaseSurface();
+        return r.error();
+    }
 
     // Noop is not a failure to bgfx: it validates every call and draws nothing, so init succeeds
     // and the frame comes back blank with no error anywhere. Refuse it here instead, because a
@@ -347,6 +401,7 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     // had, twice.
     if (gpu->rendererName() == "Noop") {
         gpu->shutdown();
+        releaseSurface();
         return kernel::Error{kernel::ErrorCode::Internal,
                              "No GPU renderer available; the viewport would draw nothing.",
                              "bgfx selected the Noop renderer"};
@@ -354,6 +409,7 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
 
     gpu_ = std::move(gpu);
     active_ = gpu_->handle();
+    presenting_ = surface_ != nullptr;
 
     // Before any camera matrix is built. The two conventions differ by renderer, and getting it
     // wrong depth-clips the whole scene and draws nothing — with no error.
@@ -375,6 +431,15 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
 
 std::string Controller::rendererName() const {
     return gpu_ ? gpu_->rendererName() : std::string("null");
+}
+
+void Controller::presentFrame() {
+    if (!gpu_ || !presenting_) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    active_.frames->submit(scene_->frame());
+    timing_.submitMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    timing_.captureMs = 0.0;   // the entire point of this path
 }
 
 kernel::Result<Controller::RenderedFrame> Controller::renderFrame() {

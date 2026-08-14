@@ -1,0 +1,17 @@
+[package]
+name = "cad-bench"
+description = "Performance measurement and geometry torture for the CAD core, through the C ABI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+cad = { path = "../cad" }
+
+[dev-dependencies]
+cad = { path = "../cad" }
+
+[[bin]]
+name = "cad-perf"
+path = "src/main.rs"

@@ -9,9 +9,9 @@
 namespace cad::kernel {
 
 Result<BoxResult> makeBox(double dx, double dy, double dz) {
-    if (dx <= 0.0 || dy <= 0.0 || dz <= 0.0) {
+    if (!isPositiveFinite(dx) || !isPositiveFinite(dy) || !isPositiveFinite(dz)) {
         return Error{ErrorCode::InvalidInput,
-                     "Box dimensions must all be positive."};
+                     "Box dimensions must all be positive numbers."};
     }
 
     auto built = guard("makeBox", [&] {
@@ -48,8 +48,9 @@ Result<BoxResult> makeBox(double dx, double dy, double dz) {
 }
 
 Result<Operation> makeCylinder(double radius, double height) {
-    if (radius <= 0.0 || height <= 0.0) {
-        return Error{ErrorCode::InvalidInput, "Cylinder radius and height must be positive."};
+    if (!isPositiveFinite(radius) || !isPositiveFinite(height)) {
+        return Error{ErrorCode::InvalidInput,
+                     "Cylinder radius and height must be positive numbers."};
     }
     return guard("makeCylinder", [&] {
         auto algo = std::make_shared<BRepPrimAPI_MakeCylinder>(radius, height);

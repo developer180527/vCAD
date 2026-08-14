@@ -37,6 +37,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cad-bench"
+version = "0.1.0"
+dependencies = [
+ "cad",
+]
+
+[[package]]
 name = "cad-sys"
 version = "0.1.0"
 

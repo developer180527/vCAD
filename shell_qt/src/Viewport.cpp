@@ -50,16 +50,55 @@ QPointF Viewport::project(const float world[3], bool& visible) const {
     return QPointF((ndcX * 0.5f + 0.5f) * width(), (1.0f - (ndcY * 0.5f + 0.5f)) * height());
 }
 
+QPaintEngine* Viewport::paintEngine() const { return native_ ? nullptr : QWidget::paintEngine(); }
+
+namespace {
+/// Process-wide, and set before any viewport exists. Not per-instance: the choice comes from the
+/// command line, and a window with one viewport presenting and another blitting would be a
+/// harder thing to reason about than anything it could buy.
+bool g_forceOffscreen = false;
+}  // namespace
+
+void Viewport::setForceOffscreen(bool force) noexcept { g_forceOffscreen = force; }
+
 bool Viewport::attachRenderer() {
     if (attached_) return true;
     syncViewportSize();
     const auto dpr = devicePixelRatioF();
-    auto r = controller_.attachRenderer(
-        static_cast<std::uint32_t>(std::max(1.0, width() * dpr)),
-        static_cast<std::uint32_t>(std::max(1.0, height() * dpr)));
-    if (!r) {
+    const auto w = static_cast<std::uint32_t>(std::max(1.0, width() * dpr));
+    const auto h = static_cast<std::uint32_t>(std::max(1.0, height() * dpr));
+
+    void* view = nullptr;
+    if (!g_forceOffscreen) {
+        // Force a real native view, then hand it over. winId() is what creates it; asking for it
+        // is the entire mechanism, which is why it looks like a discarded value.
+        setAttribute(Qt::WA_NativeWindow, true);
+        view = reinterpret_cast<void*>(winId());
+    }
+
+    auto r = controller_.attachRenderer(w, h, view, dpr);
+    if (!r && view != nullptr) {
+        // Fall back to the offscreen path rather than failing outright. It is slower, but a slow
+        // viewport is a working application and no viewport is not.
+        //
+        // This is only a fallback because attachRenderer releases the surface it built before
+        // returning the error. It did not, once, and the retry inherited the native attempt's
+        // layer and rebuilt the identical on-screen configuration — a fallback that fell back to
+        // exactly what had just failed.
         rendererError_ = QString::fromStdString(r.error().message);
+        r = controller_.attachRenderer(w, h, nullptr, dpr);
+    }
+    if (!r) {
+        if (rendererError_.isEmpty()) rendererError_ = QString::fromStdString(r.error().message);
         return false;
+    }
+    native_ = controller_.presentsDirectly();
+    if (native_) {
+        // The widget owns every pixel in its rectangle from here. Qt must not draw a background
+        // under the layer, must not double-buffer it, and must not composite anything over it.
+        setAttribute(Qt::WA_PaintOnScreen, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAttribute(Qt::WA_OpaquePaintEvent, true);
     }
     attached_ = true;
     rendererError_.clear();
@@ -86,6 +125,13 @@ void Viewport::syncViewportSize() {
 }
 
 void Viewport::paintEvent(QPaintEvent*) {
+    if (native_) {
+        // No QPainter, no image, no readback: submit and the GPU presents. This is the whole
+        // point of the native path, and the reason paintEngine() returns null.
+        controller_.presentFrame();
+        return;
+    }
+
     QPainter g(this);
     g.setRenderHint(QPainter::Antialiasing, true);
     g.fillRect(rect(), palette().color(QPalette::Base));

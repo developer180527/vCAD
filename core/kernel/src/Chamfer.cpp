@@ -23,7 +23,7 @@ Result<Operation> chamferEdges(const Shape& base,
                      "No edges to chamfer — the referenced edge could not be found.",
                      "chamferEdges called with an empty edge list"};
     }
-    if (distance <= 0.0) {
+    if (!isPositiveFinite(distance)) {
         return Error{ErrorCode::InvalidInput, "Chamfer distance must be positive."};
     }
 

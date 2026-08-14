@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cad-sys", "cad", "cad-tests"]
+members = ["cad-sys", "cad", "cad-tests", "cad-bench"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,3 +13,8 @@ rust-version = "1.80"
 opt-level = 0
 [profile.test.package."*"]
 opt-level = 2
+
+# Line tables in release, for the profiler. Does not change codegen -- samply needs symbols to
+# attribute samples to functions, and without them a profile is a list of addresses.
+[profile.release]
+debug = 1
