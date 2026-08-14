@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 10
+#define CAD_ABI_VERSION_MINOR 11
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -375,6 +375,16 @@ CAD_API void cad_abi_version(uint32_t* out_major, uint32_t* out_minor);
  *
  * `out_reason` receives a user-facing explanation when the answer is no; pass NULL to ignore it.
  * The string is static and needs no freeing. */
+/* The host vtable this session would hand a plugin.
+ *
+ * Exposed as a session call so the boundary is drivable -- and therefore testable -- before any
+ * loader exists. It is also what an in-process plugin tier would use. The returned pointer is
+ * owned by the session and valid until the session is released.
+ *
+ * Entries the current configuration does not offer are NULL; plugins must check, per
+ * PLUGIN_CONTRACT.md 4.5. */
+CAD_API const CadHost* cad_plugin_host(CadSession);
+
 CAD_API int32_t cad_abi_accepts(uint32_t plugin_abi_major, uint32_t plugin_min_host_minor,
                                 const char** out_reason);
 

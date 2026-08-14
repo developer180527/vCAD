@@ -123,7 +123,9 @@ class of crash nobody can reproduce.
 
 1. **Handles stay valid** for their documented lifetime, and a stale handle returns
    `CAD_ERR_BAD_HANDLE` rather than crashing. Handles are indices into a host registry, never
-   pointers, so the host can validate every one.
+   pointers, so the host can validate every one. **(RESOLVED for shapes)** — `cad_plugin_host`
+   returns a live vtable, and `tests-rs/cad-tests/tests/plugin_host.rs` covers use-after-release,
+   double release, release of 0, cross-session handles, and the rule that ids are never reused.
 2. **Nothing throws.** Every call returns `CadStatus`. A C++ exception escaping into plugin code
    is a host bug.
 3. **Existing behaviour never changes.** Additive-only, per ADR 0011. A call that worked in 1.9
@@ -615,7 +617,8 @@ Fixed, so it does not get relitigated per step. Each lands independently and is 
 |---|---|---|
 | 1 | ~~**Golden header snapshot test**~~ **(RESOLVED)** | `tests-rs/cad-tests/tests/abi_golden.rs`; 149 declarations pinned, verified red and green |
 | 2 | ~~`CadParamDesc` + `min_host_minor` in the header~~ **(RESOLVED)** | ABI 1.10. Layout pinned by static_assert, acceptance rule tested via `cad_abi_accepts` |
-| 3 | Compute context accessors | The other phase-1 blocker |
+| 3a | ~~Shape handles and a live host vtable~~ **(RESOLVED)** | `cad_plugin_host`; 9 tests on the §3 promises |
+| 3b | Compute context accessors | Needs registration; the other phase-1 blocker |
 | 4 | **Unknown-feature preservation** (§4A) | Failure must not nuke the user's *data*. Independent of the loader and valuable without it |
 | 5 | Error containment (§5) | Failure must not nuke the *app* |
 | 6 | **The loader**, plus the compatibility museum and hostile-plugin test | Built last, against a finished contract |

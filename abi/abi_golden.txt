@@ -1,5 +1,5 @@
 define CAD_ABI_VERSION_MAJOR	0288695b698e5310
-define CAD_ABI_VERSION_MINOR	aaeaf21cba2deaa4
+define CAD_ABI_VERSION_MINOR	aaeb021cba2dec57
 define CAD_CAP_FILESYSTEM	434d3d3abfc808cf
 define CAD_CAP_NETWORK	8abedaf5b56d3cb5
 define CAD_CAP_SUBPROCESS	4bac296961c20be1
@@ -88,6 +88,7 @@ fn cad_object_state	3ed3cd0952e45850
 fn cad_object_tessellate	6d7117b6bf7b2d0c
 fn cad_object_volume	5644b4e40977d8c9
 fn cad_parse_length	eddba0793e1e5d5a
+fn cad_plugin_host	be932c6fda678400
 fn cad_plugin_main	7a6c7dd21f091a8f
 fn cad_readable_extensions	f471eb8617957203
 fn cad_recompute	e2fffda8f2ba4929

@@ -6,7 +6,10 @@
 
 #include "cad/abi/cad_plugin_abi.h"
 
+#include "cad/log/Log.h"
+
 #include "cad/document/Document.h"
+#include "cad/kernel/Booleans.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/naming/ElementMap.h"
 #include "cad/io/DocumentStore.h"
@@ -44,6 +47,22 @@ using cad::recompute::MemoryCache;
 
 struct Session {
     FeatureRegistry registry = FeatureRegistry::builtins();
+
+    /// Shapes handed out across the C boundary, by handle.
+    ///
+    /// Handles, never pointers, and this map is why: the host can VALIDATE one. A plugin that
+    /// keeps a shape past its release gets CAD_ERR_BAD_HANDLE, which is a bug report; a plugin
+    /// that keeps a pointer past its free gets a crash somewhere else entirely, which is a
+    /// support ticket nobody can close. PLUGIN_CONTRACT.md 3.1 promises the former.
+    ///
+    /// Ids are never reused. Reuse would make a stale handle silently address a DIFFERENT shape,
+    /// which is worse than either alternative: no error, wrong geometry.
+    std::unordered_map<std::uint64_t, cad::kernel::Shape> shapes;
+    std::uint64_t nextShape = 1;
+
+    /// The vtable handed to plugins. Built once per session, on demand.
+    std::unique_ptr<CadHost> host;
+    std::string hostError;
     cad::io::FormatRegistry formats = cad::io::FormatRegistry::builtins();
     std::unique_ptr<cad::recompute::Cache> cache;
 
@@ -270,6 +289,143 @@ static CadSession createSession(const std::string& cacheDir) {
 void cad_abi_version(std::uint32_t* major, std::uint32_t* minor) {
     if (major != nullptr) *major = CAD_ABI_VERSION_MAJOR;
     if (minor != nullptr) *minor = CAD_ABI_VERSION_MINOR;
+}
+
+// ── the host vtable ─────────────────────────────────────────────────────────────────────
+//
+// The host side of the plugin boundary, implemented IN TERMS OF the Session API wherever it can
+// be (ADR 0011, enforcement point 4) so the two cannot drift apart.
+//
+// Entries this configuration does not offer are left NULL, which the contract requires plugins to
+// check for (PLUGIN_CONTRACT.md 4.5). That is deliberate rather than unfinished: a sandboxed tier
+// will offer strictly fewer, so plugins must handle NULL from the first day there is anything to
+// handle. Leaving them NULL now means the discipline is exercised immediately instead of being
+// discovered later.
+namespace {
+
+Session* hostSession(void* ctx) { return static_cast<Session*>(ctx); }
+
+void hostLog(void* ctx, std::int32_t level, const char* msg) {
+    if (msg == nullptr) return;
+    const auto category = cad::log::Category::Plugin;
+    switch (level) {
+        case 0: CAD_LOG(category, cad::log::Level::Debug) << msg; break;
+        case 1: CAD_LOG(category, cad::log::Level::Info) << msg; break;
+        case 2: CAD_LOG(category, cad::log::Level::Warning) << msg; break;
+        default: CAD_LOG(category, cad::log::Level::Error) << msg; break;
+    }
+    (void)ctx;
+}
+
+CadStr hostLastError(void* ctx) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr) return CadStr{"", 0};
+    return CadStr{s->hostError.c_str(), s->hostError.size()};
+}
+
+/// Interns a shape and returns its handle. 0 is reserved for "none", so ids start at 1.
+CadShape intern(Session& s, cad::kernel::Shape shape) {
+    const std::uint64_t id = s.nextShape++;
+    s.shapes.emplace(id, std::move(shape));
+    return id;
+}
+
+cad::kernel::Shape* lookup(Session& s, CadShape handle) {
+    const auto it = s.shapes.find(handle);
+    return it == s.shapes.end() ? nullptr : &it->second;
+}
+
+CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    auto built = cad::kernel::makeBox(dx, dy, dz);
+    if (!built) {
+        s->hostError = built.error().message;
+        return CAD_ERR_INVALID_INPUT;
+    }
+    *out = intern(*s, built.value().op.shape());
+    return CAD_OK;
+}
+
+CadStatus hostBoolean(void* ctx, CadShape a, CadShape b, CadShape* out, bool cut) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    cad::kernel::Shape* left = lookup(*s, a);
+    cad::kernel::Shape* right = lookup(*s, b);
+    if (left == nullptr || right == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    auto result = cut ? cad::kernel::booleanCut(*left, *right)
+                      : cad::kernel::booleanFuse(*left, *right);
+    if (!result) {
+        s->hostError = result.error().message;
+        return CAD_ERR_BOOLEAN_FAILED;
+    }
+    *out = intern(*s, result.value().shape());
+    return CAD_OK;
+}
+
+CadStatus hostFuse(void* ctx, CadShape a, CadShape b, CadShape* out) {
+    return hostBoolean(ctx, a, b, out, false);
+}
+CadStatus hostCut(void* ctx, CadShape a, CadShape b, CadShape* out) {
+    return hostBoolean(ctx, a, b, out, true);
+}
+
+CadStatus hostValidate(void* ctx, CadShape handle) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr) return CAD_ERR_INVALID_INPUT;
+    cad::kernel::Shape* shape = lookup(*s, handle);
+    if (shape == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    auto valid = shape->validate();
+    if (!valid) {
+        s->hostError = valid.error().message;
+        return CAD_ERR_INVALID_RESULT;
+    }
+    return CAD_OK;
+}
+
+void hostReleaseShape(void* ctx, CadShape handle) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr) return;
+    // Idempotent, and accepts 0 -- the uniform rule for every release in this ABI. A plugin
+    // shutting down after a failure releases things it may already have released.
+    s->shapes.erase(handle);
+}
+
+}  // namespace
+
+const CadHost* cad_plugin_host(CadSession handle) {
+    const CadHost* result = nullptr;
+    withSession(handle, [&](Session& s) {
+        if (!s.host) {
+            s.host = std::make_unique<CadHost>();
+            CadHost& h = *s.host;
+            h = CadHost{};
+            h.struct_size = static_cast<std::uint32_t>(sizeof(CadHost));
+            h.struct_version = 1;
+            h.abi_major = CAD_ABI_VERSION_MAJOR;
+            h.abi_minor = CAD_ABI_VERSION_MINOR;
+            h.host_ctx = &s;
+
+            h.log = &hostLog;
+            h.last_error = &hostLastError;
+            h.make_box = &hostMakeBox;
+            h.boolean_fuse = &hostFuse;
+            h.boolean_cut = &hostCut;
+            h.shape_validate = &hostValidate;
+            h.shape_release = &hostReleaseShape;
+            // fillet_edges, element_*, txn_* and register_* stay NULL for now. See the note above:
+            // plugins are required to check, and this makes them do it from the start.
+        }
+        result = s.host.get();
+        return CAD_OK;
+    });
+    return result;
 }
 
 int32_t cad_abi_accepts(std::uint32_t pluginAbiMajor, std::uint32_t pluginMinHostMinor,
