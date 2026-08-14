@@ -8,6 +8,7 @@ add_executable(cad_tests
   acceptance/debug_dump.cpp
   acceptance/m1_units.cpp
   acceptance/m1_chamfer_healing.cpp
+  acceptance/m2_external_input_cache.cpp
 )
 
 target_include_directories(cad_tests PRIVATE acceptance)

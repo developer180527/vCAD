@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 8
+#define CAD_ABI_VERSION_MINOR 9
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -92,6 +92,99 @@ typedef struct {
 #define CAD_CAP_SUBPROCESS  (1u << 2)
 #define CAD_CAP_UI          (1u << 3)
 
+/* --- extension descriptors -----------------------------------------------------------
+ *
+ * THE SIZE-PREFIX RULE. Every struct that crosses this boundary begins with:
+ *
+ *     uint32_t struct_size;      set to sizeof(the struct AS THE CALLER COMPILED IT)
+ *     uint32_t struct_version;   bumped only when a field's MEANING changes
+ *
+ * The receiver reads struct_size and uses only the fields that fit inside it. That is the
+ * entire mechanism by which a plugin compiled today keeps working against a host built in ten
+ * years: the host appends fields, old plugins report a smaller size, and the host serves them
+ * with the semantics they were built against.
+ *
+ * Consequently, and without exception:
+ *   - Fields are only ever APPENDED. Never reordered, never removed, never retyped, never
+ *     repurposed. A field that turns out to be wrong is left alone and a new one is added.
+ *   - A caller MUST set struct_size. A zero or absurd value is rejected, not guessed at.
+ *   - A receiver MUST NOT read past struct_size, even for a field it "knows" is there.
+ *
+ * These replaced `const void*` parameters, which is worth recording because the mistake is an
+ * easy one to make again: register_feature/command/format each took an untyped, unsized blob.
+ * Nothing was broken, because nothing had ever called them — but the first shipped plugin would
+ * have frozen that shape permanently, and adding a single field to a feature descriptor would
+ * then have meant the host reading past the end of every existing plugin's struct. See
+ * docs/decisions/0011-plugin-abi-compatibility.md.
+ */
+
+/* Opaque per-invocation contexts. Handles rather than structs deliberately: what a compute or a
+ * command needs to see will grow, and growing an opaque handle's accessors costs nothing while
+ * growing a struct costs a version negotiation every time. */
+typedef uint64_t CadComputeCtx;
+typedef uint64_t CadCommandCtx;
+
+/* A feature type: the thing that makes a plugin a CAD plugin rather than a script. */
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    /* Reverse-DNS and globally unique, e.g. "com.acme.sheetmetal.Flange". Stored in saved
+     * documents, so it is permanent: renaming it orphans every file that used it. */
+    const char* type_name;
+
+    /* Bumped by the PLUGIN when its compute produces different output for identical inputs.
+     * This is what invalidates cached results from an older build of the plugin. It is the
+     * single most commonly forgotten field in a content pipeline, and getting it wrong shows
+     * up as a stale shape that survives a rebuild — see recompute::FeatureType::version. */
+    uint32_t    compute_version;
+    uint32_t    reserved0;              /* explicit padding; keeps the layout the same on 32- and 64-bit */
+
+    void*       plugin_ctx;             /* passed back to compute; the plugin's own state */
+    CadStatus (*compute)(void* plugin_ctx, CadComputeCtx ctx);
+} CadFeatureDesc;
+
+/* A user-invocable command: a ribbon button, a shortcut, a marking-menu wedge. */
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    const char* id;                     /* "com.acme.sheetmetal.unfold", stable; shortcuts bind to it */
+    const char* label;
+    const char* tooltip;
+    const char* icon_name;              /* resolved by the shell's theme; may be NULL */
+
+    void*       plugin_ctx;
+    /* Non-zero when the command should be enabled. Called often — on every selection change —
+     * so it must be cheap and must not mutate the document. */
+    int32_t   (*enabled)(void* plugin_ctx, CadCommandCtx ctx);
+    CadStatus (*invoke)(void* plugin_ctx, CadCommandCtx ctx);
+} CadCommandDesc;
+
+/* An import/export format. */
+#define CAD_FORMAT_IMPORT  (1u << 0)
+#define CAD_FORMAT_EXPORT  (1u << 1)
+
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    const char* id;                     /* "com.acme.formats.step-ap242" */
+    const char* display_name;           /* shown in the file dialog */
+
+    /* Lowercase, without the dot: {"stp", "step"}. Host-side matching is case-insensitive. */
+    const char* const* extensions;
+    uint32_t    extension_count;
+    uint32_t    directions;             /* CAD_FORMAT_IMPORT | CAD_FORMAT_EXPORT */
+
+    void*       plugin_ctx;
+    /* NULL when the corresponding direction is not offered. The host checks `directions` AND
+     * the pointer, because a descriptor that claims a direction it cannot perform is exactly
+     * the sort of thing a third-party plugin does. */
+    CadStatus (*import_file)(void* plugin_ctx, const char* path, CadDocument into);
+    CadStatus (*export_file)(void* plugin_ctx, const char* path, CadDocument from);
+} CadFormatDesc;
+
 /* --- host interface ------------------------------------------------------------------
  * Function-pointer table handed to the plugin at init. A NULL entry means the host does
  * not offer that call in this configuration (e.g. a sandboxed tier); plugins MUST check.
@@ -99,6 +192,12 @@ typedef struct {
 typedef struct CadHost CadHost;
 
 struct CadHost {
+    /* sizeof(CadHost) as the HOST compiled it. A plugin uses this to tell whether a trailing
+     * function pointer exists at all, which abi_minor alone can only imply by convention — and
+     * a convention is checkable by a careful human, which is the same as not checkable. */
+    uint32_t struct_size;
+    uint32_t struct_version;
+
     uint32_t abi_major;
     uint32_t abi_minor;
     void*    host_ctx;
@@ -126,15 +225,22 @@ struct CadHost {
     CadStatus (*txn_commit)(void* ctx, CadTransaction t);
     CadStatus (*txn_abort)(void* ctx, CadTransaction t);
 
-    /* extension-point registration */
-    CadStatus (*register_feature)(void* ctx, const void* feature_desc);
-    CadStatus (*register_command)(void* ctx, const void* command_desc);
-    CadStatus (*register_format)(void* ctx, const void* format_desc);
+    /* extension-point registration. Typed and size-negotiated; see the size-prefix rule. */
+    CadStatus (*register_feature)(void* ctx, const CadFeatureDesc* desc);
+    CadStatus (*register_command)(void* ctx, const CadCommandDesc* desc);
+    CadStatus (*register_format)(void* ctx, const CadFormatDesc* desc);
 };
 
 /* --- plugin interface ---------------------------------------------------------------- */
 typedef struct {
-    uint32_t    abi_major;          /* must equal CAD_ABI_VERSION_MAJOR */
+    uint32_t    struct_size;        /* sizeof(CadPluginDesc) as the plugin compiled it */
+    uint32_t    struct_version;
+
+    /* The host serves this generation; it does NOT require it to be the current one. A host
+     * running ABI 2 is expected to hand an abi_major==1 plugin a v1-shaped CadHost rather than
+     * refuse it — that is what "a plugin written today still works in a decade" means, and it
+     * is why the host passes a vtable instead of the plugin linking against symbols. */
+    uint32_t    abi_major;
     uint32_t    abi_minor;          /* host may be newer */
     const char* id;                 /* reverse-DNS, e.g. "com.acme.sheetmetal" */
     const char* display_name;

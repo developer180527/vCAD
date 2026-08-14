@@ -32,6 +32,20 @@ struct ComputeContext {
 
 using ComputeFn = std::function<kernel::Result<Output>(const ComputeContext&)>;
 
+/// Paths this feature will READ that are not part of the document.
+///
+/// The cache key is built from the document, so anything a feature reads from outside it is
+/// invisible to the key — and the cached result is then served after the external thing has
+/// changed. Import had exactly that bug: its key covered the `path` STRING, so editing the
+/// referenced STEP file on disk and recomputing returned the previously cached shape. Silent
+/// wrong geometry, which is the worst kind.
+///
+/// Declaring the paths here lets the engine fold their CONTENT digests into the key, so a
+/// changed file invalidates exactly the features that read it. This mirrors the plugin contract's
+/// declare_external_input (docs/design/PLUGIN_CONTRACT.md §4B) deliberately: built-ins and
+/// plugins are held to the same rule, because the cache cannot tell them apart.
+using ExternalInputsFn = std::function<std::vector<std::string>(const document::ObjectData&)>;
+
 /// A feature type: the unit a plugin registers and the unit the cache keys on.
 struct FeatureType {
     std::string name;
@@ -41,6 +55,10 @@ struct FeatureType {
     /// same field the cooker version.
     std::uint32_t version = 1;
     ComputeFn compute;
+
+    /// Optional. Null means "this feature reads nothing outside the document", which is the
+    /// correct answer for every purely parametric feature.
+    ExternalInputsFn externalInputs;
 };
 
 /// Registry of feature types. Plugins add to this; nothing else knows what a "Pad" is.

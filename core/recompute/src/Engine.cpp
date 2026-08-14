@@ -1,4 +1,8 @@
 #include "cad/recompute/Engine.h"
+#include <unordered_map>
+#include <mutex>
+#include <fstream>
+#include <filesystem>
 
 #include <algorithm>
 #include <deque>
@@ -34,6 +38,63 @@ kernel::Error blockedBy(const Document& doc, ObjectId input, const char* what) {
     return kernel::Error{kernel::ErrorCode::InvalidInput,
                          "Blocked: " + who + " " + what + ".",
                          "upstream object " + std::to_string(input.value)};
+}
+
+/// Content digest of a file, or 0 if it cannot be read.
+///
+/// A missing or unreadable file digests to 0 DELIBERATELY, and every unreadable file shares that
+/// value. The alternative — refusing to build a key — would mean a broken path could not even be
+/// recomputed to produce its error, so the feature would be stuck rather than failing legibly.
+///
+/// Memoised on (size, mtime), because this runs on every key computation and a STEP file can be
+/// hundreds of megabytes. Note carefully: mtime is used ONLY to decide whether to re-read the
+/// file. It is never mixed into the key. That distinction is the whole design — mtime differs
+/// between two machines holding identical bytes, so a key containing it would defeat the shared
+/// DDC tier for every imported file.
+std::uint64_t fileDigest(const std::string& path) {
+    namespace fs = std::filesystem;
+
+    struct Memo {
+        std::uintmax_t size = 0;
+        std::int64_t mtime = 0;
+        std::uint64_t digest = 0;
+    };
+    static std::mutex mutex;
+    static std::unordered_map<std::string, Memo> memo;
+
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec) return 0;
+    const auto written = fs::last_write_time(path, ec);
+    if (ec) return 0;
+    const auto mtime = written.time_since_epoch().count();
+
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const auto it = memo.find(path);
+        if (it != memo.end() && it->second.size == size && it->second.mtime == mtime) {
+            return it->second.digest;
+        }
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return 0;
+    std::uint64_t h = kFnvOffset;
+    char buffer[64 * 1024];
+    while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
+        const auto got = static_cast<std::size_t>(in.gcount());
+        for (std::size_t i = 0; i < got; ++i) {
+            mix(h, static_cast<std::uint64_t>(static_cast<unsigned char>(buffer[i])));
+        }
+    }
+    // Length too: two files where one is a prefix of the other must not collide.
+    mix(h, static_cast<std::uint64_t>(size));
+
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        memo[path] = Memo{size, static_cast<std::int64_t>(mtime), h};
+    }
+    return h;
 }
 
 }  // namespace
@@ -136,6 +197,15 @@ kernel::Result<std::uint64_t> Engine::cacheKeyOf(const Document& doc,
             }
         } else {
             mix(h, document::digestOf(p.value));
+        }
+    }
+
+    // External inputs, by CONTENT. Without this the key covers the path string and nothing else,
+    // so editing an imported file and recomputing serves the shape cached from the old contents.
+    if (type->externalInputs) {
+        for (const std::string& path : type->externalInputs(object)) {
+            for (char c : path) mix(h, static_cast<std::uint64_t>(c));
+            mix(h, fileDigest(path));
         }
     }
     return h;

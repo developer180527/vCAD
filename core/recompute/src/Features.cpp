@@ -311,7 +311,15 @@ FeatureRegistry FeatureRegistry::builtins() {
     r.add({"Sketch", 1, computeSketch});
     r.add({"Extrude", 1, computeExtrude});
     r.add({"Translate", 1, computeTranslate});
-    r.add({"Import", 1, computeImport});
+    // Import is the ONE built-in that reads outside the document, so it is the one that has to
+    // declare it. Everything else is a pure function of its properties.
+    r.add({"Import", 1, computeImport,
+           [](const document::ObjectData& object) -> std::vector<std::string> {
+               if (const auto* p = object.find("path")) {
+                   if (const auto* path = std::get_if<std::string>(p)) return {*path};
+               }
+               return {};
+           }});
     return r;
 }
 
