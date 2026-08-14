@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 11
+#define CAD_ABI_VERSION_MINOR 12
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -184,6 +184,18 @@ typedef struct {
 /* Migration context, for evolving a feature's stored parameters between schema versions. */
 typedef uint64_t CadMigrationCtx;
 
+/* A feature's PARAMETERS, without its computed inputs.
+ *
+ * Separate from CadComputeCtx because it is available EARLIER: the cache key is built before any
+ * input has been computed, and external_inputs below runs at key time. A compute context can hand
+ * back one of these (compute_feature_ctx), so the parameter accessors are written once and serve
+ * both. */
+typedef uint64_t CadFeatureCtx;
+
+/* Receives one external path. The host supplies it; the plugin calls it once per file it will
+ * read. A callback rather than a returned array so neither side has to own or free a list. */
+typedef void (*CadPathSink)(void* sink_ctx, const char* path, size_t path_len);
+
 /* A feature type: the thing that makes a plugin a CAD plugin rather than a script. */
 typedef struct {
     uint32_t    struct_size;
@@ -209,6 +221,22 @@ typedef struct {
 
     void*       plugin_ctx;             /* passed back to compute; the plugin's own state */
     CadStatus (*compute)(void* plugin_ctx, CadComputeCtx ctx);
+
+    /* Files this feature will READ that are not part of the document. May be NULL, and NULL is
+     * the correct answer for every purely parametric feature.
+     *
+     * Called at CACHE-KEY time, before compute, and that timing is the entire point. An earlier
+     * draft of this API had the plugin declare its external inputs from INSIDE compute -- which
+     * cannot work, because the key it is meant to change has already been computed by then. The
+     * result would have been a plugin that believed it had declared its dependency and a cache
+     * that served stale geometry anyway.
+     *
+     * The host hashes each path's CONTENT into the key, so editing a referenced file invalidates
+     * exactly the features that read it. Mirrors recompute::FeatureType::externalInputs, which is
+     * how the built-in Import feature does the same thing -- built-ins and plugins are held to one
+     * rule because the cache cannot tell them apart. */
+    CadStatus (*external_inputs)(void* plugin_ctx, CadFeatureCtx fc,
+                                 CadPathSink sink, void* sink_ctx);
 
     /* Called when a document holds this feature saved at an OLDER param_schema_version, before
      * compute, once per object; the result is written back to the document. May be NULL, and a

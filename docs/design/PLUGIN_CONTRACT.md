@@ -278,11 +278,19 @@ Therefore any feature, built-in or plugin, that depends on external state must *
 dependency as a content digest** which the host folds into the cache key:
 
 ```c
-/* Declared from within compute, before reading the resource. The host hashes the digest into
- * the feature's cache key, so a changed file invalidates exactly the features that read it. */
-CadStatus (*declare_external_input)(void* ctx, CadComputeCtx cc,
-                                    const uint8_t* digest, size_t digest_len);
+/* On CadFeatureDesc. Called at CACHE-KEY time, before compute. */
+CadStatus (*external_inputs)(void* plugin_ctx, CadFeatureCtx fc,
+                             CadPathSink sink, void* sink_ctx);
 ```
+
+**(RESOLVED — and corrected.)** An earlier draft of this section had the plugin declare its
+external inputs from *inside* `compute`, via `declare_external_input`. **That cannot work.** The
+cache key is computed before compute runs, so a declaration made during compute arrives too late to
+affect the key it exists to change — the plugin would believe it had declared its dependency while
+the cache served stale geometry anyway. Caught before anything was built on it.
+
+The correct shape is a callback on the descriptor, called at key time, mirroring
+`recompute::FeatureType::externalInputs` on the C++ side.
 
 A plugin that reads an external resource without declaring it is in breach of §4.1, and its
 results will be wrong in ways that look like the host's fault.
@@ -520,9 +528,10 @@ CadStatus (*compute_set_output)(void* ctx, CadComputeCtx cc, CadShape shape);
  * kernel::Error's message/detail. */
 CadStatus (*compute_fail)(void* ctx, CadComputeCtx cc, const char* message, const char* detail);
 
-/* external dependencies, folded into the cache key — see 4B */
-CadStatus (*declare_external_input)(void* ctx, CadComputeCtx cc,
-                                    const uint8_t* digest, size_t digest_len);
+/* The feature's parameters, for accessors shared with external_inputs (§4B). External
+ * dependencies are NOT declared from here -- they are declared on the descriptor, at key
+ * time, because by the time compute runs the key already exists. */
+CadStatus (*compute_feature_ctx)(void* ctx, CadComputeCtx cc, CadFeatureCtx* out);
 ```
 
 **Read-only by construction.** There is no `compute_set_param`, no document handle, and no
