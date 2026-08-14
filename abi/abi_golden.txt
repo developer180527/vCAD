@@ -1,5 +1,5 @@
 define CAD_ABI_VERSION_MAJOR	0288695b698e5310
-define CAD_ABI_VERSION_MINOR	aaeb121cba2dee0a
+define CAD_ABI_VERSION_MINOR	aaeb221cba2defbd
 define CAD_CAP_FILESYSTEM	434d3d3abfc808cf
 define CAD_CAP_NETWORK	8abedaf5b56d3cb5
 define CAD_CAP_SUBPROCESS	4bac296961c20be1
@@ -43,6 +43,9 @@ define CAD_POINT_START	04683be02fac0ca9
 define CAD_SKETCH_PLANE_XY	d831ef7d2e42dcc5
 define CAD_SKETCH_PLANE_XZ	4602ef7d2043acb7
 define CAD_SKETCH_PLANE_YZ	65ff3f849de067cb
+define CAD_SUB_EDGE	5eb58177394b3183
+define CAD_SUB_FACE	7f531eae4d2e7be4
+define CAD_SUB_VERTEX	2a5d180cc3b4a77f
 fn cad_abi_accepts	57974b8b30fed365
 fn cad_abi_version	ef2a042a0ac26918
 fn cad_box_edge_between	b7339e6248235e29
@@ -127,7 +130,7 @@ fn cad_sketch_serialize	e1ab22cd44391801
 fn cad_sketch_solve	f7ad5f5305a5711c
 fn cad_undo	355979a6ab289e99
 fn cad_writable_extensions	41c4c77efac40b03
-struct CadHost	202b9b07e2a31771
+struct CadHost	612686946c3fc332
 type CadCommandCtx	e9227dfa61d7fd00
 type CadCommandDesc	9397a865f775c36c
 type CadComputeCtx	02c5a1becd794c38
