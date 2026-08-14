@@ -136,7 +136,18 @@ Point 2 is the one that actually delivers the goal. Everything else is hygiene.
 
 ---
 
-## Negotiation, precisely
+## Negotiation, precisely — **(RESOLVED)**
+
+Implemented as `cad_abi_accepts(abi_major, min_host_minor, out_reason)` in `abi/src/Session.cpp`,
+which is the decision the loader will call rather than a rule the loader will re-derive. Six tests
+in `tests-rs/cad-tests/tests/abi_versioning.rs` cover both directions, including that every minor
+this host has passed through is still accepted, and that a refusal explains itself.
+
+Layout invariants are enforced at COMPILE time in `tests/acceptance/m2_abi_layout.cpp`: every
+descriptor begins with `struct_size` at offset 0, and the `CadParamKind` values — which are stored
+in documents — are pinned so reordering the enum fails the build instead of silently turning a
+40 mm extrude into a 40 degree one. Verified that moving a field above `struct_size` does fail the
+build.
 
 Three fields exist and it must be unambiguous which one answers which question.
 

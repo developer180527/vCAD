@@ -272,6 +272,32 @@ void cad_abi_version(std::uint32_t* major, std::uint32_t* minor) {
     if (minor != nullptr) *minor = CAD_ABI_VERSION_MINOR;
 }
 
+int32_t cad_abi_accepts(std::uint32_t pluginAbiMajor, std::uint32_t pluginMinHostMinor,
+                        const char** outReason) {
+    const auto reason = [outReason](const char* text) {
+        if (outReason != nullptr) *outReason = text;
+    };
+
+    // Backward. Every major this host has ever served, it still serves -- ADR 0011 -- so the
+    // check is "is this one of ours", not "is this the current one". Today there is exactly one.
+    // When ABI 2 exists, 1 stays acceptable here and is served through a shim; that is the whole
+    // meaning of "majors are served, not replaced".
+    if (pluginAbiMajor == 0 || pluginAbiMajor > CAD_ABI_VERSION_MAJOR) {
+        reason("This plugin was built for a newer generation of vCAD's plugin interface.");
+        return 0;
+    }
+
+    // Forward. Refusal, not compatibility: a plugin needing calls this host never populated would
+    // dereference a null function pointer inside third-party code.
+    if (pluginMinHostMinor > CAD_ABI_VERSION_MINOR) {
+        reason("This plugin needs a newer version of vCAD than the one you are running.");
+        return 0;
+    }
+
+    reason("");
+    return 1;
+}
+
 CadSession cad_session_create(void) { return createSession({}); }
 
 CadSession cad_session_create_cached(const char* dir) {

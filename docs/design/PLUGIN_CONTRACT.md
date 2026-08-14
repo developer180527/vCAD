@@ -374,7 +374,7 @@ missing from our plan entirely — now §4.7.
 Written here rather than in the header because the plan is being fixed before any code. These are
 decisions, not sketches; the header change is mechanical once agreed.
 
-### 7.1 `CadParamDesc` — typed feature parameters
+### 7.1 `CadParamDesc` — typed feature parameters — **(RESOLVED)**
 
 A feature's parameters must be host-owned (§4A: that is what lets a document survive a missing
 plugin), typed (the property panel has to render and validate them), and unit-aware (this is a
@@ -437,7 +437,7 @@ Two decisions inside that are worth stating out loud:
   correctness bug in both directions: mark a geometric parameter cosmetic and edits are ignored;
   mark a cosmetic one geometric and every colour change rebuilds the part.
 
-### 7.1a Evolving a feature's parameters
+### 7.1a Evolving a feature's parameters — **(RESOLVED — declared; migration not yet run by anything)**
 
 `CadFeatureDesc` carries a `param_schema_version`, and a plugin that changes its parameter set
 provides a migration:
@@ -614,7 +614,7 @@ Fixed, so it does not get relitigated per step. Each lands independently and is 
 | # | Step | Why here |
 |---|---|---|
 | 1 | ~~**Golden header snapshot test**~~ **(RESOLVED)** | `tests-rs/cad-tests/tests/abi_golden.rs`; 149 declarations pinned, verified red and green |
-| 2 | `CadParamDesc` + `min_host_minor` in the header | Layout changes are free today and permanent after the first shipped plugin |
+| 2 | ~~`CadParamDesc` + `min_host_minor` in the header~~ **(RESOLVED)** | ABI 1.10. Layout pinned by static_assert, acceptance rule tested via `cad_abi_accepts` |
 | 3 | Compute context accessors | The other phase-1 blocker |
 | 4 | **Unknown-feature preservation** (§4A) | Failure must not nuke the user's *data*. Independent of the loader and valuable without it |
 | 5 | Error containment (§5) | Failure must not nuke the *app* |

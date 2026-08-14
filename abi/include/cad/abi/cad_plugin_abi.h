@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 9
+#define CAD_ABI_VERSION_MINOR 10
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -124,6 +124,66 @@ typedef struct {
 typedef uint64_t CadComputeCtx;
 typedef uint64_t CadCommandCtx;
 
+/* --- parameters ----------------------------------------------------------------------
+ *
+ * A feature's parameters are HOST-OWNED. The plugin declares their shape; the host stores the
+ * values in the document as ordinary typed properties, renders them in the property panel, and
+ * preserves them even for a feature type it has never heard of (see PLUGIN_CONTRACT.md 4A). A
+ * plugin that serialised its own data would take that guarantee away from the user.
+ */
+typedef enum {
+    CAD_PARAM_LENGTH = 0,   /* stored in millimetres, shown in the user's units */
+    CAD_PARAM_ANGLE = 1,    /* stored in degrees */
+    CAD_PARAM_REAL = 2,     /* dimensionless */
+    CAD_PARAM_INTEGER = 3,
+    CAD_PARAM_BOOL = 4,
+    CAD_PARAM_TEXT = 5,
+    CAD_PARAM_OBJECT = 6,   /* a reference to another feature */
+    CAD_PARAM_ELEMENT = 7,  /* a named face/edge/vertex; survives rebuilds */
+
+    /* Lists. A fillet takes MANY edges, a loft many profiles, a pattern many seeds:
+     * single-valued parameters cannot express most real mechanical features. The core already
+     * stores vector<ObjectId> properties and already hashes them into the cache key, so this
+     * exposes something that exists rather than inventing it.
+     *
+     * Omitting these was the most expensive mistake this design nearly made. Adding a kind later
+     * is legal, but every plugin written meanwhile would have packed lists into TEXT, and those
+     * workarounds would be permanent. */
+    CAD_PARAM_OBJECT_LIST = 8,
+    CAD_PARAM_ELEMENT_LIST = 9
+} CadParamKind;
+
+/* The numeric values above are STORED IN DOCUMENTS and are therefore permanent. They are written
+ * explicitly rather than left implicit so that reordering the enum cannot silently change what a
+ * saved file means. */
+
+#define CAD_PARAM_REQUIRED   (1u << 0)
+#define CAD_PARAM_COSMETIC   (1u << 1)  /* excluded from the cache key, like colour */
+#define CAD_PARAM_READ_ONLY  (1u << 2)  /* computed output: shown, not editable */
+
+typedef struct {
+    uint32_t     struct_size;
+    uint32_t     struct_version;
+
+    /* Stable key, written into every document that uses this feature. PERMANENT: renaming it
+     * orphans saved data. `label` exists so the user-visible string can change freely. */
+    const char*  name;
+    const char*  label;
+    const char*  tooltip;
+
+    uint32_t     kind;          /* CadParamKind */
+    uint32_t     flags;         /* CAD_PARAM_* */
+
+    /* Ignored for kinds where they make no sense. A plugin wanting no bound sets min > max,
+     * which is unambiguous and needs no extra flag. */
+    double       default_value;
+    double       min_value;
+    double       max_value;
+} CadParamDesc;
+
+/* Migration context, for evolving a feature's stored parameters between schema versions. */
+typedef uint64_t CadMigrationCtx;
+
 /* A feature type: the thing that makes a plugin a CAD plugin rather than a script. */
 typedef struct {
     uint32_t    struct_size;
@@ -140,8 +200,23 @@ typedef struct {
     uint32_t    compute_version;
     uint32_t    reserved0;              /* explicit padding; keeps the layout the same on 32- and 64-bit */
 
+    /* The shape of this feature's STORED PARAMETERS. Distinct from compute_version, and
+     * conflating the two is a correctness bug in both directions: this one says the stored shape
+     * changed and old documents need migrating; compute_version says the OUTPUT changed for
+     * identical inputs and caches must be dropped. */
+    uint32_t    param_schema_version;
+    uint32_t    reserved1;
+
     void*       plugin_ctx;             /* passed back to compute; the plugin's own state */
     CadStatus (*compute)(void* plugin_ctx, CadComputeCtx ctx);
+
+    /* Called when a document holds this feature saved at an OLDER param_schema_version, before
+     * compute, once per object; the result is written back to the document. May be NULL, and a
+     * NULL migration is not data loss: the old parameters are preserved untouched and the
+     * feature is marked as needing attention. Migration is forward-only — there is no downgrade,
+     * and a document touched by a newer plugin may not open under an older one. */
+    CadStatus (*migrate_params)(void* plugin_ctx, CadMigrationCtx mc,
+                                uint32_t from_version, uint32_t to_version);
 } CadFeatureDesc;
 
 /* A user-invocable command: a ribbon button, a shortcut, a marking-menu wedge. */
@@ -226,7 +301,9 @@ struct CadHost {
     CadStatus (*txn_abort)(void* ctx, CadTransaction t);
 
     /* extension-point registration. Typed and size-negotiated; see the size-prefix rule. */
-    CadStatus (*register_feature)(void* ctx, const CadFeatureDesc* desc);
+    /* Parameters arrive WITH the feature, so a feature and its parameters cannot disagree. */
+    CadStatus (*register_feature)(void* ctx, const CadFeatureDesc* desc,
+                                  const CadParamDesc* params, uint32_t param_count);
     CadStatus (*register_command)(void* ctx, const CadCommandDesc* desc);
     CadStatus (*register_format)(void* ctx, const CadFormatDesc* desc);
 };
@@ -246,6 +323,15 @@ typedef struct {
     const char* display_name;
     const char* semver;
     uint32_t    required_caps;      /* CAD_CAP_* bitmask; host may refuse */
+
+    /* The OLDEST host this plugin will run on, within abi_major. A host with a smaller
+     * CAD_ABI_VERSION_MINOR declines to load it and says which version is required.
+     *
+     * This is the forward direction, and it is refusal rather than compatibility. Loading a
+     * plugin that needs functions the host never populated means calling a null pointer inside
+     * third-party code, which is the hardest possible failure to attribute. SolidWorks carries
+     * no such field, which is why its add-in authors write runtime version branches instead. */
+    uint32_t    min_host_minor;
 
     CadStatus (*initialize)(const CadHost* host);
     void      (*shutdown)(void);
@@ -280,6 +366,17 @@ typedef uint64_t CadObject;    /* an object id within a session's document */
 /* The version this library was BUILT with. Exists so a binding can verify its own constants
  * against the real thing instead of restating them and drifting silently. */
 CAD_API void cad_abi_version(uint32_t* out_major, uint32_t* out_minor);
+
+/* Would THIS build of the host load a plugin declaring these versions? Non-zero for yes.
+ *
+ * The loader's decision, exposed as a function rather than left as prose, so the rule is tested
+ * rather than described. Backward: any abi_major this host still serves is accepted, whatever its
+ * abi_minor. Forward: a plugin whose min_host_minor exceeds this host's minor is refused.
+ *
+ * `out_reason` receives a user-facing explanation when the answer is no; pass NULL to ignore it.
+ * The string is static and needs no freeing. */
+CAD_API int32_t cad_abi_accepts(uint32_t plugin_abi_major, uint32_t plugin_min_host_minor,
+                                const char** out_reason);
 
 /* --- lifecycle --- */
 CAD_API CadSession cad_session_create(void);

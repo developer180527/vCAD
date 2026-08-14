@@ -9,9 +9,11 @@ add_executable(cad_tests
   acceptance/m1_units.cpp
   acceptance/m1_chamfer_healing.cpp
   acceptance/m2_external_input_cache.cpp
+  acceptance/m2_abi_layout.cpp
 )
 
-target_include_directories(cad_tests PRIVATE acceptance)
+target_include_directories(cad_tests PRIVATE acceptance
+  ${CMAKE_SOURCE_DIR}/abi/include)
 # Catch2::Catch2, not Catch2WithMain: acceptance/main.cpp owns main() so the
 # cross-process determinism test can re-execute this binary.
 target_link_libraries(cad_tests PRIVATE cad::core Catch2::Catch2)
