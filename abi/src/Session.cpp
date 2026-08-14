@@ -6,11 +6,14 @@
 
 #include "cad/abi/cad_plugin_abi.h"
 
+#include <bit>
+
 #include "cad/log/Log.h"
 
 #include "cad/document/Document.h"
 #include "cad/kernel/Booleans.h"
 #include "cad/kernel/Primitives.h"
+#include "cad/kernel/Shape.h"
 #include "cad/naming/ElementMap.h"
 #include "cad/io/DocumentStore.h"
 #include "cad/sketch/Dxf.h"
@@ -361,6 +364,61 @@ cad::kernel::Shape* lookup(Session& s, CadShape handle) {
     return stored == nullptr ? nullptr : &stored->shape;
 }
 
+/// A naming serial that depends only on WHAT is being built — never on session state.
+///
+/// The serial identifies the thing a name belongs to, and `NamingContext` puts it into every name
+/// it mints. Built-in features pass their ObjectId, which is stable for the life of the feature,
+/// so recomputing one produces the same names it produced last time.
+///
+/// Host calls used to pass `Session::nextShape`, a counter incremented on every intern. Two
+/// identical `make_box` calls in one session therefore produced DIFFERENT names, and the same call
+/// in a fresh session produced different names again depending on what had been interned first.
+/// That collides head-on with PLUGIN_CONTRACT.md 4.1: recompute is content-addressed, so a
+/// plugin feature whose output names vary by session state lets the DDC serve a cached result
+/// whose names disagree with what recomputing would produce — the document silently disagreeing
+/// with itself, across undo, across reload, and across machines sharing a cache.
+///
+/// Hashing the REQUEST rather than counting calls fixes it, and gives identical geometry identical
+/// names, which is the same content-addressing the rest of the system already runs on. These are
+/// intermediates handed to a plugin, not document features; when a plugin's output lands in a
+/// document it is renamed with that feature's serial (PICKUP.md step 3b).
+std::uint32_t serialFor(const char* op, std::initializer_list<double> values) {
+    std::uint64_t h = 1469598103934665603ULL;   // FNV-1a, as everywhere else in this codebase
+    const auto mix = [&h](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v >> (i * 8)) & 0xFFu;
+            h *= 1099511628211ULL;
+        }
+    };
+    for (const char* c = op; *c != '\0'; ++c) mix(static_cast<std::uint64_t>(*c));
+    for (const double v : values) mix(std::bit_cast<std::uint64_t>(v));
+    // Folded to 32 bits because that is what NamingContext takes. Never zero: 0 is what an
+    // uninitialised serial looks like, and a collision with it would be invisible.
+    const auto folded = static_cast<std::uint32_t>((h >> 32) ^ (h & 0xFFFFFFFFULL));
+    return folded == 0 ? 1u : folded;
+}
+
+/// The same, for an operation over shapes that already carry names. Named differently rather than
+/// overloaded: both take an initializer_list, and a braced list at the call site cannot
+/// disambiguate them.
+std::uint32_t serialForShapes(const char* op,
+                              std::initializer_list<const Session::StoredShape*> inputs) {
+    std::uint64_t h = 1469598103934665603ULL;
+    const auto mix = [&h](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v >> (i * 8)) & 0xFFu;
+            h *= 1099511628211ULL;
+        }
+    };
+    for (const char* c = op; *c != '\0'; ++c) mix(static_cast<std::uint64_t>(*c));
+    for (const Session::StoredShape* in : inputs) {
+        if (in == nullptr) continue;
+        mix(cad::naming::contentHash(in->shape, in->names).fold64());
+    }
+    const auto folded = static_cast<std::uint32_t>((h >> 32) ^ (h & 0xFFFFFFFFULL));
+    return folded == 0 ? 1u : folded;
+}
+
 CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out) {
     Session* s = hostSession(ctx);
     if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
@@ -373,9 +431,10 @@ CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out)
     // NAMED, not just built. A shape handed to a plugin without its element map can only be
     // referenced positionally, and a positional reference breaks on the next edit -- so a host
     // call that produced anonymous geometry would hand plugins the FreeCAD problem by default.
-    // The serial is per-shape here because a host-built shape has no feature to belong to yet;
+    // The serial is derived from the request, so identical calls name identically. See
+    // serialFor: counting interns instead made these names session-dependent.
     // once register_feature lands, a plugin's compute output takes its feature's serial instead.
-    cad::naming::NamingContext naming(static_cast<std::uint32_t>(s->nextShape), 0);
+    cad::naming::NamingContext naming(serialFor("make_box", {dx, dy, dz}), 0);
     auto map = naming.nameprimitive(built.value().op.shape(), built.value().taggedFaces);
     if (!map) {
         s->hostError = map.error().message;
@@ -388,19 +447,33 @@ CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out)
 CadStatus hostBoolean(void* ctx, CadShape a, CadShape b, CadShape* out, bool cut) {
     Session* s = hostSession(ctx);
     if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
-    cad::kernel::Shape* left = lookup(*s, a);
-    cad::kernel::Shape* right = lookup(*s, b);
-    if (left == nullptr || right == nullptr) {
+    Session::StoredShape* leftStored = lookupStored(*s, a);
+    Session::StoredShape* rightStored = lookupStored(*s, b);
+    if (leftStored == nullptr || rightStored == nullptr) {
         s->hostError = "That shape no longer exists.";
         return CAD_ERR_BAD_HANDLE;
     }
-    auto result = cut ? cad::kernel::booleanCut(*left, *right)
-                      : cad::kernel::booleanFuse(*left, *right);
+    auto result = cut ? cad::kernel::booleanCut(leftStored->shape, rightStored->shape)
+                      : cad::kernel::booleanFuse(leftStored->shape, rightStored->shape);
     if (!result) {
         s->hostError = result.error().message;
         return CAD_ERR_BOOLEAN_FAILED;
     }
-    *out = intern(*s, result.value().shape());
+
+    // PROPAGATED, not dropped. This used to intern the result shape with no element map at all,
+    // so a plugin that fused two named boxes got back anonymous geometry — nothing downstream
+    // could reference a face of it, which is exactly the failure PLUGIN_CONTRACT.md 4.2 tells
+    // plugins not to cause. The host must not cause it either.
+    cad::naming::NamingContext naming(serialForShapes(cut ? "boolean_cut" : "boolean_fuse",
+                                                      {leftStored, rightStored}), 0);
+    auto map = naming.propagate(result.value(),
+                                {&leftStored->shape, &rightStored->shape},
+                                {&leftStored->names, &rightStored->names});
+    if (!map) {
+        s->hostError = map.error().message;
+        return CAD_ERR_NAMING_LOST;
+    }
+    *out = intern(*s, result.value().shape(), std::move(map).value());
     return CAD_OK;
 }
 
@@ -434,6 +507,63 @@ CadStatus hostValidate(void* ctx, CadShape handle) {
 // face order would break it. That is FreeCAD's topological naming problem, and it is a PLUGIN API
 // problem there rather than only a modelling one, because every addon holding a face reference
 // suffers it.
+
+/// Maps a CAD_SUB_* constant onto the kernel's enum. Returns false for anything unknown, so a
+/// plugin built against a newer header that adds a kind gets a clean refusal rather than whatever
+/// enumerator happens to sit at that integer.
+bool subShapeKind(std::uint32_t kind, cad::kernel::SubShape& out) {
+    switch (kind) {
+        case CAD_SUB_FACE:   out = cad::kernel::SubShape::Face;   return true;
+        case CAD_SUB_EDGE:   out = cad::kernel::SubShape::Edge;   return true;
+        case CAD_SUB_VERTEX: out = cad::kernel::SubShape::Vertex; return true;
+        default: return false;
+    }
+}
+
+CadStatus hostShapeSubCount(void* ctx, CadShape handle, std::uint32_t kind, std::uint32_t* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    cad::kernel::SubShape wanted = cad::kernel::SubShape::Face;
+    if (!subShapeKind(kind, wanted)) {
+        s->hostError = "Unknown sub-shape kind.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    Session::StoredShape* stored = lookupStored(*s, handle);
+    if (stored == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    *out = static_cast<std::uint32_t>(cad::kernel::subShapes(stored->shape, wanted).size());
+    return CAD_OK;
+}
+
+CadStatus hostShapeSubAt(void* ctx, CadShape handle, std::uint32_t kind, std::uint32_t index,
+                         CadShape* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    cad::kernel::SubShape wanted = cad::kernel::SubShape::Face;
+    if (!subShapeKind(kind, wanted)) {
+        s->hostError = "Unknown sub-shape kind.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    Session::StoredShape* stored = lookupStored(*s, handle);
+    if (stored == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    auto subs = cad::kernel::subShapes(stored->shape, wanted);
+    if (index >= subs.size()) {
+        s->hostError = "There is no sub-shape at that index.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+
+    // Interned with an EMPTY element map. A sub-shape's name lives in its PARENT's map — that is
+    // what element_name_of(parent, sub) looks up — so giving the handle a map of its own would
+    // invite the belief that a face carries identity independently of the solid it belongs to. It
+    // does not, and cannot: a name is only meaningful against the shape it names.
+    *out = intern(*s, std::move(subs[index]));
+    return CAD_OK;
+}
 
 CadStatus hostElementNameOf(void* ctx, CadShape shape, CadShape sub, CadElementId* out) {
     Session* s = hostSession(ctx);
@@ -515,6 +645,8 @@ const CadHost* cad_plugin_host(CadSession handle) {
             h.shape_release = &hostReleaseShape;
             h.element_resolve = &hostElementResolve;
             h.element_name_of = &hostElementNameOf;
+            h.shape_sub_count = &hostShapeSubCount;
+            h.shape_sub_at = &hostShapeSubAt;
             // fillet_edges, txn_* and register_* stay NULL for now. See the note above:
             // plugins are required to check, and this makes them do it from the start.
         }

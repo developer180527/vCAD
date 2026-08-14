@@ -118,4 +118,20 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// Which sub-shapes to enumerate. Values are the kernel's own; the ABI maps its CAD_SUB_*
+/// constants onto these.
+enum class SubShape : std::uint8_t { Face, Edge, Vertex };
+
+/// The sub-shapes of one kind, deduplicated, in a stable order.
+///
+/// Deduplicated because OCCT's explorer visits a face once per shell that references it, so a
+/// solid's face list would otherwise contain repeats — and a caller iterating "every face" would
+/// process the same face twice believing they were different.
+///
+/// The order is stable for a given shape and carries NO meaning across edits. It exists so a
+/// caller can reach every face once; the durable reference is the element NAME obtained from the
+/// shape's ElementMap, never the index. Lives here rather than in abi/ so the ABI layer needs no
+/// OCCT headers — the same reason every other topology question is answered by the kernel.
+[[nodiscard]] std::vector<Shape> subShapes(const Shape&, SubShape);
+
 }  // namespace cad::kernel

@@ -56,7 +56,26 @@ pub struct CadHostPrefix {
     pub element_name_of: Option<
         extern "C" fn(*mut c_void, CadShape, CadShape, *mut CadElementId) -> CadStatus,
     >,
+
+    // Declared but unused, purely to reach what follows them. The prefix trick only works if the
+    // prefix is complete up to the member being read.
+    pub txn_begin: Option<extern "C" fn()>,
+    pub txn_commit: Option<extern "C" fn()>,
+    pub txn_abort: Option<extern "C" fn()>,
+    pub register_feature: Option<extern "C" fn()>,
+    pub register_command: Option<extern "C" fn()>,
+    pub register_format: Option<extern "C" fn()>,
+
+    // --- appended in ABI 1.13 ---
+    pub shape_sub_count:
+        Option<extern "C" fn(*mut c_void, CadShape, u32, *mut u32) -> CadStatus>,
+    pub shape_sub_at:
+        Option<extern "C" fn(*mut c_void, CadShape, u32, u32, *mut CadShape) -> CadStatus>,
 }
+
+pub const CAD_SUB_FACE: u32 = 1;
+pub const CAD_SUB_EDGE: u32 = 2;
+pub const CAD_SUB_VERTEX: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -307,4 +326,174 @@ fn resolving_against_a_released_shape_is_refused() {
     let mut resolved: CadShape = 0;
     let status = (host.h().element_resolve.unwrap())(host.ctx(), shape, &id, &mut resolved);
     assert_eq!(status, CAD_ERR_BAD_HANDLE, "a dead shape cannot resolve names");
+}
+
+// ── sub-shape enumeration, and the determinism it finally makes testable ─────────────────
+//
+// PLUGIN_CONTRACT.md 3.4 was marked (PARTIAL) because element_resolve and element_name_of were
+// wired while nothing could obtain a sub-shape to name. These close that, and the first of them
+// is the reason the gap mattered more than it looked: without a face handle there was no way to
+// observe that host-built shapes were being named from a session counter.
+
+impl Host {
+    fn sub_count(&self, shape: CadShape, kind: u32) -> (CadStatus, u32) {
+        let mut n = 0u32;
+        let status = (self.h().shape_sub_count.expect("shape_sub_count is offered"))(
+            self.ctx(), shape, kind, &mut n,
+        );
+        (status, n)
+    }
+
+    fn sub_at(&self, shape: CadShape, kind: u32, index: u32) -> (CadStatus, CadShape) {
+        let mut out: CadShape = 0;
+        let status = (self.h().shape_sub_at.expect("shape_sub_at is offered"))(
+            self.ctx(), shape, kind, index, &mut out,
+        );
+        (status, out)
+    }
+
+    /// The digest of the name of one face, which is the whole point of the chain: enumerate a
+    /// face, ask what it is called, and get an answer that survives a rebuild.
+    fn face_name_digest(&self, shape: CadShape, index: u32) -> u64 {
+        let (status, face) = self.sub_at(shape, CAD_SUB_FACE, index);
+        assert_eq!(status, CAD_OK, "shape_sub_at failed: {}", self.last_error());
+        let mut id = CadElementId::default();
+        let status = (self.h().element_name_of.expect("naming is offered"))(
+            self.ctx(), shape, face, &mut id,
+        );
+        assert_eq!(status, CAD_OK, "element_name_of failed: {}", self.last_error());
+        id.digest
+    }
+}
+
+#[test]
+fn a_solid_enumerates_its_faces_edges_and_vertices() {
+    let host = Host::new();
+    let (status, b) = host.box_of(20.0, 30.0, 40.0);
+    assert_eq!(status, CAD_OK, "make_box failed: {}", host.last_error());
+
+    let (status, faces) = host.sub_count(b, CAD_SUB_FACE);
+    assert_eq!(status, CAD_OK);
+    assert_eq!(faces, 6, "a box has six faces, deduplicated across shells");
+
+    let (status, edges) = host.sub_count(b, CAD_SUB_EDGE);
+    assert_eq!(status, CAD_OK);
+    assert_eq!(edges, 12, "a box has twelve edges, each visited once");
+
+    let (status, vertices) = host.sub_count(b, CAD_SUB_VERTEX);
+    assert_eq!(status, CAD_OK);
+    assert_eq!(vertices, 8, "a box has eight vertices");
+}
+
+#[test]
+fn a_face_obtained_from_a_shape_can_be_named_and_resolved_back() {
+    let host = Host::new();
+    let (_, b) = host.box_of(20.0, 30.0, 40.0);
+
+    let (status, face) = host.sub_at(b, CAD_SUB_FACE, 0);
+    assert_eq!(status, CAD_OK, "shape_sub_at failed: {}", host.last_error());
+    assert_ne!(face, 0, "a sub-shape handle is a real handle");
+
+    let mut id = CadElementId::default();
+    let status = (host.h().element_name_of.expect("naming is offered"))(
+        host.ctx(), b, face, &mut id,
+    );
+    assert_eq!(
+        status, CAD_OK,
+        "a face of a host-built box must have a name: {}",
+        host.last_error()
+    );
+    assert_ne!(id.digest, 0, "a real name has a non-zero digest");
+
+    // And back again. This is the round trip a plugin needs to hold a face reference across a
+    // rebuild — the guarantee 3.4 promises and could not previously demonstrate.
+    let mut resolved: CadShape = 0;
+    let status = (host.h().element_resolve.expect("resolve is offered"))(
+        host.ctx(), b, &id, &mut resolved,
+    );
+    assert_eq!(status, CAD_OK, "resolve failed: {}", host.last_error());
+    assert_ne!(resolved, 0);
+}
+
+/// **Identical requests must produce identical names.**
+///
+/// PLUGIN_CONTRACT.md 4.1 makes determinism the strictest rule in the contract, and recompute is
+/// content-addressed, so a name that varies by session state lets the DDC serve a cached result
+/// whose names disagree with what recomputing would produce.
+///
+/// This failed before the fix: `make_box` took its naming serial from `Session::nextShape`, a
+/// counter incremented on every intern, so the second box in a session was named differently from
+/// the first — and a box in a fresh session differently again, depending on what had been interned
+/// before it. The serial now comes from the request.
+#[test]
+fn identical_geometry_is_named_identically() {
+    let host = Host::new();
+    let (_, first) = host.box_of(20.0, 30.0, 40.0);
+    let (_, second) = host.box_of(20.0, 30.0, 40.0);
+
+    for index in 0..6 {
+        assert_eq!(
+            host.face_name_digest(first, index),
+            host.face_name_digest(second, index),
+            "face {index} of two identical boxes got different names — the naming serial is \
+             session state again, and every plugin's cached geometry is now suspect"
+        );
+    }
+}
+
+/// The other half: names must still DISTINGUISH different geometry, or the test above could be
+/// satisfied by naming everything the same.
+#[test]
+fn different_geometry_is_named_differently() {
+    let host = Host::new();
+    let (_, small) = host.box_of(20.0, 30.0, 40.0);
+    let (_, large) = host.box_of(50.0, 30.0, 40.0);
+
+    let differs = (0..6).any(|i| host.face_name_digest(small, i) != host.face_name_digest(large, i));
+    assert!(differs, "two differently-sized boxes were named identically");
+}
+
+/// Determinism has to hold across SESSIONS, not just within one — that is the case the DDC
+/// actually exercises, since a cached result outlives the session that produced it.
+#[test]
+fn naming_is_identical_across_sessions() {
+    let digests_of = || {
+        let host = Host::new();
+        let (_, b) = host.box_of(20.0, 30.0, 40.0);
+        (0..6).map(|i| host.face_name_digest(b, i)).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        digests_of(),
+        digests_of(),
+        "the same box named differently in two sessions"
+    );
+}
+
+#[test]
+fn an_unknown_sub_shape_kind_is_refused_rather_than_guessed() {
+    let host = Host::new();
+    let (_, b) = host.box_of(10.0, 10.0, 10.0);
+    let (status, _) = host.sub_count(b, 99);
+    assert_eq!(
+        status, CAD_ERR_INVALID_INPUT,
+        "an unknown kind must be refused, not mapped onto whatever enumerator sits there"
+    );
+}
+
+#[test]
+fn an_out_of_range_sub_shape_index_is_refused() {
+    let host = Host::new();
+    let (_, b) = host.box_of(10.0, 10.0, 10.0);
+    let (status, _) = host.sub_at(b, CAD_SUB_FACE, 999);
+    assert_eq!(status, CAD_ERR_INVALID_INPUT);
+}
+
+#[test]
+fn enumerating_a_released_shape_is_refused() {
+    let host = Host::new();
+    let (_, b) = host.box_of(10.0, 10.0, 10.0);
+    (host.h().shape_release.expect("release is offered"))(host.ctx(), b);
+
+    let (status, _) = host.sub_count(b, CAD_SUB_FACE);
+    assert_eq!(status, CAD_ERR_BAD_HANDLE);
 }

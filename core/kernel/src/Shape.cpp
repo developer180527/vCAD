@@ -1,5 +1,7 @@
 #include "cad/kernel/internal/Occt.h"
 
+#include <TopTools_MapOfShape.hxx>
+
 #include "cad/kernel/Guard.h"
 
 #include <BRepCheck_Analyzer.hxx>
@@ -161,5 +163,23 @@ Operation::Operation(Operation&&) noexcept = default;
 Operation& Operation::operator=(Operation&&) noexcept = default;
 
 Shape Operation::shape() const { return wrap(impl_->result); }
+
+std::vector<Shape> subShapes(const Shape& shape, SubShape kind) {
+    std::vector<Shape> out;
+    if (shape.isNull()) return out;
+
+    TopAbs_ShapeEnum wanted = TopAbs_FACE;
+    switch (kind) {
+        case SubShape::Face:   wanted = TopAbs_FACE;   break;
+        case SubShape::Edge:   wanted = TopAbs_EDGE;   break;
+        case SubShape::Vertex: wanted = TopAbs_VERTEX; break;
+    }
+
+    TopTools_MapOfShape seen;
+    for (TopExp_Explorer it(occt(shape), wanted); it.More(); it.Next()) {
+        if (seen.Add(it.Current())) out.push_back(wrap(it.Current()));
+    }
+    return out;
+}
 
 }  // namespace cad::kernel

@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 12
+#define CAD_ABI_VERSION_MINOR 13
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -323,6 +323,7 @@ struct CadHost {
                                  CadShape* out_sub);
     CadStatus (*element_name_of)(void* ctx, CadShape s, CadShape sub, CadElementId* out);
 
+
     /* document */
     CadStatus (*txn_begin)(void* ctx, CadDocument doc, const char* label, CadTransaction* out);
     CadStatus (*txn_commit)(void* ctx, CadTransaction t);
@@ -334,7 +335,36 @@ struct CadHost {
                                   const CadParamDesc* params, uint32_t param_count);
     CadStatus (*register_command)(void* ctx, const CadCommandDesc* desc);
     CadStatus (*register_format)(void* ctx, const CadFormatDesc* desc);
+
+    /* --- appended in 1.13 ---------------------------------------------------------------
+     *
+     * AT THE END, and everything after this must be too. A plugin compiled against 1.12 computes
+     * every earlier member's offset from the layout it saw; inserting a member anywhere above
+     * shifts all of them and silently calls the wrong function pointer. Growth goes on the end,
+     * and `struct_size` is how a plugin tells which of these it may read. */
+
+    /* Sub-shape enumeration: how a plugin obtains a face to name in the first place.
+     *
+     * Count-then-index, matching every other list in this ABI, so neither side allocates or frees
+     * an array. `kind` is one of CAD_SUB_*.
+     *
+     * The ORDER is stable for a given shape but carries no meaning — it is the handle you name
+     * through element_name_of that is durable, never the index. A plugin storing "face 3" across
+     * a rebuild has reintroduced the problem this whole naming system exists to remove.
+     *
+     * Each returned handle is a new shape the caller must release. */
+    CadStatus (*shape_sub_count)(void* ctx, CadShape s, uint32_t kind, uint32_t* out);
+    CadStatus (*shape_sub_at)(void* ctx, CadShape s, uint32_t kind, uint32_t index,
+                              CadShape* out);
 };
+
+/* Sub-shape kinds for shape_sub_count / shape_sub_at.
+ *
+ * EXPLICIT numeric values, like every other constant that can reach a document. These end up in
+ * plugin source that outlives this header, so a reordering must never silently change meaning. */
+#define CAD_SUB_FACE   1u
+#define CAD_SUB_EDGE   2u
+#define CAD_SUB_VERTEX 3u
 
 /* --- plugin interface ---------------------------------------------------------------- */
 typedef struct {
