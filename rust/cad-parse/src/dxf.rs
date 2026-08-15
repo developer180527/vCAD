@@ -182,22 +182,47 @@ impl<'a> Records<'a> {
     /// A code with no value is [`Error::Truncated`] rather than a silent stop: it is precisely the
     /// shape that segfaulted the C parser, and treating it as a normal ending would mean the two
     /// parsers disagree about whether a truncated file is acceptable.
-    fn next(&mut self) -> Result<Option<(i64, &'a [u8])>, Error> {
+    fn next(&mut self) -> Result<Next<'a>, Error> {
         loop {
             let Some(code_line) = self.line()? else {
-                return Ok(None);
+                return Ok(Next::End);
             };
             if code_line.is_empty() {
                 continue;
             }
-            let text = std::str::from_utf8(code_line).map_err(|_| Error::NotDxf)?;
-            let code: i64 = text.trim().parse().map_err(|_| Error::NotDxf)?;
+            let Ok(text) = std::str::from_utf8(code_line) else {
+                return Ok(Next::Corrupt);
+            };
+            let Ok(code) = text.trim().parse::<i64>() else {
+                return Ok(Next::Corrupt);
+            };
             let Some(value) = self.line()? else {
                 return Err(Error::Truncated);
             };
-            return Ok(Some((code, value)));
+            return Ok(Next::Record(code, value));
         }
     }
+}
+
+/// What reading one record produced.
+///
+/// `Corrupt` is separate from `End` and from an error, and the distinction was found by
+/// differential testing rather than by reasoning. A group code that is not an integer means one of
+/// two entirely different things depending on WHERE it is. At the very first record it means the
+/// file is not ASCII DXF at all -- binary DXF, or a DWG renamed -- which is worth refusing with
+/// that message. Anywhere after that it means a DXF that went bad part-way through, and refusing
+/// the whole file tells a user to "convert it to ASCII DXF" about a file that already is one,
+/// while throwing away everything read so far.
+///
+/// The first version of this parser did not make the distinction and reported every case as the
+/// first. It cost 93 of 600 mutated files that dime read without complaint, which is what the
+/// comparison against dime surfaced -- no test written alongside this parser would have, because
+/// the author who conflated the two cases writes the test that agrees.
+enum Next<'a> {
+    Record(i64, &'a [u8]),
+    /// A group code that is not an integer. The file is unreadable FROM HERE.
+    Corrupt,
+    End,
 }
 
 fn text_of(bytes: &[u8]) -> String {
@@ -246,9 +271,11 @@ pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
     // even a comment is code 999 — so anything else is a different format wearing a .dxf name.
     // Checked structurally rather than by sniffing for a binary header, because the header is the
     // symptom and this is the property.
-    let first = records.next()?;
-    let Some((code, value)) = first else {
-        return Ok(document);
+    let (code, value) = match records.next()? {
+        Next::Record(code, value) => (code, value),
+        // Only HERE does a non-integer group code mean "not a DXF". See `Next`.
+        Next::Corrupt => return Err(Error::NotDxf),
+        Next::End => return Ok(document),
     };
 
     let mut in_entities = false;
@@ -259,6 +286,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
     let mut open_polyline: Option<Pending> = None;
 
     let mut record = Some((code, value));
+    // Set when reading stops early on a corrupt group code, so the entity that was mid-read is
+    // counted as lost rather than silently dropped.
+    let mut truncated_by_corruption = false;
     while let Some((code, value)) = record {
         // A section name is only the record immediately after `0 SECTION`. Reset before the match
         // and set again inside it, so the window is exactly one record wide by construction rather
@@ -365,7 +395,18 @@ pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
         if document.entities.len() > MAX_ENTITIES {
             return Err(Error::TooLarge);
         }
-        record = records.next()?;
+        record = match records.next()? {
+            Next::Record(code, value) => Some((code, value)),
+            Next::End => None,
+            Next::Corrupt => {
+                // Stop here and keep everything already read. The alternative -- skipping the bad
+                // line and carrying on -- means guessing where the record boundary is, and a
+                // wrong guess reads every following value as a code, which silently produces
+                // plausible geometry that is not in the file.
+                truncated_by_corruption = true;
+                None
+            }
+        };
     }
 
     if let Some(previous) = pending.take() {
@@ -373,6 +414,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document, Error> {
     }
     if let Some(poly) = open_polyline.take() {
         emit_polyline(poly, &mut document);
+    }
+    if truncated_by_corruption {
+        document.malformed += 1;
     }
 
     Ok(document)

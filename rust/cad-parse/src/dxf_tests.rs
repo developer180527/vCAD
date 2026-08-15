@@ -270,6 +270,36 @@ fn geometry_outside_the_entities_section_is_ignored() {
 }
 
 #[test]
+fn a_corrupt_group_code_part_way_through_keeps_what_was_already_read() {
+    // Found by differential testing against dime, not by reasoning. The first version of this
+    // parser applied the "a group code must be an integer" check to EVERY record, so one bad byte
+    // anywhere refused the whole file with "that file is not an ASCII DXF" -- telling the user to
+    // convert a file that already is one, and throwing away everything before the damage. dime
+    // read 93 of 600 mutated files that this rejected.
+    //
+    // Where the bad code appears decides what it means: at the very first record the file is not
+    // DXF; after that, it is a DXF that goes bad part-way through.
+    let mut bytes = entities(&[
+        ("0", "LINE"),
+        ("10", "1"),
+        ("20", "2"),
+        ("11", "3"),
+        ("21", "4"),
+    ]);
+    // Splice a non-numeric group code in before the closing records.
+    let at = bytes.len() - "0\nENDSEC\n0\nEOF\n".len();
+    bytes.splice(at..at, b"NOTACODE\nvalue\n".iter().copied());
+
+    let doc = parse(&bytes).expect("a DXF that goes bad late is still a DXF");
+    assert_eq!(
+        doc.entities.len(),
+        1,
+        "the line read before the damage must survive"
+    );
+    assert_eq!(doc.malformed, 1, "and the loss must be counted, not silent");
+}
+
+#[test]
 fn a_file_that_is_not_ascii_dxf_is_refused_immediately() {
     // Binary DXF starts with "AutoCAD Binary DXF\r\n\x1a\0", which is not a group code. The
     // structural check catches it, and equally catches a DWG or a JPEG with the wrong extension,

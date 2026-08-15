@@ -25,6 +25,16 @@ if(TARGET cad::parse)
   target_sources(cad_tests PRIVATE acceptance/rust_boundary.cpp)
   target_link_libraries(cad_tests PRIVATE cad::parse)
 endif()
+
+# The DXF differential compiles unconditionally -- it SKIPS at runtime when the build has no Rust
+# reader, rather than vanishing from the suite. A test that disappears when a dependency is absent
+# reports the same green as one that ran.
+target_sources(cad_tests PRIVATE acceptance/dxf_differential.cpp)
+target_link_libraries(cad_tests PRIVATE cad::sketch)
+# catch_discover_tests runs the suite from the build tree, so a relative path to a fixture finds
+# nothing. Baked in rather than copied beside the binary: the fixture is also the Rust fuzzer's
+# seed corpus, and two copies of a corpus drift.
+target_compile_definitions(cad_tests PRIVATE CAD_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 cad_set_warnings(cad_tests)
 
 catch_discover_tests(cad_tests)
@@ -38,3 +48,7 @@ if(TARGET cad::parse)
   # geometry.
   add_test(NAME rust_boundary COMMAND cad_tests "[rust]")
 endif()
+
+# Named separately for the same reason: "the two DXF readers disagree" is a specific and alarming
+# finding, and it should say so in the failure list.
+add_test(NAME dxf_differential COMMAND cad_tests "[differential]")

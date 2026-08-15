@@ -163,4 +163,32 @@ kernel::Result<void> exportDxf(const Sketch&, const std::filesystem::path&,
                                               const DxfImportOptions& options = {},
                                               DxfImportReport* report = nullptr);
 
+/// Which reader turns the bytes into entities.
+///
+/// Exists for ONE caller: the differential test that reads the same file both ways and compares.
+/// Two independently written parsers agreeing on what a file means is a far stronger statement
+/// than either passing its own tests, and it is not a statement that can be made from outside this
+/// header, because only one reader is reachable through `importDxf`.
+///
+/// Deliberately NOT surfaced through the plugin ABI. That ABI is a permanent promise to third
+/// parties, and "this application currently has two DXF readers" is a transitional fact that ends
+/// when dime is removed. A promise outlives the thing it describes.
+enum class DxfReader {
+    Default,   ///< whatever the build selected: Rust when present, dime otherwise
+    Rust,      ///< fails when the build has no Rust library
+    Dime,
+};
+
+/// Reads with a SPECIFIC reader. Everything downstream of the bytes -- projection, scaling,
+/// construction layers, degenerate rules, the report -- is the same code either way, which is what
+/// makes the comparison a comparison of READERS rather than of two whole importers.
+[[nodiscard]] kernel::Result<Sketch> importDxfWith(DxfReader reader,
+                                                  const std::filesystem::path& path,
+                                                  const DxfImportOptions& options = {},
+                                                  DxfImportReport* report = nullptr);
+
+/// True when this build has the Rust reader. A differential test must SKIP rather than fail on a
+/// build without it -- a contributor with no cargo toolchain should still get a green suite.
+[[nodiscard]] bool hasRustDxfReader() noexcept;
+
 }  // namespace cad::io

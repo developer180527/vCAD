@@ -15,12 +15,13 @@ half-wired. You can start clean.
 | C++ tests (`ctest --test-dir build`) | green |
 | Rust tests (`cd tests-rs && cargo test --workspace`) | green; `plugin_host.rs` 29, plus `sequences.rs`, `concurrency.rs`, `dxf_fuzz.rs` |
 | Parser tests (`cd rust/cad-parse && cargo test`) | green |
-| DXF differential (`-DCAD_USE_RUST_DXF=OFF`, rebuild, rerun) | identical output |
+| DXF differential (`ctest -R dxf_differential`) | green; 0 value disagreements in 600 mutations |
+| DXF fallback (`-DCAD_USE_RUST_DXF=OFF`, rebuild, rerun) | green; differential skips |
 | Layering (`cmake --build build`) | Layering OK |
 | Qt shell (`cmake --build build-qt --target vcad`) | builds clean |
 | ABI golden snapshot | no drift, regenerated for 1.16 |
 
-**153 tests in `tests-rs`, 25 in `rust/cad-parse`, 31 C++ tests, zero failures** at the time of
+**153 tests in `tests-rs`, 26 in `rust/cad-parse`, 35 C++ tests, zero failures** at the time of
 writing.
 
 Two build directories, on purpose: `build` (core, tests, spikes) and `build-qt` (renderer + Qt
@@ -83,6 +84,36 @@ with no cargo — exactly the machine that needs it.
 argument applies. It also stays the independent implementation that makes an export/import round
 trip a real check rather than the same code run twice.
 
+### What differential testing found, and why it is worth keeping
+
+Running the same mutated corpus through both readers and comparing is a different kind of check
+from either parser's own tests. A test asserts what its author believed; where the author misread
+the format, the test agrees with the mistake. The other parser did not make the same mistake.
+
+Two bugs on the first run, neither findable from inside the Rust suite:
+
+1. **The Rust reader rejected any file with one corrupt group code anywhere** as "that file is not
+   an ASCII DXF" — telling a user to convert a file that already is one, and discarding everything
+   read before the damage. dime read 93 of 600 such files without complaint. The check belonged
+   only at the FIRST record; after that a bad code means a DXF that goes bad part-way through.
+2. **`cmake/CadRust.cmake` was not watching the parser's own sources.** `DEPENDS` named
+   `src/lib.rs`, correct when that was the only file and silently wrong once the crate grew. Edits
+   to the parser did not rebuild the library, so the C++ side linked a stale archive — and the
+   differential test dutifully compared the new dime path against an old Rust one. Now globbed
+   with `CONFIGURE_DEPENDS`.
+
+The second is the more alarming one: it made a *measurement* lie, and the only reason it surfaced
+is that the numbers did not move when they obviously should have.
+
+The assertions are shaped around what a disagreement means. Two readers reading the same entities
+and disagreeing about the NUMBERS must never happen and is checked at zero. Reading a *different
+set* of entities is a documented policy difference — dime's `atof` salvages a numeric prefix so
+`2NaN` becomes a radius of 2, the Rust reader refuses the token — and is bounded and counted. The
+bounds are recorded against a measured run at the bottom of the file rather than guessed.
+
+Run it both ways after touching either reader: `-DCAD_USE_RUST_DXF=OFF` makes the whole suite
+exercise dime, and the differential skips rather than failing on a build with no Rust toolchain.
+
 ### Still open here
 
 - **Windows and Linux CI have not run any of this.** The Rust integration was only ever exercised
@@ -90,9 +121,8 @@ trip a real check rather than the same code run twice.
   the three most likely to break.
 - **The fuzz corpus is thin** — two seeds, both ours. See the fixture notes below; a fuzzer
   starting from thin material stays thin.
-- **No differential fuzzing.** The two readers are compared on one hand-built file. Running the
-  same mutated corpus through both and comparing reports would be a much stronger check, and the
-  `RawEntity` seam is what makes it cheap to write.
+- ~~No differential fuzzing.~~ **Done** — `tests/acceptance/dxf_differential.cpp`, ctest
+  `dxf_differential`. It found two real bugs on its first run; see below.
 - **INSERT / BLOCKS are not expanded** by either reader — counted as unsupported so the user is
   told, rather than silently handed an empty sketch. Real drawings use blocks heavily, so this is
   the most likely next complaint from an actual user.

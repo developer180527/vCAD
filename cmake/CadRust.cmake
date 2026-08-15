@@ -74,14 +74,30 @@ function(cad_add_rust_library)
   #   this costs nothing today and turns "we do not fetch at build time" from a policy into a
   #   build failure the moment someone adds a dependency without vendoring it.
   # --locked: the lockfile is authoritative; cargo may not quietly update it mid-build.
+  file(GLOB_RECURSE _crate_sources CONFIGURE_DEPENDS "${_crate_dir}/src/*.rs")
+  if(NOT _crate_sources)
+    message(FATAL_ERROR "cad_add_rust_library: no .rs sources under ${_crate_dir}/src")
+  endif()
+
   add_custom_command(
     OUTPUT "${_lib_path}"
     COMMAND ${CARGO_EXECUTABLE} build ${_cargo_profile_flag} --offline --locked
             --target-dir "${_target_dir}"
     WORKING_DIRECTORY "${_crate_dir}"
-    # Depended on by FILE, so editing the source rebuilds. Listing the crate directory would not:
-    # CMake does not watch directories for content changes.
-    DEPENDS "${_crate_dir}/src/lib.rs" "${_crate_dir}/Cargo.toml" "${_crate_dir}/Cargo.lock"
+    # Depended on by FILE, so editing the source rebuilds -- CMake does not watch directories for
+    # content changes, so naming the crate directory would not work.
+    #
+    # GLOBBED, not listed. The first version named src/lib.rs explicitly, which was correct while
+    # that was the only source and silently wrong the moment the crate grew a second file: edits to
+    # the DXF parser did not rebuild the library, and the C++ side went on linking a stale archive.
+    # That is a bad failure anywhere and a dangerous one here, because the test comparing the two
+    # DXF readers then compares the NEW dime path against an OLD Rust one and reports the
+    # disagreements of a version nobody is running.
+    #
+    # CONFIGURE_DEPENDS makes the glob re-run at build time, so a newly added source is picked up
+    # without a manual reconfigure. It costs a directory scan per build, which against silently
+    # linking stale code is not a close call.
+    DEPENDS ${_crate_sources} "${_crate_dir}/Cargo.toml" "${_crate_dir}/Cargo.lock"
     COMMENT "Building cad-parse (Rust, ${_cargo_profile_dir}, offline)"
     VERBATIM)
   add_custom_target(cad_parse_build DEPENDS "${_lib_path}")

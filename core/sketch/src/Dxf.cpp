@@ -272,6 +272,8 @@ void buildSketch(const RawDocument& raw, Context& ctx) {
     return {static_cast<double>(v.x), static_cast<double>(v.y), static_cast<double>(v.z)};
 }
 
+kernel::Result<RawDocument> readWithDime(const std::filesystem::path& path);
+
 [[maybe_unused]] bool visit(const dimeState* /*state*/, dimeEntity* entity,
                             void* userdata) {
     auto& raw = *static_cast<RawDocument*>(userdata);
@@ -358,6 +360,36 @@ void buildSketch(const RawDocument& raw, Context& ctx) {
         ++raw.unsupported[name];
     }
     return true;   // keep traversing
+}
+
+kernel::Result<RawDocument> readWithDime(const std::filesystem::path& path) {
+    dimeInput input;
+    if (!input.setFile(path.string().c_str())) {
+        CAD_WARN(log::Category::Io) << "dxf: could not open " << path.string();
+        return Error{ErrorCode::InvalidInput, "That DXF file could not be opened.", path.string()};
+    }
+
+    dimeModel model;
+    if (!model.read(&input)) {
+        // dime has already printed its own parse diagnostic to stderr by this point. Ours records
+        // WHICH file, which its message does not, and puts both in the same log.
+        CAD_WARN(log::Category::Io) << "dxf: dime could not parse " << path.string();
+        // dime returns false for a malformed file, and gives back nothing usable rather than a
+        // partial model -- so this path cannot do the partial import the Rust reader does. That
+        // asymmetry is the largest source of disagreement between the two, and it is dime's
+        // limitation rather than a policy choice; see importDxf's note on partial imports.
+        return Error{ErrorCode::InvalidInput,
+                     "That file could not be read as DXF. It may be corrupt, or a DWG renamed to "
+                     ".dxf — DWG is not supported; convert it to DXF first.",
+                     path.string()};
+    }
+
+    RawDocument raw;
+    model.traverseEntities(visit, &raw);
+    CAD_DEBUG(log::Category::Io)
+        << "dxf: dime read " << path.filename().string() << " -- " << raw.entities.size()
+        << " entities, " << raw.unsupported.size() << " unsupported types";
+    return raw;
 }
 
 }  // namespace
@@ -646,8 +678,21 @@ kernel::Result<void> dxfLinesArePaired(const std::filesystem::path& path) {
     return {};
 }
 
+bool hasRustDxfReader() noexcept {
+#if CAD_HAVE_RUST_PARSE
+    return true;
+#else
+    return false;
+#endif
+}
+
 kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
                                 const DxfImportOptions& options, DxfImportReport* report) {
+    return importDxfWith(DxfReader::Default, path, options, report);
+}
+
+kernel::Result<Sketch> importDxfWith(DxfReader reader, const std::filesystem::path& path,
+                                     const DxfImportOptions& options, DxfImportReport* report) {
     if (!std::filesystem::exists(path)) {
         return Error{ErrorCode::InvalidInput, "That file does not exist.", path.string()};
     }
@@ -681,41 +726,38 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
     }
 
     RawDocument raw;
+    switch (reader) {
+        case DxfReader::Rust: {
 #if CAD_HAVE_RUST_PARSE
-    // The Rust reader when the build has one. The guards above still run in front of it: they cost
-    // one pass over a file that is about to be read anyway, and they are the difference between
-    // "this build is safe" and "this build is safe as long as CAD_REQUIRE_RUST was on", which is
-    // not a property anyone can check from a crash report.
-    {
-        auto parsed = readWithRust(path);
-        if (!parsed) return parsed.error();
-        raw = std::move(parsed.value());
-    }
+            auto parsed = readWithRust(path);
+            if (!parsed) return parsed.error();
+            raw = std::move(parsed.value());
+            break;
 #else
-    dimeInput input;
-    if (!input.setFile(path.string().c_str())) {
-        CAD_WARN(log::Category::Io) << "dxf: could not open " << path.string();
-        return Error{ErrorCode::InvalidInput, "That DXF file could not be opened.", path.string()};
-    }
-
-    dimeModel model;
-    if (!model.read(&input)) {
-        // dime has already printed its own parse diagnostic to stderr by this point. Ours records
-        // WHICH file, which its message does not, and puts both in the same log.
-        CAD_WARN(log::Category::Io) << "dxf: dime could not parse " << path.string();
-        // dime returns false for a malformed file. Deliberately not partial: half a profile looks
-        // like a complete one and there is no way for the user to tell which half is missing.
-        return Error{ErrorCode::InvalidInput,
-                     "That file could not be read as DXF. It may be corrupt, or a DWG renamed to "
-                     ".dxf — DWG is not supported; convert it to DXF first.",
-                     path.string()};
-    }
-
-    model.traverseEntities(visit, &raw);
-    CAD_DEBUG(log::Category::Io)
-        << "dxf: dime read " << path.filename().string() << " -- " << raw.entities.size()
-        << " entities, " << raw.unsupported.size() << " unsupported types";
+            // Explicit rather than a silent fall back to dime. A differential test that asked for
+            // the Rust reader and quietly got dime would compare dime with dime and report perfect
+            // agreement, which is the most misleading result this code could produce.
+            return Error{ErrorCode::InvalidInput,
+                         "This build has no Rust DXF reader.",
+                         "configure with a cargo toolchain, or CAD_USE_RUST_DXF=ON"};
 #endif
+        }
+        case DxfReader::Dime:
+        case DxfReader::Default: {
+#if CAD_HAVE_RUST_PARSE
+            if (reader == DxfReader::Default) {
+                auto parsed = readWithRust(path);
+                if (!parsed) return parsed.error();
+                raw = std::move(parsed.value());
+                break;
+            }
+#endif
+            auto parsed = readWithDime(path);
+            if (!parsed) return parsed.error();
+            raw = std::move(parsed.value());
+            break;
+        }
+    }
 
     Context ctx;
     Sketch sketch(options.plane);
