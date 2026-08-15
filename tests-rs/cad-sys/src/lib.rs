@@ -10,7 +10,7 @@
 
 #![allow(non_camel_case_types)]
 
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_void};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
 pub const CAD_ABI_VERSION_MINOR: u32 = 17;
@@ -368,6 +368,24 @@ extern "C" {
         out: *mut CadMeshInfo,
     ) -> CadStatus;
     pub fn cad_mesh_element_name(s: CadSession, id: CadObject, slot: u32) -> *const c_char;
+
+    /// The host vtable a plugin is handed, or null when the session cannot supply one.
+    ///
+    /// `*const c_void` rather than a modelled `CadHost`, deliberately. The struct is append-only
+    /// and negotiated through `struct_size`, so a caller declares only the PREFIX it uses and
+    /// checks that size before touching a pointer -- which is what a real plugin does and what
+    /// `plugin_host.rs` exercises. Modelling the whole thing here would freeze a snapshot of it
+    /// that drifts, and the drift would be silent.
+    pub fn cad_plugin_host(s: CadSession) -> *const c_void;
+
+    /// Whether the host accepts a plugin declaring this ABI major and minimum host minor.
+    /// Non-zero for yes; on refusal `out_reason` receives a host-owned sentence naming what is
+    /// required. See ADR 0011.
+    pub fn cad_abi_accepts(
+        plugin_abi_major: u32,
+        plugin_min_host_minor: u32,
+        out_reason: *mut *const c_char,
+    ) -> c_int;
     pub fn cad_mesh_cache_stats(s: CadSession, hits: *mut u64, misses: *mut u64) -> CadStatus;
     pub fn cad_mesh_cache_reset_stats(s: CadSession) -> CadStatus;
 

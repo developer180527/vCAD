@@ -116,35 +116,21 @@ fn element_names_do_not_depend_on_the_thread() {
 // Raw FFI, because `Session` is deliberately not `Sync` and this is exactly the promise the C
 // layer makes on its own: a per-session mutex serialising every export.
 
+/// Re-export of the raw C surface, so this file's `raw::` call sites stay as they read.
+///
+/// It used to be a hand-written `extern "C"` block with its own `RecomputeReport` -- and that
+/// struct had FIVE u64 fields while the C one has had six since ABI 1.15, when `needs_plugin` was
+/// appended. `cad_recompute` therefore wrote 48 bytes into a 40-byte stack local on every call, on
+/// every platform, for as long as that field has existed. Nothing crashed, because the eight bytes
+/// landed on adjacent stack, and nothing could have caught it: the sanitizer job builds the C++
+/// suite, not this one.
+///
+/// Found by `abi_declarations.rs`, which exists to forbid exactly this shape.
 mod raw {
-    use std::os::raw::c_char;
-    pub type CadSession = u64;
-    pub type CadObject = u64;
-    pub type CadStatus = i32;
-
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct RecomputeReport {
-        pub computed: u64,
-        pub cached: u64,
-        pub skipped: u64,
-        pub failed: u64,
-        pub blocked: u64,
-    }
-
-    extern "C" {
-        pub fn cad_session_create() -> CadSession;
-        pub fn cad_session_release(s: CadSession);
-        pub fn cad_object_add(s: CadSession, ty: *const c_char, out: *mut CadObject) -> CadStatus;
-        pub fn cad_object_set_length(
-            s: CadSession,
-            o: CadObject,
-            prop: *const c_char,
-            mm: f64,
-        ) -> CadStatus;
-        pub fn cad_object_count(s: CadSession, out: *mut u64) -> CadStatus;
-        pub fn cad_recompute(s: CadSession, out: *mut RecomputeReport) -> CadStatus;
-    }
+    pub use cad::sys::{
+        cad_object_add, cad_object_count, cad_object_set_length, cad_recompute, cad_session_create,
+        cad_session_release, CadObject, CadRecomputeReport as RecomputeReport, CadSession,
+    };
 }
 
 /// A session handle is a plain integer, and the C side owns the locking. Wrapping it so it can
@@ -298,3 +284,4 @@ fn sessions_sharing_a_disk_cache_agree_on_the_result() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+

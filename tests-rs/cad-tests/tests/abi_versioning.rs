@@ -8,13 +8,7 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-extern "C" {
-    fn cad_abi_accepts(
-        plugin_abi_major: u32,
-        plugin_min_host_minor: u32,
-        out_reason: *mut *const c_char,
-    ) -> i32;
-}
+use cad::sys::cad_abi_accepts;
 
 /// (accepted, reason). The reason is empty when accepted.
 fn accepts(major: u32, min_host_minor: u32) -> (bool, String) {

@@ -130,12 +130,6 @@ impl Default for CadElementId {
     }
 }
 
-extern "C" {
-    fn cad_session_create() -> u64;
-    fn cad_session_release(session: u64);
-    fn cad_plugin_host(session: u64) -> *const CadHostPrefix;
-}
-
 struct Host {
     session: u64,
     host: *const CadHostPrefix,
@@ -145,7 +139,11 @@ impl Host {
     fn new() -> Self {
         let session = unsafe { cad_session_create() };
         assert_ne!(session, 0, "session must be created");
-        let host = unsafe { cad_plugin_host(session) };
+        // cad-sys returns *const c_void and this cast is where the PREFIX contract is taken up:
+        // CadHostPrefix declares only the leading members these tests use, which is sound because
+        // the struct is append-only, and `struct_size` is verified below before any member past
+        // the header is touched. Exactly what a real plugin does.
+        let host = unsafe { cad_plugin_host(session) } as *const CadHostPrefix;
         assert!(
             !host.is_null(),
             "a session must be able to produce a host vtable"
@@ -596,55 +594,24 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 pub type CadPathSink = extern "C" fn(*mut c_void, *const c_char, usize);
 
-extern "C" {
-    fn cad_object_add(session: u64, ty: *const c_char, out: *mut u64) -> CadStatus;
-    fn cad_object_set_real(session: u64, object: u64, prop: *const c_char, v: f64) -> CadStatus;
-    fn cad_recompute(session: u64, out: *mut CadRecomputeReport) -> CadStatus;
-    fn cad_object_is_valid_shape(session: u64, object: u64, out: *mut i32) -> CadStatus;
-    fn cad_object_face_count(session: u64, object: u64, out: *mut u64) -> CadStatus;
-    fn cad_object_error(session: u64, object: u64) -> *const c_char;
-    // `*const c_char`, NOT CadStr. It was declared as CadStr here, which is undefined behaviour:
-    // the callee returns a single pointer in the first return register, and a two-word struct is
-    // returned in the first TWO. So `.data` picked up the real pointer and `.len` picked up
-    // whatever happened to be in the second register.
-    //
-    // That garbage was non-zero on x86-64 and on macOS arm64, so `len > 0` passed on four
-    // platforms for four years' worth of runs; it was zero on Linux arm64 with gcc, which is the
-    // only reason anybody found out. cad-sys declares this correctly -- this block is a SECOND,
-    // hand-written set of externs, which is how the two drifted.
-    fn cad_mesh_element_name(session: u64, object: u64, slot: u32) -> *const c_char;
-
-    fn cad_object_tessellate(
-        session: u64,
-        object: u64,
-        deflection: f64,
-        angular: f64,
-        out: *mut CadMeshInfo,
-    ) -> CadStatus;
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct CadMeshInfo {
-    triangles: u64,
-    vertices: u64,
-    edge_polylines: u64,
-    edge_points: u64,
-    elements: u64,
-    bounds_min: [f32; 3],
-    bounds_max: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct CadRecomputeReport {
-    computed: u64,
-    cached: u64,
-    skipped: u64,
-    failed: u64,
-    blocked: u64,
-    needs_plugin: u64,
-}
+// NO hand-written extern block. Every `cad_*` declaration comes from cad-sys.
+//
+// There used to be one here, and it declared cad_mesh_element_name as returning CadStr when the
+// C function returns const char*. That is undefined behaviour, it passed on four platforms
+// because the garbage in the second return register happened to be non-zero, and Linux arm64 with
+// gcc was the first machine to read a zero there. cad-sys had it right the whole time.
+//
+// A second set of declarations for the same ABI cannot be kept correct by care, because drift in
+// an FFI signature is not a compile error anywhere -- it is undefined behaviour at the call. The
+// only fix that holds is to have one set. `no_duplicate_abi_declarations` in this crate fails the
+// build if another one appears.
+use cad::sys::{
+    cad_document_digest, cad_document_open, cad_document_save, cad_mesh_element_name,
+    cad_object_add, cad_object_count, cad_object_error, cad_object_face_count,
+    cad_object_is_valid_shape, cad_object_set_object, cad_object_set_real, cad_object_state,
+    cad_object_tessellate, cad_plugin_host, cad_recompute, cad_redo, cad_session_create,
+    cad_session_release, cad_undo, CadMeshInfo, CadRecomputeReport,
+};
 
 /// The fake plugin's own state, reached through `plugin_ctx`.
 ///
@@ -1107,14 +1074,6 @@ fn a_stale_compute_handle_is_refused_rather_than_dangling() {
 // operations a user performs on a document that contains one. That is a different set of code
 // paths — history, serialisation, invalidation — none of which knew about plugin types until now.
 
-extern "C" {
-    fn cad_undo(session: u64, out: *mut i32) -> CadStatus;
-    fn cad_redo(session: u64, out: *mut i32) -> CadStatus;
-    fn cad_document_digest(session: u64, out: *mut u64) -> CadStatus;
-    fn cad_object_count(session: u64, out: *mut u64) -> CadStatus;
-    fn cad_document_save(session: u64, path: *const c_char) -> CadStatus;
-}
-
 impl Plugin {
     fn digest(&self) -> u64 {
         let mut d = 0u64;
@@ -1231,11 +1190,6 @@ fn a_plugin_feature_round_trips_through_a_saved_file() {
     );
 
     let _ = std::fs::remove_file(&path);
-}
-
-extern "C" {
-    fn cad_document_open(session: u64, path: *const c_char) -> CadStatus;
-    fn cad_object_state(session: u64, object: u64, out: *mut i32) -> CadStatus;
 }
 
 // ── §4A: a document must outlive the plugin that made it ────────────────────────────────
@@ -1401,15 +1355,6 @@ fn a_feature_downstream_of_a_missing_plugin_is_blocked_with_a_reason() {
     );
 
     let _ = std::fs::remove_file(&path);
-}
-
-extern "C" {
-    fn cad_object_set_object(
-        session: u64,
-        object: u64,
-        prop: *const c_char,
-        target: u64,
-    ) -> CadStatus;
 }
 
 // --- external inputs -------------------------------------------------------------------------

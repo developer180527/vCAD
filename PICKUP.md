@@ -266,6 +266,34 @@ CI now covers five of those. What is worth knowing before extending it further:
   rejection, on any platform. That is a feature rather than a port, and it belongs in `proshell`:
   pressure and tilt are a professional-application capability, not a CAD one.
 
+## FFI declarations: one place, enforced
+
+`cad-sys` is the only crate allowed to declare `extern "C" fn cad_*`. `abi_declarations.rs` fails
+the build if a second one appears, and `cargo fmt`-clean duplication is exactly how the two bugs
+below survived.
+
+Drift between two declarations of the same C function is **not a compile error in any language
+involved** — Rust believes the `extern` block, C exports what it exports, and the linker matches on
+the symbol name alone. It is undefined behaviour at the call, on some platforms, sometimes. So the
+rule cannot be "be careful"; it has to be "there is only one place", enforced by something that
+fails.
+
+Two real bugs, both found this way:
+
+- `cad_mesh_element_name` declared as returning `CadStr` where C returns `const char*`. A pointer
+  comes back in one register, a two-word struct in two — so `.len` read whatever was in the second.
+  Non-zero on four platforms, zero on Linux arm64/gcc. **Underneath it the test never tessellated**,
+  so the string was empty everywhere, always: a wrong FFI signature was holding a broken assertion
+  upright.
+- `concurrency.rs` declared `RecomputeReport` with **five** `u64` where C has had **six** since ABI
+  1.15 (`needs_plugin`). `cad_recompute` wrote 48 bytes into a 40-byte stack local on every call, on
+  every platform, for as long as that field has existed. Nothing crashed because the eight bytes
+  landed on adjacent stack, and nothing could have caught it — the sanitizer job builds the C++
+  suite, not the Rust one.
+
+**That second point is the standing gap**: there is no ASan/UBSan build of the Rust test suite, and
+it is the half that does the FFI. Worth closing.
+
 ## Known test gaps, in priority order
 
 Everything here is a gap someone identified and nobody has closed. Ordered by what a professional
