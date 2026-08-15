@@ -77,6 +77,12 @@ struct Session {
     /// instead of a dangling reference into a frame that has returned.
     struct ActiveCompute {
         const cad::recompute::ComputeContext* ctx = nullptr;
+
+        /// The object whose parameters are readable. Set from `ctx->object` during a compute, and
+        /// set ALONE during external_inputs -- which runs at cache-key time, when no input has
+        /// been computed and there is no ComputeContext to point at. Splitting it out is what lets
+        /// one set of parameter accessors serve both moments.
+        const cad::document::ObjectData* object = nullptr;
         CadShape output = 0;
         bool hasOutput = false;
         std::string failMessage;
@@ -106,6 +112,7 @@ struct Session {
         std::string type;
         void* pluginCtx = nullptr;
         CadStatus (*compute)(void*, CadComputeCtx) = nullptr;
+        CadStatus (*externalInputs)(void*, CadFeatureCtx, CadPathSink, void*) = nullptr;
         std::uint32_t computeVersion = 1;
     };
     std::vector<std::unique_ptr<RegisteredFeature>> features;
@@ -665,16 +672,50 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
     Session::RegisteredFeature* feature = stored.get();
     s->features.push_back(std::move(stored));
 
+    // Read only if the descriptor is long enough to contain it. A plugin compiled against an
+    // older header has no such member, and reading one would be reading past its end.
+    if (desc->struct_size >= offsetof(CadFeatureDesc, external_inputs)
+                                 + sizeof(desc->external_inputs)) {
+        feature->externalInputs = desc->external_inputs;
+    }
+
     cad::recompute::FeatureType type;
     type.name = feature->type;
     type.version = feature->computeVersion;
+
+    // The step-2 correction, actually connected. Declared but unwired, this silently reintroduced
+    // the Import bug through the plugin path: a plugin would correctly declare the files it reads,
+    // the host would ignore the declaration, and the cache would serve geometry from the old file
+    // contents with nothing to suggest anything was wrong.
+    if (feature->externalInputs != nullptr) {
+        type.externalInputs =
+            [s, feature](const cad::document::ObjectData& object) -> std::vector<std::string> {
+            // A parameters-only context: no ComputeContext exists at cache-key time, because no
+            // input has been computed yet. That timing is the whole reason external_inputs is on
+            // the descriptor rather than callable from inside compute.
+            const CadFeatureCtx handle = s->nextCompute++;
+            s->computes.emplace(handle,
+                                Session::ActiveCompute{nullptr, &object, 0, false, {}, {}, 0});
+
+            std::vector<std::string> paths;
+            const auto sink = [](void* sinkCtx, const char* path, std::size_t len) {
+                if (path == nullptr || len == 0) return;
+                static_cast<std::vector<std::string>*>(sinkCtx)->emplace_back(path, len);
+            };
+            feature->externalInputs(feature->pluginCtx, handle, sink, &paths);
+
+            s->computes.erase(handle);
+            return paths;
+        };
+    }
 
     // The bridge. `s` and `feature` both outlive the registry: the session owns both, and the
     // registry is destroyed with it.
     type.compute = [s, feature](const cad::recompute::ComputeContext& cc)
         -> cad::kernel::Result<cad::recompute::Output> {
         const CadComputeCtx handle = s->nextCompute++;
-        s->computes.emplace(handle, Session::ActiveCompute{&cc, 0, false, {}, {}, 0});
+        s->computes.emplace(handle,
+                            Session::ActiveCompute{&cc, &cc.object, 0, false, {}, {}, 0});
         s->computeStack.push_back(handle);
 
         const CadStatus status = feature->compute(feature->pluginCtx, handle);
@@ -758,7 +799,7 @@ CadStatus hostComputeInputShape(void* ctx, CadComputeCtx cc, std::uint32_t index
 const cad::document::PropertyValue* computeProperty(Session& s, CadComputeCtx cc,
                                                     const char* name, CadStatus& status) {
     Session::ActiveCompute* active = activeCompute(s, cc);
-    if (active == nullptr || active->ctx == nullptr) {
+    if (active == nullptr || active->object == nullptr) {
         s.hostError = "That compute is no longer running.";
         status = CAD_ERR_BAD_HANDLE;
         return nullptr;
@@ -767,7 +808,7 @@ const cad::document::PropertyValue* computeProperty(Session& s, CadComputeCtx cc
         status = CAD_ERR_INVALID_INPUT;
         return nullptr;
     }
-    const auto* value = active->ctx->object.find(name);
+    const auto* value = active->object->find(name);
     if (value == nullptr) {
         // Refused, never defaulted. A plugin reading a parameter that is not there has a bug, and
         // handing back 0.0 would bury it inside geometry where it surfaces as a wrong part.
@@ -838,6 +879,115 @@ CadStatus hostComputeParamText(void* ctx, CadComputeCtx cc, const char* name, Ca
     s->scratch = *text;
     out->data = s->scratch.c_str();
     out->len = s->scratch.size();
+    return CAD_OK;
+}
+
+/// Reads an element name out of a property, shared by the single and list accessors.
+CadStatus elementOut(Session& s, const cad::naming::ElementName& name, CadElementId* out) {
+    s.scratch = name.toString();
+    out->digest = name.digest();
+    out->text = s.scratch.c_str();
+    out->text_len = s.scratch.size();
+    return CAD_OK;
+}
+
+CadStatus hostComputeParamElement(void* ctx, CadComputeCtx cc, const char* name,
+                                  CadElementId* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+    if (const auto* element = std::get_if<cad::naming::ElementName>(value)) {
+        return elementOut(*s, *element, out);
+    }
+    s->hostError = "That parameter is not an element reference.";
+    return CAD_ERR_INVALID_INPUT;
+}
+
+CadStatus hostComputeParamCount(void* ctx, CadComputeCtx cc, const char* name,
+                                std::uint32_t* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+    if (const auto* objects = std::get_if<std::vector<cad::document::ObjectId>>(value)) {
+        *out = static_cast<std::uint32_t>(objects->size());
+        return CAD_OK;
+    }
+    if (const auto* elements = std::get_if<std::vector<cad::naming::ElementName>>(value)) {
+        *out = static_cast<std::uint32_t>(elements->size());
+        return CAD_OK;
+    }
+    s->hostError = "That parameter is not a list.";
+    return CAD_ERR_INVALID_INPUT;
+}
+
+CadStatus hostComputeParamElementAt(void* ctx, CadComputeCtx cc, const char* name,
+                                    std::uint32_t index, CadElementId* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+    const auto* elements = std::get_if<std::vector<cad::naming::ElementName>>(value);
+    if (elements == nullptr) {
+        s->hostError = "That parameter is not a list of elements.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    if (index >= elements->size()) {
+        // Out of range is BAD_HANDLE rather than INVALID_INPUT: the plugin asked for an item that
+        // does not exist, which is the same class of mistake as using a stale handle, and it must
+        // never read past the end.
+        s->hostError = "That list has no item at that index.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    return elementOut(*s, (*elements)[index], out);
+}
+
+CadStatus hostComputeParamShapeAt(void* ctx, CadComputeCtx cc, const char* name,
+                                  std::uint32_t index, CadShape* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::ActiveCompute* active = activeCompute(*s, cc);
+    if (active == nullptr || active->ctx == nullptr) {
+        // Deliberately stricter than the parameter accessors: resolving an object reference to a
+        // SHAPE needs computed inputs, which exist during compute and do not exist at cache-key
+        // time. Answering from a parameters-only context would mean inventing geometry.
+        s->hostError = "Shapes are only readable while the feature is computing.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+    const auto* objects = std::get_if<std::vector<cad::document::ObjectId>>(value);
+    if (objects == nullptr) {
+        s->hostError = "That parameter is not a list of objects.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    if (index >= objects->size()) {
+        s->hostError = "That list has no item at that index.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    if (index >= active->ctx->inputs.size() || active->ctx->inputs[index] == nullptr) {
+        s->hostError = "That input produced no shape.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    *out = intern(*s, active->ctx->inputs[index]->shape, active->ctx->inputs[index]->map);
+    return CAD_OK;
+}
+
+CadStatus hostComputeFeatureCtx(void* ctx, CadComputeCtx cc, CadFeatureCtx* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    if (activeCompute(*s, cc) == nullptr) {
+        s->hostError = "That compute is no longer running.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    // One handle space, deliberately: a CadFeatureCtx IS a compute handle restricted to its
+    // parameters, so the accessors are written once instead of twice.
+    *out = cc;
     return CAD_OK;
 }
 
@@ -968,8 +1118,13 @@ const CadHost* cad_plugin_host(CadSession handle) {
             h.compute_param_text = &hostComputeParamText;
             h.compute_set_output = &hostComputeSetOutput;
             h.compute_fail = &hostComputeFail;
-            // fillet_edges, txn_* and register_* stay NULL for now. See the note above:
-            // plugins are required to check, and this makes them do it from the start.
+            h.compute_param_element = &hostComputeParamElement;
+            h.compute_param_count = &hostComputeParamCount;
+            h.compute_param_element_at = &hostComputeParamElementAt;
+            h.compute_param_shape_at = &hostComputeParamShapeAt;
+            h.compute_feature_ctx = &hostComputeFeatureCtx;
+            // fillet_edges, txn_*, register_command and register_format stay NULL. See the note
+            // above: plugins are required to check, and this makes them do it from the start.
         }
         result = s.host.get();
         return CAD_OK;

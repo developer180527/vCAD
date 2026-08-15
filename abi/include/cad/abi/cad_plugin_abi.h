@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 15
+#define CAD_ABI_VERSION_MINOR 16
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -391,6 +391,30 @@ struct CadHost {
      * kernel::Error's message/detail. */
     CadStatus (*compute_fail)(void* ctx, CadComputeCtx cc, const char* message,
                               const char* detail);
+
+    /* An element-valued parameter: a face or edge the user picked, by NAME rather than by index,
+     * so it survives the rebuild that reorders the geometry. */
+    CadStatus (*compute_param_element)(void* ctx, CadComputeCtx cc, const char* name,
+                                       CadElementId* out);
+
+    /* List-valued parameters. Count first, then index: handing back a pointer and a length would
+     * require the host to own an array whose lifetime the plugin cannot see.
+     *
+     * Without these a plugin cannot implement a fillet, which takes MANY edges -- the example the
+     * list kinds were added for. The kinds shipped in 1.10 and the means to read them did not,
+     * which is the kind of gap that only shows up when something tries to use the API. */
+    CadStatus (*compute_param_count)(void* ctx, CadComputeCtx cc, const char* name,
+                                     uint32_t* out);
+    CadStatus (*compute_param_element_at)(void* ctx, CadComputeCtx cc, const char* name,
+                                          uint32_t index, CadElementId* out);
+    CadStatus (*compute_param_shape_at)(void* ctx, CadComputeCtx cc, const char* name,
+                                        uint32_t index, CadShape* out);
+
+    /* The parameters of the feature being computed, as a context that external_inputs also
+     * accepts. CadFeatureCtx and CadComputeCtx share a handle space deliberately: the parameter
+     * accessors above accept either, so they are written once rather than duplicated for the two
+     * moments a plugin needs to read its own parameters. */
+    CadStatus (*compute_feature_ctx)(void* ctx, CadComputeCtx cc, CadFeatureCtx* out);
 };
 
 /* Sub-shape kinds for shape_sub_count / shape_sub_at.

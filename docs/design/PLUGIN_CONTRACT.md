@@ -196,9 +196,23 @@ built on.
 
 ### 4.3 Respect thread affinity
 
-Until stated otherwise: **compute may be called on a worker thread; commands are called on the UI
-thread; registration happens on the loading thread.** A plugin must not assume they are the same
-thread, must not touch UI from compute, and must not block the UI thread in a command.
+**What is true today, measured rather than assumed** (see `tests-rs/cad-tests/tests/concurrency.rs`):
+the C ABI is thread-safe *per session* — a global mutex guards the session registry and every
+export takes a per-session lock — but **nothing below the ABI is concurrent**. Recompute is a
+single-threaded walk, tessellation is single-threaded, and `MeshCache` has no mutex. Compute is
+therefore called on whichever thread drove the recompute, and two threads entering one session are
+serialised rather than parallel.
+
+**What a plugin must assume:** commands are called on the UI thread; registration happens on the
+loading thread; compute is called with the session lock held. A plugin must not touch UI from
+compute, must not block the UI thread in a command, and must not call back into its own session
+from another thread expecting parallelism — it will simply wait.
+
+An earlier version of this section said "compute may be called on a worker thread". That promised a
+freedom the implementation does not take, and it was the wrong way round: had plugins been written
+against it, making recompute parallel later would have turned every one of them into a race we had
+invited. **Widening this promise is additive and can be done when it is true; narrowing it after
+plugins exist is not possible at all.**
 
 ### 4.4 Do not exceed declared capabilities
 

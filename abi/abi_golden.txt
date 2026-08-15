@@ -1,5 +1,5 @@
 define CAD_ABI_VERSION_MAJOR	0288695b698e5310
-define CAD_ABI_VERSION_MINOR	aaeac21cba2de58b
+define CAD_ABI_VERSION_MINOR	aaead21cba2de73e
 define CAD_CAP_FILESYSTEM	434d3d3abfc808cf
 define CAD_CAP_NETWORK	8abedaf5b56d3cb5
 define CAD_CAP_SUBPROCESS	4bac296961c20be1
@@ -130,7 +130,7 @@ fn cad_sketch_serialize	e1ab22cd44391801
 fn cad_sketch_solve	f7ad5f5305a5711c
 fn cad_undo	355979a6ab289e99
 fn cad_writable_extensions	41c4c77efac40b03
-struct CadHost	86e6c86db165a0e1
+struct CadHost	ae5d1cac1f096371
 type CadCommandCtx	e9227dfa61d7fd00
 type CadCommandDesc	9397a865f775c36c
 type CadComputeCtx	02c5a1becd794c38

@@ -104,7 +104,9 @@ pub struct CadFeatureDescPrefix {
     pub reserved1: u32,
     pub plugin_ctx: *mut c_void,
     pub compute: Option<extern "C" fn(*mut c_void, CadComputeCtx) -> CadStatus>,
-    pub external_inputs: Option<extern "C" fn()>,
+    pub external_inputs: Option<
+        extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus,
+    >,
     pub migrate_params: Option<extern "C" fn()>,
 }
 
@@ -544,6 +546,8 @@ fn enumerating_a_released_shape_is_refused() {
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+pub type CadPathSink = extern "C" fn(*mut c_void, *const c_char, usize);
+
 extern "C" {
     fn cad_object_add(session: u64, ty: *const c_char, out: *mut u64) -> CadStatus;
     fn cad_object_set_real(session: u64, object: u64, prop: *const c_char, v: f64) -> CadStatus;
@@ -620,6 +624,17 @@ struct Plugin {
 impl Plugin {
     /// Registers the demo feature and returns the session it lives in.
     fn register(type_name: &str) -> Self {
+        Self::register_with_external(type_name, None)
+    }
+
+    /// The same, with an external_inputs callback. Separate rather than a defaulted argument so
+    /// every existing call site keeps testing the NULL case, which is the common one.
+    fn register_with_external(
+        type_name: &str,
+        external: Option<
+            extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus,
+        >,
+    ) -> Self {
         let host = Host::new();
         let state = Box::new(DemoState {
             host: host.host,
@@ -638,7 +653,7 @@ impl Plugin {
             reserved1: 0,
             plugin_ctx: &*state as *const DemoState as *mut c_void,
             compute: Some(demo_compute),
-            external_inputs: None,
+            external_inputs: external,
             migrate_params: None,
         };
 
@@ -1065,4 +1080,71 @@ fn a_feature_downstream_of_a_missing_plugin_is_blocked_with_a_reason() {
 extern "C" {
     fn cad_object_set_object(session: u64, object: u64, prop: *const c_char, target: u64)
         -> CadStatus;
+}
+
+
+// --- external inputs -------------------------------------------------------------------------
+//
+// The regression this guards: external_inputs was DECLARED in the header and never read by
+// register_feature, so a plugin that correctly declared the files it reads had that declaration
+// silently ignored -- and its cached results went stale exactly like the Import bug the callback
+// exists to prevent. The plugin does everything right and gets wrong geometry, with nothing on
+// screen to suggest it.
+
+static EXTERNAL_CALLS: AtomicU32 = AtomicU32::new(0);
+static PARAM_READ_OK: AtomicU32 = AtomicU32::new(0);
+
+extern "C" fn declares_a_file(
+    plugin_ctx: *mut c_void,
+    fc: u64,
+    sink: CadPathSink,
+    sink_ctx: *mut c_void,
+) -> CadStatus {
+    EXTERNAL_CALLS.fetch_add(1, Ordering::SeqCst);
+
+    // Parameters must be readable from a CadFeatureCtx. This is the half that proves the shared
+    // handle space works: the same accessor serves compute and cache-key time.
+    let state = unsafe { &*(plugin_ctx as *const DemoState) };
+    let host = unsafe { &*state.host };
+    let mut size = 0.0f64;
+    let name = CString::new("size").unwrap();
+    if (host.compute_param_real.unwrap())(state.host_ctx, fc, name.as_ptr(), &mut size) == CAD_OK
+        && size > 0.0
+    {
+        PARAM_READ_OK.fetch_add(1, Ordering::SeqCst);
+    }
+
+    let path = b"/tmp/vcad_external_probe.step";
+    sink(sink_ctx, path.as_ptr() as *const c_char, path.len());
+    CAD_OK
+}
+
+#[test]
+fn external_inputs_is_actually_called_at_cache_key_time() {
+    EXTERNAL_CALLS.store(0, Ordering::SeqCst);
+    PARAM_READ_OK.store(0, Ordering::SeqCst);
+
+    let plugin = Plugin::register_with_external("demo.external", Some(declares_a_file));
+    let _object = plugin.add_object("demo.external", 12.0);
+    plugin.recompute();
+
+    assert!(
+        EXTERNAL_CALLS.load(Ordering::SeqCst) > 0,
+        "external_inputs was never invoked; the declaration is being ignored, which is the \
+         Import bug reintroduced through the plugin path"
+    );
+    assert!(
+        PARAM_READ_OK.load(Ordering::SeqCst) > 0,
+        "parameters must be readable from a CadFeatureCtx at cache-key time"
+    );
+}
+
+#[test]
+fn a_feature_without_external_inputs_still_computes() {
+    // The NULL case, which is the correct answer for every purely parametric feature. Wiring the
+    // callback must not make it mandatory.
+    let plugin = Plugin::register_with_external("demo.no_external", None);
+    let _object = plugin.add_object("demo.no_external", 8.0);
+    plugin.recompute();
+    assert!(plugin.state.calls.load(Ordering::SeqCst) > 0, "compute must still run");
 }
