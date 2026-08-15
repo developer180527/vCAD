@@ -23,6 +23,22 @@ add_library(planegcs SHARED
 )
 add_library(cad::planegcs ALIAS planegcs)
 
+# Windows produces an import library for a DLL only if the DLL EXPORTS something, and these
+# vendored sources carry no __declspec(dllexport) -- they were never written to be a DLL. So the
+# build produced planegcs.dll with no planegcs.lib, and everything downstream failed with
+# LNK1104: cannot open file 'planegcs.lib'.
+#
+# WINDOWS_EXPORT_ALL_SYMBOLS is CMake's escape hatch for exactly this: it generates a .def listing
+# every symbol, at link time, without touching the vendored sources -- which matters, because
+# VENDORED.md's whole claim is that they are unmodified.
+#
+# THE OBVIOUS FIX IS THE WRONG ONE. Making this target STATIC on Windows would also make the error
+# go away, and would quietly change our licensing position: planegcs is LGPL-2.1-or-later, and the
+# SHARED above is a licence decision (see the header of this file), not a technical preference.
+# Static linking would oblige us to ship what a user needs to relink against a modified solver.
+# Anyone tempted to simplify this line should read the top of the file first.
+set_target_properties(planegcs PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
 # The vendored sources are UNMODIFIED, which is why the include paths look the way they do:
 #   - the upstream directory itself, for its own headers
 #   - `shim/`, which supplies the FreeCAD headers planegcs includes with angle brackets
