@@ -232,6 +232,10 @@ in the build graph: three edges tied the engine to the B-rep kernel.
   schematic or netlist tool. That is a real target but a narrower one than it first appears, and
   the honest question is whether it justifies restructuring the node every feature writes to.
 
+  **`docs/design/PDF_EDITOR.md` is the case where the answer is yes** — a PDF editor is exactly the
+  application with no geometry, and that note records what else would carry over if it is ever
+  started. Read it before cutting this edge for any other reason.
+
 The two edges that were cut cost one include line and one file move between them. The third is a
 different kind of change and should be decided rather than drifted into.
 
