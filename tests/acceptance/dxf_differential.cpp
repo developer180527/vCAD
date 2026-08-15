@@ -42,6 +42,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+// std::max over an initializer list. Included explicitly because libc++ happens to pull
+// <algorithm> in through <string> and libstdc++ does not -- so omitting it builds on macOS and
+// fails on gcc, which is exactly the class of bug the Linux job exists to catch.
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>

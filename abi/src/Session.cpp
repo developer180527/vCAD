@@ -359,6 +359,17 @@ void cad_abi_version(std::uint32_t* major, std::uint32_t* minor) {
 // will offer strictly fewer, so plugins must handle NULL from the first day there is anything to
 // handle. Leaving them NULL now means the discipline is exercised immediately instead of being
 // discovered later.
+// C++ LINKAGE, restored explicitly.
+//
+// This anonymous namespace is nested inside the `extern "C" {` above. Anonymous-ness makes these
+// helpers internal but does NOT undo the linkage specification, so every function here had C
+// linkage -- and a C-linkage function may not return a C++ class type. Clang says so as a warning
+// and carries on; MSVC treats it as an error, decides the function returns void, and then reports
+// three more errors about returning a value from void and destructuring void.
+//
+// Found by the first Windows build that ever ran. The warning had been visible on macOS for a
+// while and read as pedantry.
+extern "C++" {
 namespace {
 
 Session* hostSession(void* ctx) { return static_cast<Session*>(ctx); }
@@ -1181,6 +1192,7 @@ void hostReleaseShape(void* ctx, CadShape handle) {
 }
 
 }  // namespace
+}  // extern "C++"
 
 const CadHost* cad_plugin_host(CadSession handle) {
     const CadHost* result = nullptr;
