@@ -127,6 +127,8 @@ jobs:
             # nothing to fetch. The distribution's own Qt 6 is the supported route on that
             # platform anyway -- which is how a FreeBSD or a distro packager will build this too.
             qt_via: apt
+            # vcpkg's downloadable tools are x64-only; see the steps that read this.
+            force_system_binaries: 'true'
             # ...and Ubuntu 24.04 ships Qt 6.4.2, below the 6.5 that shell_qt requires. So this
             # job builds the core, the Rust integration and OCCT on arm64, and does NOT build the
             # desktop shell. Stated rather than discovered: without this flag the registration
@@ -245,6 +247,20 @@ jobs:
         # pybind11 comes from the interpreter we bind to, never from vcpkg — its port builds
         # a whole CPython and fails on arm64-osx.
         run: python -m pip install --upgrade pip pybind11 pytest
+
+      # vcpkg downloads its own CMake, Ninja and friends -- for x64 only. On any other
+      # architecture it must be told to use the system's, and then the system's must be new
+      # enough: the arm64 job failed in vcpkg's own scripts with "string sub-command JSON got an
+      # invalid mode 'STRING_ENCODE'", which is Ubuntu 24.04's CMake 3.28 meeting a script written
+      # for the 4.x that the x64 job silently downloads. Nothing about that is visible on x64.
+      - name: Modern CMake for non-x64 (vcpkg ships no aarch64 tools)
+        if: matrix.force_system_binaries == 'true'
+        uses: lukka/get-cmake@latest
+
+      - name: Tell vcpkg to use system binaries
+        if: matrix.force_system_binaries == 'true'
+        shell: bash
+        run: echo "VCPKG_FORCE_SYSTEM_BINARIES=1" >> "$GITHUB_ENV"
 
       - uses: lukka/run-vcpkg@v11
         with:
@@ -377,7 +393,12 @@ jobs:
           # Two directories, both required. Windows is the only platform where vcpkg's
           # default library linkage is DYNAMIC, so OCCT itself ships as DLLs alongside our
           # cad_abi.dll. The Rust test binary needs to find both.
-          $abi = "${{ github.workspace }}\build\abi"
+          #
+          # build/bin, not build/abi: on Windows every RUNTIME artifact is collected into one
+          # directory so that executables can find our DLLs at all (see the top of CMakeLists).
+          # The import library cad_abi.lib stays in build/abi, which is what cad-sys/build.rs
+          # links against.
+          $abi = "${{ github.workspace }}\build\bin"
           $deps = "${{ github.workspace }}\build\vcpkg_installed\${{ matrix.triplet }}\bin"
           $env:PATH = "$abi;$deps;$env:PATH"
           cargo test --workspace

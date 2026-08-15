@@ -12,6 +12,20 @@ project(CAD
   DESCRIPTION "Cross-platform parametric CAD"
   LANGUAGES CXX C)
 
+# Windows has no rpath. A DLL is found beside the executable or on PATH, and nowhere else -- so
+# with CMake's default layout, cad_tests.exe lands in build/tests while planegcs.dll lands in
+# build/modules/planegcs, and the test binary cannot start. That is not a CI problem to paper over
+# with a PATH entry in a workflow: it is equally broken for anyone running ctest on Windows.
+#
+# WINDOWS ONLY, deliberately. On Unix a shared library is a LIBRARY artifact and stays where it
+# is; only executables would move, which would relocate every path anyone has typed for a spike or
+# a test binary for no benefit -- rpath already solves this there. Import libraries (.lib) are
+# ARCHIVE artifacts and also stay put, which matters because tests-rs/cad-sys/build.rs looks for
+# them in build/abi.
+if(WIN32)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+endif()
+
 # OCCT 8.x requires C++17 minimum. We build at 20; do not lower this without checking
 # core/kernel and core/naming, which use concepts and designated initializers.
 set(CMAKE_CXX_STANDARD 20)
