@@ -8,6 +8,7 @@
 
 #include <bit>
 #include <cstddef>
+#include <cstdlib>
 
 #include "cad/log/Log.h"
 
@@ -634,10 +635,52 @@ CadStatus hostShapeSubAt(void* ctx, CadShape handle, std::uint32_t kind, std::ui
 
 // ── registration ────────────────────────────────────────────────────────────────────────
 
+/// Whether to run every plugin compute TWICE and compare, per `CAD_PLUGIN_DETERMINISM_CHECK`.
+///
+/// Contract 4.1 requires compute to be deterministic, and everything downstream depends on it: the
+/// content-addressed cache returns a stored result instead of recomputing, so a plugin that is
+/// nondeterministic does not fail -- it produces a document whose geometry depends on whether a
+/// cache entry happened to exist. That is the worst failure shape available, because it is
+/// invisible, unreproducible, and appears as "the file is different on my machine".
+///
+/// Doubling the work is exactly why this is off by default. It is off by an ENVIRONMENT VARIABLE
+/// rather than a build flag on purpose: a plugin author must be able to turn it on against a
+/// shipped build of the application, without compiling anything, on the day their feature starts
+/// behaving oddly. A check that needs a custom build is a check nobody outside this repository can
+/// run.
+///
+/// Read once. The value cannot change usefully mid-session, and re-reading per compute would put a
+/// getenv in the inner loop of a recompute.
+bool determinismCheck() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("CAD_PLUGIN_DETERMINISM_CHECK");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    return enabled;
+}
+
 CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadParamDesc* params,
                               std::uint32_t paramCount) {
     Session* s = hostSession(ctx);
     if (s == nullptr || desc == nullptr) return CAD_ERR_INVALID_INPUT;
+
+    // Not from inside a compute (contract 4.6).
+    //
+    // This is the one re-entrant call a plugin can actually reach today, and it is not a
+    // theoretical hazard: registering a type mutates the registry the recompute engine is
+    // currently walking, and the engine holds a reference INTO that registry for the feature it
+    // is computing. A rehash while that reference is live is a dangling read -- a crash inside
+    // third-party code, at a stack depth that names the host, which section 4.6 exists to prevent.
+    //
+    // Rejected rather than deferred. Queueing the registration until the compute finishes would
+    // "work", and would mean a plugin's feature type appears at a moment it cannot predict, which
+    // is a worse contract than a clear refusal with a fix the author can act on.
+    if (!s->computeStack.empty()) {
+        s->hostError =
+            "register_feature cannot be called from inside compute. Register feature types during "
+            "initialize, before any document is computed.";
+        return CAD_ERR_REENTRANT;
+    }
 
     // struct_size before anything else. A descriptor from a newer header is longer than ours and
     // must not be read past our own end; one from an older header is shorter and its trailing
@@ -711,6 +754,9 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
 
     // The bridge. `s` and `feature` both outlive the registry: the session owns both, and the
     // registry is destroyed with it.
+    //
+    // determinismCheck() below turns contract 4.1 -- the strictest rule in the whole document --
+    // from prose into something that fails.
     type.compute = [s, feature](const cad::recompute::ComputeContext& cc)
         -> cad::kernel::Result<cad::recompute::Output> {
         const CadComputeCtx handle = s->nextCompute++;
@@ -755,6 +801,56 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
                                       std::string("'") + feature->type +
                                           "' produced geometry with no element names."};
         }
+        if (!determinismCheck()) {
+            return cad::recompute::Output{result->shape, result->names};
+        }
+
+        // Run it again and compare. Compared by naming::contentHash rather than by anything
+        // hand-rolled, because that is the SAME hash the content-addressed cache keys on: if two
+        // runs agree under it, the cache cannot tell them apart, which is precisely the property
+        // 4.1 is asking for. A weaker comparison would pass while the cache still saw two
+        // different results.
+        const cad::kernel::ShapeHash first = cad::naming::contentHash(result->shape, result->names);
+
+        const CadComputeCtx second = s->nextCompute++;
+        s->computes.emplace(second,
+                            Session::ActiveCompute{&cc, &cc.object, 0, false, {}, {}, 0});
+        s->computeStack.push_back(second);
+        const CadStatus secondStatus = feature->compute(feature->pluginCtx, second);
+        Session::ActiveCompute secondFinished = s->computes[second];
+        s->computeStack.pop_back();
+        s->computes.erase(second);
+
+        if (secondStatus != CAD_OK || !secondFinished.hasOutput) {
+            // Succeeding once and failing once is nondeterminism of the worst kind, and worth its
+            // own message: the first run has already produced a shape that would have been cached.
+            return cad::kernel::Error{
+                cad::kernel::ErrorCode::Internal,
+                std::string("'") + feature->type +
+                    "' is not deterministic: the same inputs succeeded once and failed once.",
+                "CAD_PLUGIN_DETERMINISM_CHECK is on; see contract 4.1"};
+        }
+
+        Session::StoredShape* again = lookupStored(*s, secondFinished.output);
+        if (again == nullptr) {
+            return cad::kernel::Error{cad::kernel::ErrorCode::Internal,
+                                      std::string("'") + feature->type +
+                                          "' returned a shape that no longer exists."};
+        }
+
+        const cad::kernel::ShapeHash repeat = cad::naming::contentHash(again->shape, again->names);
+        if (first.fold64() != repeat.fold64()) {
+            return cad::kernel::Error{
+                cad::kernel::ErrorCode::Internal,
+                std::string("'") + feature->type +
+                    "' is not deterministic: the same inputs produced different geometry or "
+                    "different element names on two consecutive computes.",
+                first.hex() + " then " + repeat.hex()};
+        }
+
+        // The FIRST result is returned, not the second. They are equal under the cache's own hash,
+        // so the choice does not affect correctness -- but returning the first keeps the check
+        // observation-only, and means turning it on cannot change which shape a document gets.
         return cad::recompute::Output{result->shape, result->names};
     };
 

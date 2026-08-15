@@ -18,6 +18,7 @@ const CAD_OK: CadStatus = 0;
 const CAD_ERR_INVALID_INPUT: CadStatus = 1;
 const CAD_ERR_NAMING_LOST: CadStatus = 6;
 const CAD_ERR_BAD_HANDLE: CadStatus = 9;
+const CAD_ERR_REENTRANT: CadStatus = 11;
 
 #[repr(C)]
 pub struct CadStr {
@@ -680,6 +681,23 @@ impl Plugin {
         type_name: &str,
         external: Option<extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus>,
     ) -> Self {
+        Self::register_full(type_name, demo_compute, external)
+    }
+
+    /// The same, with a compute of the caller's choosing -- for the tests that need a plugin
+    /// which MISBEHAVES rather than one that works.
+    fn register_with(
+        type_name: &str,
+        compute: extern "C" fn(*mut c_void, CadComputeCtx) -> CadStatus,
+    ) -> Self {
+        Self::register_full(type_name, compute, None)
+    }
+
+    fn register_full(
+        type_name: &str,
+        compute: extern "C" fn(*mut c_void, CadComputeCtx) -> CadStatus,
+        external: Option<extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus>,
+    ) -> Self {
         let host = Host::new();
         let state = Box::new(DemoState {
             host: host.host,
@@ -697,7 +715,7 @@ impl Plugin {
             param_schema_version: 1,
             reserved1: 0,
             plugin_ctx: &*state as *const DemoState as *mut c_void,
-            compute: Some(demo_compute),
+            compute: Some(compute),
             external_inputs: external,
             migrate_params: None,
         };
@@ -856,6 +874,164 @@ fn registering_the_same_feature_type_twice_is_refused() {
     // on what happened to be installed.
     let status = register(plugin.host.ctx(), &desc, std::ptr::null(), 0);
     assert_eq!(status, CAD_ERR_INVALID_INPUT);
+}
+
+/// A compute that tries to register a feature type from inside itself.
+///
+/// Not a contrived hazard. Registering mutates the type registry the recompute engine is walking,
+/// and the engine holds a reference INTO that registry for the feature currently computing -- so a
+/// rehash under it is a dangling read, and the crash lands inside third-party code at a stack
+/// depth that names the host.
+extern "C" fn reentrant_compute(plugin_ctx: *mut c_void, cc: CadComputeCtx) -> CadStatus {
+    let state = unsafe { &*(plugin_ctx as *const DemoState) };
+    let (host, ctx) = (unsafe { &*state.host }, state.host_ctx);
+
+    let type_name = CString::new("com.vcad.test.Reentrant.Sneaky").unwrap();
+    let desc = CadFeatureDescPrefix {
+        struct_size: std::mem::size_of::<CadFeatureDescPrefix>() as u32,
+        struct_version: 1,
+        type_name: type_name.as_ptr(),
+        compute_version: 1,
+        reserved0: 0,
+        param_schema_version: 1,
+        reserved1: 0,
+        plugin_ctx,
+        compute: Some(demo_compute),
+        external_inputs: None,
+        migrate_params: None,
+    };
+    let register: extern "C" fn(
+        *mut c_void,
+        *const CadFeatureDescPrefix,
+        *const c_void,
+        u32,
+    ) -> CadStatus = unsafe { std::mem::transmute(host.register_feature.unwrap()) };
+
+    // Record what the host said, then carry on and produce a shape, so the test can tell the
+    // refusal apart from the compute simply failing.
+    state.calls.store(
+        register(ctx, &desc, std::ptr::null(), 0) as u32,
+        Ordering::SeqCst,
+    );
+
+    let mut shape: CadShape = 0;
+    if (host.make_box.unwrap())(ctx, 5.0, 5.0, 5.0, &mut shape) != CAD_OK {
+        return CAD_ERR_INVALID_INPUT;
+    }
+    (host.compute_set_output.unwrap())(ctx, cc, shape)
+}
+
+#[test]
+fn registering_a_feature_from_inside_compute_is_refused() {
+    // Contract 4.6. The rule existed as prose from the day it was written -- added after finding
+    // that Inventor can be crashed by sending an API command while it is busy -- and prose does
+    // not stop anyone. This is the rule becoming a status code.
+    let plugin = Plugin::register_with("com.vcad.test.Reentrant", reentrant_compute);
+    plugin.add_object("com.vcad.test.Reentrant", 5.0);
+    let report = plugin.recompute();
+
+    assert_eq!(
+        report.failed + report.blocked,
+        0,
+        "the refusal must not fail the compute; a plugin that ignores the status still works"
+    );
+    assert_eq!(
+        plugin.state.calls.load(Ordering::SeqCst) as CadStatus,
+        CAD_ERR_REENTRANT,
+        "register_feature from inside compute must be refused with CAD_ERR_REENTRANT"
+    );
+}
+
+/// A compute whose output depends on how many times it has been called.
+///
+/// The realistic shape of this bug is not deliberate: a plugin seeds a random jitter, iterates a
+/// hash map, or reads a clock. What matters is that the result changes while the inputs do not.
+extern "C" fn nondeterministic_compute(plugin_ctx: *mut c_void, cc: CadComputeCtx) -> CadStatus {
+    let state = unsafe { &*(plugin_ctx as *const DemoState) };
+    let (host, ctx) = (unsafe { &*state.host }, state.host_ctx);
+    let n = state.calls.fetch_add(1, Ordering::SeqCst);
+
+    let size = 10.0 + f64::from(n);
+    let mut shape: CadShape = 0;
+    if (host.make_box.unwrap())(ctx, size, size, size, &mut shape) != CAD_OK {
+        return CAD_ERR_INVALID_INPUT;
+    }
+    (host.compute_set_output.unwrap())(ctx, cc, shape)
+}
+
+#[test]
+#[ignore = "run by its parent below, with CAD_PLUGIN_DETERMINISM_CHECK set"]
+fn nondeterminism_is_caught_inner() {
+    let plugin = Plugin::register_with("com.vcad.test.Wobbly", nondeterministic_compute);
+    let object = plugin.add_object("com.vcad.test.Wobbly", 10.0);
+    let report = plugin.recompute();
+
+    assert_eq!(
+        report.failed, 1,
+        "a feature that computes a different shape each time must fail the recompute when the \
+         determinism check is on; report was failed={} blocked={}",
+        report.failed, report.blocked
+    );
+
+    // The OBJECT's error, not the session's. A feature failure is recorded against the feature --
+    // which is the whole point of contract 3.5, since that string is what the user reads in the
+    // model tree next to the thing that broke.
+    let message = plugin.object_error(object);
+    assert!(
+        message.contains("not deterministic"),
+        "the failure must say what is wrong in those words, not a status code; got: {message}"
+    );
+}
+
+#[test]
+fn a_nondeterministic_plugin_is_caught_when_the_check_is_on() {
+    // In a SUBPROCESS, and that is not incidental.
+    //
+    // The host reads CAD_PLUGIN_DETERMINISM_CHECK once, into a static, because getenv racing a
+    // setenv from another thread is undefined behaviour and this suite runs its tests in parallel
+    // inside one process. So the variable cannot be set from a test -- the value would depend on
+    // which test ran first, and setting it at all would be a data race against every other test.
+    //
+    // Re-executing this binary with the variable already in the environment sidesteps both. Same
+    // approach as tests/acceptance/m1_determinism_subprocess.cpp, for the same reason.
+    let exe = std::env::current_exe().expect("test binary path");
+    let output = std::process::Command::new(exe)
+        .args([
+            "--exact",
+            "nondeterminism_is_caught_inner",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("CAD_PLUGIN_DETERMINISM_CHECK", "1")
+        .output()
+        .expect("re-exec the test binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the inner test failed, which means the determinism check did not catch a plugin that \
+         returns a different shape every call.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("1 passed"),
+        "the inner test did not run at all; the filter or the --ignored flag is wrong.\n{stdout}"
+    );
+}
+
+#[test]
+fn a_nondeterministic_plugin_is_not_caught_when_the_check_is_off() {
+    // The other half, and the one that stops the pair from being a tautology: with the check off,
+    // the same plugin computes happily. That is what makes the test above evidence that the CHECK
+    // caught it, rather than evidence that the fake plugin was broken in some other way.
+    let plugin = Plugin::register_with("com.vcad.test.WobblyQuiet", nondeterministic_compute);
+    plugin.add_object("com.vcad.test.WobblyQuiet", 10.0);
+    let report = plugin.recompute();
+    assert_eq!(
+        report.failed, 0,
+        "with the check off, a nondeterministic plugin must compute without complaint -- that is \
+         precisely the silent failure the check exists to expose"
+    );
 }
 
 #[test]

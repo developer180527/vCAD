@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 16
+#define CAD_ABI_VERSION_MINOR 17
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -65,6 +65,14 @@ typedef int32_t CadStatus;
 #define CAD_ERR_CANCELLED       8
 #define CAD_ERR_BAD_HANDLE      9
 #define CAD_ERR_NO_PERMISSION  10
+
+/* The call is legal but not legal NOW: it would re-enter the host from inside a host callback.
+ *
+ * Distinct from CAD_ERR_NO_PERMISSION, which is about what a plugin is allowed to do at all. This
+ * one is about WHEN, and a plugin author seeing it has a specific fix -- move the call outside the
+ * callback -- rather than a permissions question with no answer. See section 4.6 of
+ * docs/design/PLUGIN_CONTRACT.md. */
+#define CAD_ERR_REENTRANT      11
 #define CAD_ERR_INTERNAL       99
 
 /* --- handles ------------------------------------------------------------------------ */

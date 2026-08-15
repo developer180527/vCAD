@@ -161,7 +161,14 @@ class of crash nobody can reproduce.
 
 ## 4. What the plugin promises
 
-### 4.1 Compute must be deterministic — the strictest rule here
+### 4.1 Compute must be deterministic — the strictest rule here — **(now CHECKABLE)**
+
+> Set `CAD_PLUGIN_DETERMINISM_CHECK=1` and every plugin compute runs twice and is compared by
+> `naming::contentHash` — the same hash the content-addressed cache keys on, so agreement under it
+> means the cache genuinely cannot tell the two runs apart. A mismatch fails the feature with a
+> sentence saying so. Off by default because it doubles the work, and switched by an environment
+> variable rather than a build flag so a plugin author can turn it on against a shipped build the
+> day their feature starts behaving oddly.
 
 **Identical inputs must produce identical output, on every machine, in every build, forever.**
 
@@ -232,7 +239,7 @@ invites a trust decision the software cannot honour.
 - Copy strings immediately; host strings are valid only until the next call on that session.
 - Never store a handle past its documented lifetime.
 
-### 4.6 Do not re-enter the host
+### 4.6 Do not re-enter the host — **(ENFORCED for register_feature)**
 
 A plugin must not call back into the host from inside a host callback in ways that mutate state it
 is already inside. Specifically: **`compute` must not mutate the document** (§6 already forbids it,
@@ -240,6 +247,16 @@ and §4.1 depends on it), and a command must not invoke another command reentran
 
 Added after finding that Inventor can be crashed by sending an API command while it is busy. A
 boundary that permits reentrancy has to be reentrant everywhere, forever — cheaper to forbid it.
+
+`register_feature` from inside `compute` now returns **`CAD_ERR_REENTRANT`** (ABI 1.17) rather than
+being forbidden only in prose. It is the one re-entrant call a plugin can currently reach, and it
+was never theoretical: registering mutates the type registry the recompute engine is walking, while
+the engine holds a reference into that registry for the feature being computed. Refused rather than
+deferred — queueing it until the compute finished would "work" and would make a plugin's feature
+type appear at a moment it cannot predict, which is a worse contract than a clear refusal.
+
+The remaining rules in this section are still prose. They become enforceable when the calls they
+describe exist: `txn_begin` and `register_command` are declared and left NULL today.
 
 ### 4.7 Bring your own dependencies, privately
 

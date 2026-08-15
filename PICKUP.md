@@ -187,6 +187,26 @@ returns nonsense, that never returns — plus honest attribution when it is not.
 Read §5 before designing; the boundary between "contained" and "not survivable" is the whole
 decision, and promising more than in-process C can deliver is worse than promising nothing.
 
+## Plugin contract: two documented rules are now enforced
+
+ABI 1.17. Both were rules the contract stated and nothing checked, which is the gap worth closing
+before the loader exists — a rule a plugin author can violate without noticing is a rule that will
+be violated.
+
+- **§4.6 re-entrancy.** `register_feature` from inside `compute` returns `CAD_ERR_REENTRANT`.
+  Verified red before green: without the guard the registration simply succeeds.
+- **§4.1 determinism.** `CAD_PLUGIN_DETERMINISM_CHECK=1` runs every plugin compute twice and
+  compares by `naming::contentHash`. Tested by a pair — caught when on, NOT caught when off — so
+  the passing test is evidence about the check rather than about the fake plugin.
+
+The determinism test runs in a **subprocess**, because the host reads the variable once into a
+static and this suite runs tests in parallel: `getenv` racing `setenv` is UB, so the value cannot
+be set from inside a test. Same approach as `m1_determinism_subprocess.cpp`.
+
+Still prose, and unenforceable until the calls exist: the rest of §4.6 (`txn_begin` and
+`register_command` are declared and NULL), §4.4 capabilities (advisory until sandboxing, and the
+contract says so), §4.7 dependency isolation (needs the loader).
+
 ## Known test gaps, in priority order
 
 Everything here is a gap someone identified and nobody has closed. Ordered by what a professional
