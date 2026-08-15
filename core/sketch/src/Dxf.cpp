@@ -1,5 +1,9 @@
 #include "cad/sketch/Dxf.h"
 
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+
 #include "cad/log/Log.h"
 
 #include <dime/Input.h>
@@ -212,6 +216,134 @@ std::string DxfImportReport::summary() const {
     return text;
 }
 
+/// Rejects a DXF whose group codes and values are not paired.
+///
+/// ASCII DXF is a stream of two-line records: a numeric group code, then its value. A file with an
+/// odd number of them ends on a code whose value never arrives — which dime dereferences. See the
+/// call site for the crash this prevents.
+///
+/// Counts lines rather than parsing them: this is a structural precondition, not a validation
+/// pass, and anything cleverer would be a second DXF parser sitting in front of the first.
+/// dime's own `DXF_MAXLINELEN`. Duplicated rather than included because dime is linked PRIVATE and
+/// its headers are deliberately not part of this file's interface — and because the number is a
+/// property of the bug being guarded against, which must not silently change if dime does.
+constexpr std::size_t kDimeLineLimit = 4096;
+
+kernel::Result<void> dxfLinesArePaired(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return Error{ErrorCode::InvalidInput, "That DXF file could not be opened.", path.string()};
+    }
+
+    std::error_code sizeError;
+    const auto fileSize = std::filesystem::file_size(path, sizeError);
+    const std::uint64_t bytes = sizeError ? 0 : static_cast<std::uint64_t>(fileSize);
+
+    std::uint64_t lines = 0;
+    std::string line;
+    std::string previous;
+    bool checkedFirst = false;
+    while (std::getline(in, line)) {
+        // A trailing newline leaves a final empty line that is not a record; anything else empty
+        // is malformed anyway and dime will say so.
+        if (line.empty() || (line.size() == 1 && line[0] == '\r')) continue;
+        ++lines;
+
+        // No single record may reach dime's line buffer length.
+        //
+        // The third and worst thing fuzzing found, and it is a memory-safety bug in the parser
+        // rather than a hang or a null dereference. dime's readString is:
+        //
+        //     char lineBuf[DXF_MAXLINELEN];                                  // 4096
+        //     while (get(c) && ... && idx < DXF_MAXLINELEN) lineBuf[idx++] = c;
+        //     this->lineBuf[idx] = '\0';                    // idx can BE 4096 -> one past the end
+        //
+        // A classic off-by-one: the loop stops at 4096 characters, then the terminator is written
+        // at index 4096 of a 4096-byte array. The byte lands on the next member of dimeInput --
+        // which is how a 1 MB token turns into `assert(!this->binary)` firing, the field having
+        // been overwritten. A file from a stranger corrupting adjacent memory is precisely the
+        // class of bug that makes importers the CVE source they are.
+        //
+        // Refused before dime sees it. Real DXF records are short: a coordinate is tens of
+        // characters and the longest legitimate value is a layer or block name, so a limit at the
+        // parser's own buffer size rejects nothing a real file contains.
+        if (line.size() >= kDimeLineLimit) {
+            return Error{ErrorCode::InvalidInput,
+                         "That DXF file is corrupt — it contains a record too long to be valid.",
+                         path.string() + ": record of " + std::to_string(line.size()) +
+                             " bytes exceeds the " + std::to_string(kDimeLineLimit) +
+                             "-byte limit"};
+        }
+
+        // The FIRST record must be a group code, i.e. an integer.
+        //
+        // The third crash fuzzing found, and the nastiest to attribute: dime decides a file is
+        // BINARY DXF from an "AutoCAD Binary DXF" header, and its ASCII reader then trips
+        // `assert(!this->binary)` and aborts the process. An assert in a vendored library, reached
+        // from a stranger's file.
+        //
+        // Checked structurally rather than by looking for that header, because the header is the
+        // symptom. ASCII DXF is group-code records from its first byte — a comment is code 999,
+        // still an integer — so a first record that is not a number is not ASCII DXF, whatever it
+        // is instead. That covers binary DXF, DWG renamed to .dxf, and whatever the next one is.
+        if (!checkedFirst) {
+            checkedFirst = true;
+            std::string trimmed = line;
+            while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
+                trimmed.pop_back();
+            }
+            std::size_t start = 0;
+            while (start < trimmed.size() &&
+                   std::isspace(static_cast<unsigned char>(trimmed[start]))) {
+                ++start;
+            }
+            trimmed.erase(0, start);
+
+            char* end = nullptr;
+            std::strtol(trimmed.c_str(), &end, 10);
+            if (trimmed.empty() || end == trimmed.c_str() || *end != '\0') {
+                return Error{ErrorCode::InvalidInput,
+                             "That file is not an ASCII DXF. Binary DXF and DWG are not "
+                             "supported — convert it to ASCII DXF first.",
+                             path.string() + ": first record is not a group code"};
+            }
+        }
+
+        // A declared count larger than the file could possibly contain.
+        //
+        // Also found by fuzzing: an 82-byte file declaring an LWPOLYLINE of two billion vertices
+        // took 28.7 SECONDS to import. Not a crash — worse in one way, because it looks like the
+        // application has frozen and there is nothing to report. Attacker-controlled input must
+        // not be able to wedge the UI, and a count field is the classic lever.
+        //
+        // The bound is deliberately crude: a vertex needs at least a group code line and a value
+        // line per coordinate, so a file cannot describe more vertices than it has BYTES. Anything
+        // beyond that is impossible rather than merely large, which is the only kind of count this
+        // is entitled to refuse — a real file with a genuinely big polyline must still open.
+        if (previous == "90" && bytes > 0) {
+            char* end = nullptr;
+            const long long declared = std::strtoll(line.c_str(), &end, 10);
+            if (end != line.c_str() && declared > static_cast<long long>(bytes)) {
+                return Error{ErrorCode::InvalidInput,
+                             "That DXF file is corrupt — it declares more geometry than the file "
+                             "could contain.",
+                             path.string() + ": vertex count " + std::to_string(declared) +
+                                 " in a file of " + std::to_string(bytes) + " bytes"};
+            }
+        }
+        previous = line;
+    }
+
+    if (lines % 2 != 0) {
+        return Error{ErrorCode::InvalidInput,
+                     "That DXF file is incomplete — it ends part-way through a record. It may "
+                     "have been truncated in transfer.",
+                     path.string() + ": odd number of group-code lines (" +
+                         std::to_string(lines) + ")"};
+    }
+    return {};
+}
+
 kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
                                 const DxfImportOptions& options, DxfImportReport* report) {
     if (!std::filesystem::exists(path)) {
@@ -221,6 +353,29 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
         // Caught here rather than producing a sketch of zeros or NaNs, which would fail much later
         // inside the solver with nothing pointing back at the scale.
         return Error{ErrorCode::InvalidInput, "The import scale must be a positive number."};
+    }
+
+    // Structural pre-check, BEFORE dime sees the bytes.
+    //
+    // Found by fuzzing: a file ending in a group code with no value segfaults dime. The smallest
+    // case is 23 bytes —
+    //
+    //     0\nSECTION\n2\nENTITIES\n0\n
+    //
+    // — where dime reads the entity-start code 0, asks for the entity name, gets nothing at
+    // end-of-file, and strcmps a null pointer. A crash from a 23-byte file, on the one surface
+    // where the input comes from a stranger, is the most serious class of bug this codebase can
+    // have: people email each other part files.
+    //
+    // Fixed HERE rather than in vendored dime, deliberately. This layer is ours, the guard holds
+    // whatever dime does next, and the parser is going to be replaced anyway — a patch carried in
+    // a vendored dependency would be lost at that swap, while this survives it.
+    //
+    // The rule is DXF's own: ASCII DXF is strictly a stream of (group code, value) line pairs, so
+    // an odd count means a code whose value never arrived. That single check covers the whole
+    // family the fuzzer found — every crashing truncation was this same shape.
+    if (auto paired = dxfLinesArePaired(path); !paired) {
+        return paired.error();
     }
 
     dimeInput input;
