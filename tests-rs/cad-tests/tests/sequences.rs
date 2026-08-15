@@ -241,12 +241,26 @@ impl World {
                         valid,
                         "step {step} ({after:?}): object #{n} is Clean but its shape is not valid"
                     );
-                    if let Ok(v) = self.s.volume(o) {
-                        assert!(
-                            v.is_finite() && v >= 0.0,
-                            "step {step} ({after:?}): object #{n} is Clean with volume {v}"
-                        );
-                    }
+                    // ASSERTED, not skipped when it fails. Written as `if let Ok(v)` this was an
+                    // invariant that quietly turned itself off: a Clean object whose volume could
+                    // not be computed passed without comment, which is precisely the "reports
+                    // Clean over geometry it cannot produce" case this file exists to catch.
+                    //
+                    // A Clean feature has a valid solid -- the assertion above just established
+                    // that -- so the volume query has no licence to fail. If a legitimate reason
+                    // ever appears (a boolean reducing a solid to a shell, say), it belongs here
+                    // as a named exception rather than as a silent skip.
+                    let volume = self.s.volume(o);
+                    assert!(
+                        volume.is_ok(),
+                        "step {step} ({after:?}): object #{n} is Clean and its shape is valid, \
+                         but its volume could not be computed"
+                    );
+                    let v = volume.unwrap();
+                    assert!(
+                        v.is_finite() && v >= 0.0,
+                        "step {step} ({after:?}): object #{n} is Clean with volume {v}"
+                    );
                 }
                 _ => {}
             }
@@ -404,7 +418,7 @@ proptest! {
 /// Deterministic on purpose — a coverage floor that itself flickers is worse than none.
 #[test]
 fn the_generator_reaches_interesting_states() {
-    // A plain LCG rather than proptest's RNG: this needs to be reproducible run to run, and
+    // xorshift64 rather than proptest's RNG: this needs to be reproducible run to run, and
     // proptest deliberately reseeds.
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
@@ -456,13 +470,19 @@ fn the_generator_reaches_interesting_states() {
          {clean} Clean, {failed} Failed, {blocked} Blocked"
     );
 
-    // Floors, not exact counts: the point is that each branch of the invariant check is exercised,
-    // and an exact number would break on any harmless change to the core's tolerances.
+    // PROPORTIONS, not absolute counts. Absolute floors were correct against a fixed campaign but
+    // lost their force the moment anyone grew it: `failed + blocked > 10` is trivially true over
+    // ten thousand objects, so the check would stop meaning anything exactly when the campaign got
+    // more thorough. Expressed as fractions, they hold whatever the campaign size becomes.
     assert!(created > 500, "the generator built almost nothing: {created} objects");
-    assert!(clean > 100, "almost nothing computed successfully: {clean} Clean");
     assert!(
-        failed + blocked > 10,
-        "nothing ever failed ({failed} Failed, {blocked} Blocked) — the 'a failure says why' \
-         invariant is never being exercised, so the suite is greener than it is strong"
+        clean > created / 4,
+        "only {clean} of {created} objects computed successfully; the generator is producing \
+         mostly rubble and the Clean invariant is barely exercised"
+    );
+    assert!(
+        failed + blocked > created / 50,
+        "only {failed} Failed and {blocked} Blocked out of {created} — the 'a failure says why' \
+         invariant is barely exercised, so the suite is greener than it is strong"
     );
 }
