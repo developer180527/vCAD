@@ -47,6 +47,9 @@ QColor stateColour(cad::document::ObjectState state) {
         case cad::document::ObjectState::Dirty:   return QColor(0xa8, 0x6a, 0x00);
         case cad::document::ObjectState::Failed:  return QColor(0xc0, 0x2a, 0x24);
         case cad::document::ObjectState::Blocked: return QColor(0x8a, 0x6d, 0x3f);
+        // GREY, not red. The document is intact and this machine is missing software; colouring
+        // it like a failure is what makes a user conclude a colleague's file is corrupt.
+        case cad::document::ObjectState::NeedsPlugin: return QColor(0x8b, 0x8f, 0x94);
     }
     return QColor(0x1f, 0x21, 0x24);
 }
@@ -60,6 +63,7 @@ QString badgeFor(cad::document::ObjectState state) {
     switch (state) {
         case cad::document::ObjectState::Failed:  return QStringLiteral("ERR");
         case cad::document::ObjectState::Blocked: return QStringLiteral("BLOCKED");
+        case cad::document::ObjectState::NeedsPlugin: return QStringLiteral("PLUGIN");
         case cad::document::ObjectState::Dirty:   return QStringLiteral("•");
         case cad::document::ObjectState::Clean:   return {};
     }

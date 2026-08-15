@@ -562,6 +562,7 @@ struct CadRecomputeReport {
     skipped: u64,
     failed: u64,
     blocked: u64,
+    needs_plugin: u64,
 }
 
 /// The fake plugin's own state, reached through `plugin_ctx`.
@@ -784,4 +785,284 @@ fn a_stale_compute_handle_is_refused_rather_than_dangling() {
     let mut count = 0u32;
     let status = (plugin.host.h().compute_input_count.unwrap())(plugin.host.ctx(), 1, &mut count);
     assert_eq!(status, CAD_ERR_BAD_HANDLE);
+}
+
+// ── a plugin feature inside the document's lifecycle ─────────────────────────────────────
+//
+// Everything above tests a plugin feature computing. These test it EXISTING: surviving the
+// operations a user performs on a document that contains one. That is a different set of code
+// paths — history, serialisation, invalidation — none of which knew about plugin types until now.
+
+extern "C" {
+    fn cad_undo(session: u64, out: *mut i32) -> CadStatus;
+    fn cad_redo(session: u64, out: *mut i32) -> CadStatus;
+    fn cad_document_digest(session: u64, out: *mut u64) -> CadStatus;
+    fn cad_object_count(session: u64, out: *mut u64) -> CadStatus;
+    fn cad_document_save(session: u64, path: *const c_char) -> CadStatus;
+}
+
+impl Plugin {
+    fn digest(&self) -> u64 {
+        let mut d = 0u64;
+        unsafe { cad_document_digest(self.host.session, &mut d) };
+        d
+    }
+    fn undo(&self) -> bool {
+        let mut out = 0i32;
+        unsafe { cad_undo(self.host.session, &mut out) };
+        out != 0
+    }
+    fn redo(&self) -> bool {
+        let mut out = 0i32;
+        unsafe { cad_redo(self.host.session, &mut out) };
+        out != 0
+    }
+}
+
+/// A plugin feature must survive undo and redo like any other.
+///
+/// History predates plugins entirely, and a feature type it has never seen is exactly the sort of
+/// thing that gets dropped on the way back up. Compared by digest, so this is about what the
+/// document IS rather than what it reports.
+#[test]
+fn a_plugin_feature_survives_undo_and_redo() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+    plugin.add_object("com.vcad.test.Cube", 20.0);
+    plugin.recompute();
+    let before = plugin.digest();
+
+    let mut undos = 0;
+    while plugin.undo() {
+        undos += 1;
+        assert!(undos < 100, "undo did not terminate");
+    }
+    assert!(undos > 0, "adding a plugin feature must be undoable at all");
+
+    for i in 0..undos {
+        assert!(plugin.redo(), "redo ran out after {i} of {undos} steps");
+    }
+
+    assert_eq!(
+        plugin.digest(),
+        before,
+        "undoing and redoing a plugin feature did not restore the document"
+    );
+
+    // And it still computes afterwards — a restored feature that cannot recompute is a document
+    // the user cannot edit further.
+    let report = plugin.recompute();
+    assert_eq!(report.failed + report.blocked, 0, "the restored plugin feature will not compute");
+}
+
+/// A document containing a plugin feature must save and reopen — WITH the plugin present.
+///
+/// The harder case, where the plugin is absent, is step 4 (§4A) and is not built yet. This is its
+/// prerequisite: if a plugin feature cannot round-trip even when its plugin IS registered, the
+/// unknown-feature path has nothing to stand on.
+#[test]
+fn a_plugin_feature_round_trips_through_a_saved_file() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+    plugin.add_object("com.vcad.test.Cube", 32.0);
+    plugin.recompute();
+
+    let count_before = {
+        let mut c = 0u64;
+        unsafe { cad_object_count(plugin.host.session, &mut c) };
+        c
+    };
+    let digest_before = plugin.digest();
+
+    let path = std::env::temp_dir().join(format!("cad-plugin-{}.vcad", std::process::id()));
+    let path_c = CString::new(path.to_str().unwrap()).unwrap();
+    let status = unsafe { cad_document_save(plugin.host.session, path_c.as_ptr()) };
+    assert_eq!(status, CAD_OK, "saving failed: {}", plugin.host.last_error());
+
+    // Reopened into a session that has the SAME feature registered, which is what happens when
+    // the plugin is installed on both machines.
+    let reopened = Plugin::register("com.vcad.test.Cube");
+    let status = unsafe { cad_document_open(reopened.host.session, path_c.as_ptr()) };
+    assert_eq!(status, CAD_OK, "reopening failed: {}", reopened.host.last_error());
+
+    let mut count_after = 0u64;
+    unsafe { cad_object_count(reopened.host.session, &mut count_after) };
+    assert_eq!(count_after, count_before, "reopening lost the plugin feature");
+    assert_eq!(
+        reopened.digest(),
+        digest_before,
+        "the reopened document differs from the one that was saved"
+    );
+
+    let report = reopened.recompute();
+    assert_eq!(
+        report.failed + report.blocked,
+        0,
+        "the reopened plugin feature will not compute"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+extern "C" {
+    fn cad_document_open(session: u64, path: *const c_char) -> CadStatus;
+    fn cad_object_state(session: u64, object: u64, out: *mut i32) -> CadStatus;
+}
+
+// ── §4A: a document must outlive the plugin that made it ────────────────────────────────
+
+
+
+/// Opens a saved document in a session that does NOT have the plugin registered.
+///
+/// The failure this guards against is the one that ends platforms: opening a colleague's file,
+/// seeing "unknown feature, removed", saving, and destroying their work. So the assertion is not
+/// about behaviour first — it is about DATA. Every property must still be there afterwards, and
+/// saving again must produce a file the plugin's owner can still open.
+#[test]
+fn a_document_opens_without_the_plugin_that_made_it_and_loses_nothing() {
+    let path = std::env::temp_dir().join(format!("cad-4a-{}.vcad", std::process::id()));
+    let path_c = CString::new(path.to_str().unwrap()).unwrap();
+
+    // 1. Author the document WITH the plugin.
+    let digest_with_plugin = {
+        let plugin = Plugin::register("com.vcad.test.Cube");
+        plugin.add_object("com.vcad.test.Cube", 42.0);
+        plugin.recompute();
+        let status = unsafe { cad_document_save(plugin.host.session, path_c.as_ptr()) };
+        assert_eq!(status, CAD_OK, "saving failed: {}", plugin.host.last_error());
+        plugin.digest()
+    };
+
+    // 2. Open it in a plain session — no plugin, no such feature type.
+    let bare = Host::new();
+    let status = unsafe { cad_document_open(bare.session, path_c.as_ptr()) };
+    assert_eq!(
+        status, CAD_OK,
+        "a document containing a plugin feature must OPEN without the plugin: {}",
+        bare.last_error()
+    );
+
+    let mut count = 0u64;
+    unsafe { cad_object_count(bare.session, &mut count) };
+    assert_eq!(count, 1, "the unknown feature was dropped on load");
+
+    // 3. Recompute. The feature cannot be built, and that is expected — what matters is that it
+    //    is reported legibly and that nothing is destroyed.
+    let mut report = CadRecomputeReport::default();
+    unsafe { cad_recompute(bare.session, &mut report) };
+
+    let object: u64 = 1;
+    let message = unsafe {
+        CStr::from_ptr(cad_object_error(bare.session, object))
+            .to_string_lossy()
+            .into_owned()
+    };
+    // Rule 2: distinguishable from a broken feature, so the shell can grey it rather than red it.
+    // "Your file is damaged" and "you are missing software" must not look the same.
+    let mut state = 0i32;
+    unsafe { cad_object_state(bare.session, object, &mut state) };
+    assert_eq!(
+        state, 4,
+        "a feature whose plugin is missing must be NeedsPlugin, not Failed — got state {state}"
+    );
+    assert_eq!(
+        report.needs_plugin, 1,
+        "the recompute report must count a missing plugin apart from a failure"
+    );
+    assert_eq!(
+        report.failed, 0,
+        "a missing plugin is not a failed document; reporting it as one tells the user their \
+         file is damaged when it is not"
+    );
+
+    // And the message names the plugin AND says the data is safe. The second half matters as
+    // much: a user who believes their parameters are gone will not trust the file again.
+    assert!(
+        message.contains("com.vcad.test.Cube"),
+        "the message must name the plugin that is missing, got: {message:?}"
+    );
+    assert!(
+        message.contains("unchanged"),
+        "the message must say the settings survived, got: {message:?}"
+    );
+
+    // 4. Save it BACK from the session that could not compute it, and reopen with the plugin.
+    //    This is the step that destroys work if preservation is only skin-deep.
+    let status = unsafe { cad_document_save(bare.session, path_c.as_ptr()) };
+    assert_eq!(status, CAD_OK, "re-saving failed: {}", bare.last_error());
+
+    let restored = Plugin::register("com.vcad.test.Cube");
+    let status = unsafe { cad_document_open(restored.host.session, path_c.as_ptr()) };
+    assert_eq!(status, CAD_OK, "reopening with the plugin failed");
+
+    assert_eq!(
+        restored.digest(),
+        digest_with_plugin,
+        "a round trip through a session WITHOUT the plugin changed the document — \
+         the user's parameters did not survive"
+    );
+
+    // 5. And it computes again, because nothing was lost.
+    let report = restored.recompute();
+    assert_eq!(
+        report.failed + report.blocked,
+        0,
+        "reinstalling the plugin did not restore full behaviour: {}",
+        restored.object_error(object)
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Rule 3: a feature downstream of one whose plugin is missing goes Blocked with a reason.
+///
+/// Without this the document opens, the plugin feature is greyed honestly, and everything built
+/// on it fails with no explanation — which sends the user hunting through features that are
+/// perfectly fine.
+#[test]
+fn a_feature_downstream_of_a_missing_plugin_is_blocked_with_a_reason() {
+    let path = std::env::temp_dir().join(format!("cad-4a-down-{}.vcad", std::process::id()));
+    let path_c = CString::new(path.to_str().unwrap()).unwrap();
+
+    {
+        let plugin = Plugin::register("com.vcad.test.Cube");
+        let cube = plugin.add_object("com.vcad.test.Cube", 30.0);
+        plugin.recompute();
+        // A built-in that consumes the plugin's output.
+        let ty = CString::new("Translate").unwrap();
+        let mut moved = 0u64;
+        unsafe { cad_object_add(plugin.host.session, ty.as_ptr(), &mut moved) };
+        let prop = CString::new("base").unwrap();
+        unsafe { cad_object_set_object(plugin.host.session, moved, prop.as_ptr(), cube) };
+        plugin.recompute();
+        assert_eq!(
+            unsafe { cad_document_save(plugin.host.session, path_c.as_ptr()) },
+            CAD_OK
+        );
+    }
+
+    let bare = Host::new();
+    assert_eq!(unsafe { cad_document_open(bare.session, path_c.as_ptr()) }, CAD_OK);
+    let mut report = CadRecomputeReport::default();
+    unsafe { cad_recompute(bare.session, &mut report) };
+
+    assert_eq!(report.needs_plugin, 1, "the plugin feature needs its plugin");
+    assert_eq!(report.blocked, 1, "the feature built on it must be blocked");
+
+    // Object 2 is the Translate. Its message must point at what actually stopped it.
+    let message = unsafe {
+        CStr::from_ptr(cad_object_error(bare.session, 2))
+            .to_string_lossy()
+            .into_owned()
+    };
+    assert!(
+        !message.trim().is_empty(),
+        "a feature blocked by a missing plugin must say why"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+extern "C" {
+    fn cad_object_set_object(session: u64, object: u64, prop: *const c_char, target: u64)
+        -> CadStatus;
 }

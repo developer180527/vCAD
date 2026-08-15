@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 14
+#define CAD_ABI_VERSION_MINOR 15
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -532,6 +532,11 @@ typedef struct {
     uint64_t skipped;
     uint64_t failed;
     uint64_t blocked;
+
+    /* Appended in 1.15. Features whose type is not registered, counted apart from `failed`:
+     * a shell reporting "3 features could not be built" over a document that is complete and
+     * correct tells the user their file is damaged when it is not. See PLUGIN_CONTRACT.md 4A. */
+    uint64_t needs_plugin;
 } CadRecomputeReport;
 
 CAD_API CadStatus cad_recompute(CadSession, CadRecomputeReport* out);

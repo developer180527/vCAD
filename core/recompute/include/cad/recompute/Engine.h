@@ -122,8 +122,18 @@ struct RecomputeReport {
     std::size_t skipped = 0;    ///< already clean
     std::size_t failed = 0;
     std::size_t blocked = 0;
+
+    /// Features whose TYPE is not registered — their plugin is not installed.
+    ///
+    /// Counted apart from `failed` for the same reason ObjectState::NeedsPlugin exists: a shell
+    /// reporting "3 features could not be built" over a document that is complete and correct
+    /// tells the user their file is damaged when it is not. Nothing here is wrong with the
+    /// document; something is missing from the installation.
+    std::size_t needsPlugin = 0;
     std::vector<ObjectId> failedObjects;
 
+    /// Whether anything is actually WRONG. A missing plugin is not: the document is intact and
+    /// will compute the moment the plugin is installed.
     [[nodiscard]] bool allSucceeded() const noexcept { return failed == 0 && blocked == 0; }
 };
 

@@ -75,6 +75,9 @@ pub enum State {
     Dirty,
     Failed,
     Blocked,
+    /// The feature's type is not registered — its plugin is not installed. The document is
+    /// intact; the installation is not. See PLUGIN_CONTRACT.md §4A.
+    NeedsPlugin,
 }
 
 /// Axis-named on purpose: OCCT's `FrontFace()` is the x-max face, not y-min.
@@ -129,6 +132,8 @@ pub struct RecomputeReport {
     pub skipped: u64,
     pub failed: u64,
     pub blocked: u64,
+    /// Counted apart from `failed`: a missing plugin is not a broken document.
+    pub needs_plugin: u64,
 }
 
 impl RecomputeReport {
@@ -814,6 +819,7 @@ impl Session {
             sys::CAD_STATE_CLEAN => State::Clean,
             sys::CAD_STATE_DIRTY => State::Dirty,
             sys::CAD_STATE_FAILED => State::Failed,
+            sys::CAD_STATE_NEEDS_PLUGIN => State::NeedsPlugin,
             _ => State::Blocked,
         })
     }
@@ -898,6 +904,7 @@ impl Session {
             skipped: raw.skipped,
             failed: raw.failed,
             blocked: raw.blocked,
+            needs_plugin: raw.needs_plugin,
         })
     }
 

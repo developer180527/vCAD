@@ -244,13 +244,24 @@ dependencies, so there is nothing of ours for a plugin to conflict with.**
 
 ---
 
-## 4A. Persistence: a document must outlive the plugin that made it
+## 4A. Persistence: a document must outlive the plugin that made it — **(RESOLVED)**
 
 **A `.vpart` containing a plugin's feature must open on a machine where that plugin is not
 installed, and must not lose the plugin's data.**
 
-This is a platform-defining requirement and it is not currently met — the recompute rejects an
-unknown feature type outright with "a plugin may be missing".
+Met as of ABI 1.15. Writing the test first showed the requirement was half true already and half
+wrong in a way the original text missed: the DATA was never at risk — parameters are ordinary
+typed properties, so a document round-tripped through a session without the plugin and came back
+byte-identical. What was wrong was the REPORTING. An unknown type came back `Failed` with
+"Unknown feature type", indistinguishable from a broken model, which is precisely the impression
+that makes a user save over a colleague's file.
+
+So the fix is a distinction rather than a rescue: `ObjectState::NeedsPlugin`, counted separately
+in the recompute report, greyed rather than red in the tree, with a message that names the plugin
+AND says the settings are unchanged. Covered by
+`a_document_opens_without_the_plugin_that_made_it_and_loses_nothing`, which authors with the
+plugin, reopens without it, saves from the session that could not compute it, and reopens with the
+plugin again to assert the digest is unchanged.
 
 The rules:
 
@@ -652,7 +663,7 @@ Fixed, so it does not get relitigated per step. Each lands independently and is 
 | 3a | ~~Shape handles and a live host vtable~~ **(RESOLVED)** | `cad_plugin_host`; 9 tests on the §3 promises |
 | 3a+ | ~~Sub-shape enumeration~~ **(RESOLVED)** | ABI 1.13. `shape_sub_count` / `shape_sub_at`; closes §3.4, and exposed the naming-serial bug under it |
 | 3b | ~~`register_feature` and the compute accessors~~ **(RESOLVED)** | ABI 1.14. An in-process fake plugin registers a feature, computes from a parameter, and its output lands in the document with names — and two identical ones share a cache entry |
-| 4 | **Unknown-feature preservation** (§4A) | Failure must not nuke the user's *data*. Independent of the loader and valuable without it |
+| 4 | ~~**Unknown-feature preservation** (§4A)~~ **(RESOLVED)** | ABI 1.15. `ObjectState::NeedsPlugin`, a separate report count, and a grey tree badge. The data was never at risk; the reporting was |
 | 5 | Error containment (§5) | Failure must not nuke the *app* |
 | 6 | **The loader**, plus the compatibility museum and hostile-plugin test | Built last, against a finished contract |
 

@@ -298,6 +298,29 @@ kernel::Result<std::pair<Document, RecomputeReport>> Engine::recompute(
             continue;
         }
 
+        // 2A. The feature's TYPE is not registered: its plugin is not installed.
+        //
+        // Distinguished from every other failure, and PLUGIN_CONTRACT.md 4A is the reason. The
+        // document is not broken — it is complete and correct, and this machine is missing
+        // software. Reporting it as Failed makes a user conclude a colleague's file is corrupt,
+        // and the next thing they do is save over it.
+        //
+        // The object is left otherwise UNTOUCHED: its type, its parameters and its last output
+        // all stay, so saving from this session writes every byte back. That is the whole
+        // guarantee — a document must outlive the plugin that made it.
+        if (registry_.find(object->type()) == nullptr) {
+            poisoned.insert(id);   // dependents block, with a reason naming this feature
+            ++report.needsPlugin;
+            doc = doc.replace(std::make_shared<const document::ObjectData>(
+                object->withNeedsPlugin(kernel::Error{
+                    kernel::ErrorCode::Unsupported,
+                    "'" + object->label() + "' needs a plugin that is not installed (" +
+                        object->type() + "). Its settings are unchanged and will work again "
+                        "once the plugin is available.",
+                    "feature type not in the registry"})));
+            continue;
+        }
+
         auto key = cacheKeyOf(doc, *object, registry_);
         if (!key) {
             poisoned.insert(id);

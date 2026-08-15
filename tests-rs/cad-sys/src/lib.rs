@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 14;
+pub const CAD_ABI_VERSION_MINOR: u32 = 15;
 
 pub type CadStatus = i32;
 
@@ -95,6 +95,7 @@ pub const CAD_STATE_CLEAN: i32 = 0;
 pub const CAD_STATE_DIRTY: i32 = 1;
 pub const CAD_STATE_FAILED: i32 = 2;
 pub const CAD_STATE_BLOCKED: i32 = 3;
+pub const CAD_STATE_NEEDS_PLUGIN: i32 = 4;
 
 /// Mirrors `cad::kernel::BoxFace`. Axis-named because OCCT's `FrontFace()` is the x-max
 /// face, not y-min — see core/kernel/include/cad/kernel/Primitives.h.
@@ -177,6 +178,8 @@ pub struct CadRecomputeReport {
     pub skipped: u64,
     pub failed: u64,
     pub blocked: u64,
+    /// Appended in ABI 1.15.
+    pub needs_plugin: u64,
 }
 
 extern "C" {

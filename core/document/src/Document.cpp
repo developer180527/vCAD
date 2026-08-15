@@ -26,6 +26,7 @@ const char* toString(ObjectState s) noexcept {
         case ObjectState::Dirty:   return "Dirty";
         case ObjectState::Failed:  return "Failed";
         case ObjectState::Blocked: return "Blocked";
+        case ObjectState::NeedsPlugin: return "NeedsPlugin";
     }
     return "Unknown";
 }
@@ -85,7 +86,11 @@ ObjectData ObjectData::withLabel(std::string l) const {
 ObjectData ObjectData::withState(ObjectState s) const {
     ObjectData copy = *this;
     copy.state_ = s;
-    if (s != ObjectState::Failed && s != ObjectState::Blocked) copy.error_ = kernel::Error{};
+    // Failed, Blocked and NeedsPlugin all carry a reason the user needs; every other state means
+    // there is nothing wrong to report.
+    if (s != ObjectState::Failed && s != ObjectState::Blocked && s != ObjectState::NeedsPlugin) {
+        copy.error_ = kernel::Error{};
+    }
     return copy;
 }
 
@@ -93,6 +98,16 @@ ObjectData ObjectData::withError(kernel::Error e) const {
     ObjectData copy = *this;
     copy.error_ = std::move(e);
     copy.state_ = ObjectState::Failed;
+    return copy;
+}
+
+ObjectData ObjectData::withNeedsPlugin(kernel::Error e) const {
+    ObjectData copy = *this;
+    copy.error_ = std::move(e);
+    copy.state_ = ObjectState::NeedsPlugin;
+    // Output deliberately NOT dropped here. If a previous session computed this feature and the
+    // result is still in the cache, showing it stale beats showing a hole where the part was --
+    // 4A rule 3. The caller decides; this builder does not throw the geometry away on its behalf.
     return copy;
 }
 

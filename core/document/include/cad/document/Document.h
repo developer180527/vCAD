@@ -18,6 +18,17 @@ enum class ObjectState : std::uint8_t {
     Dirty,      ///< inputs or properties changed; needs recompute
     Failed,     ///< its own compute failed; `error` says why
     Blocked,    ///< an upstream object failed, so this one could not even be attempted
+
+    /// The feature's TYPE is not registered — its plugin is not installed.
+    ///
+    /// Distinct from Failed, and the distinction is the whole of PLUGIN_CONTRACT.md §4A. Failed
+    /// means the document is broken; this means the document is fine and the software is
+    /// incomplete. Shown greyed rather than red, and the fix is "install the plugin" rather than
+    /// "repair your model" — presenting them identically is how a user concludes a colleague's
+    /// file is corrupt and saves over it.
+    ///
+    /// Appended, never inserted: this value crosses the C ABI as an integer.
+    NeedsPlugin,
 };
 
 const char* toString(ObjectState) noexcept;
@@ -72,6 +83,9 @@ public:
     /// object WITH a message. The reverse silently downgrades Blocked to Failed, which is how
     /// blocked features ended up indistinguishable from broken ones.
     [[nodiscard]] ObjectData withBlocked(kernel::Error) const;
+
+    /// NeedsPlugin, with the reason. Keeps any output it already had — see the definition.
+    [[nodiscard]] ObjectData withNeedsPlugin(kernel::Error) const;
     [[nodiscard]] ObjectData withOutput(Output, std::uint64_t cacheKey) const;
     [[nodiscard]] ObjectData withoutOutput() const;
 

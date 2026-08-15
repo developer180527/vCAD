@@ -1,6 +1,6 @@
 # Pick up here
 
-Written 15 Aug 2026, at the end of the session that finished step 3b. Everything below was
+Written 15 Aug 2026, at the end of the session that finished steps 3b and 4. Everything below was
 verified on that commit, not remembered.
 
 **The tree is green and every promise currently marked (RESOLVED) is genuinely tested.** Nothing is
@@ -13,10 +13,10 @@ half-wired. You can start clean.
 | Check | Result |
 |---|---|
 | C++ tests (`ctest --test-dir build`) | green |
-| Rust tests (`cd tests-rs && cargo test --workspace`) | green, `plugin_host.rs` now 25 |
+| Rust tests (`cd tests-rs && cargo test --workspace`) | green; `plugin_host.rs` 29, plus new `sequences.rs` and `concurrency.rs` |
 | Layering (`cmake --build build`) | Layering OK |
 | Qt shell (`cmake --build build-qt --target vcad`) | builds clean |
-| ABI golden snapshot | no drift, regenerated for 1.14 |
+| ABI golden snapshot | no drift, regenerated for 1.15 |
 
 Two build directories, on purpose: `build` (core, tests, spikes) and `build-qt` (renderer + Qt
 shell). Rust links the library from `build/abi`, so **run `cmake --build build` before
@@ -28,25 +28,24 @@ moment the full suite ran — see the note at the bottom.
 
 ---
 
-## Start here: step 4, unknown-feature preservation (§4A)
+## Start here: step 5, error containment (§5)
 
-**Why first:** it is the last thing that can lose a user's DATA, and it is independent of the
-loader — a `.vpart` containing a plugin's feature must open on a machine where that plugin is not
-installed, and must not lose the plugin's parameters.
+Step 4 is done (ABI 1.15). Writing its test first was worth it: the DATA was never at risk —
+parameters are ordinary typed properties, so a document already round-tripped through a session
+without its plugin unchanged. What was wrong was the reporting, and §4A now has
+`ObjectState::NeedsPlugin`, its own count in the recompute report, and a grey `PLUGIN` badge
+instead of a red `ERR`.
 
-Now genuinely reachable: as of step 3b a plugin feature can exist in a document, so a document
-containing one can be saved and reopened without its plugin. Before, there was nothing to preserve.
+§5 is the other half of "a plugin must not take the user down with it", and it is the one with a
+hard limit: an in-process native plugin that segfaults is NOT survivable, and §5 already says so.
+What is achievable is containment of everything short of that — a compute that throws, that
+returns nonsense, that never returns — plus honest attribution when it is not.
 
-The shape of it: an unknown feature type keeps its stored parameters verbatim, computes nothing,
-and is marked as needing the plugin rather than as broken. Saving must round-trip those parameters
-untouched — losing them silently is worse than refusing to open the file, because the user only
-finds out after saving over the original.
-
----
+Read §5 before designing; the boundary between "contained" and "not survivable" is the whole
+decision, and promising more than in-process C can deliver is worse than promising nothing.
 
 ## Then
 
-5. **Error containment** (§5).
 6. **The loader** — discovery, manifest, `dlopen` with `RTLD_LOCAL`, lifecycle. Plus the
    compatibility museum and the hostile-plugin test. Built last, deliberately: the loader is the
    first client and a client freezes the design it is built against.

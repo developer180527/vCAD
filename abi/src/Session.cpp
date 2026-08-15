@@ -1273,6 +1273,7 @@ CadStatus cad_recompute(CadSession handle, CadRecomputeReport* out) {
             out->skipped = r.skipped;
             out->failed = r.failed;
             out->blocked = r.blocked;
+            out->needs_plugin = r.needsPlugin;
         }
         return CAD_OK;
     });
