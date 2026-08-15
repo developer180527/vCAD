@@ -34,10 +34,17 @@ option(CAD_BUILD_SHELL_QT   "Build Qt desktop shell (M4)"         OFF)
 option(CAD_ENABLE_ASAN      "Enable AddressSanitizer"             OFF)
 option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 
-# Rust components (rust/cad-parse). OFF-by-default requirement while the library is a stub with
-# no callers: a contributor without a Rust toolchain can still build everything that ships. The
-# day core/ links it — the DXF parser — this flips to ON, and a missing cargo becomes an error
-# instead of a warning.
+# Rust components (rust/cad-parse). Still OFF by default, and the earlier note here said this
+# would flip to ON the day core/ linked it. That day has come — the DXF reader is Rust — and the
+# answer changed on the way, because dime stayed as a working fallback rather than being deleted.
+# Flipping this to ON would make a contributor without a cargo toolchain unable to build an
+# application that runs perfectly well without one.
+#
+# So the requirement moved rather than disappearing: CI configures with -DCAD_REQUIRE_RUST=ON on
+# every platform. That is where it belongs. A developer may opt out of the Rust path; the project
+# may not, and the difference between "the Rust integration works on Windows" and "cargo was
+# missing so CMake quietly skipped it and everything fell back to dime" is invisible from a green
+# test run unless something asserts it.
 option(CAD_REQUIRE_RUST     "Fail the build if the Rust toolchain is missing" OFF)
 
 # assetlib: the content-addressed DDC (ADR 0004). Vendored in-tree — see

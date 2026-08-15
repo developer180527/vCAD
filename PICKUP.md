@@ -116,9 +116,17 @@ exercise dime, and the differential skips rather than failing on a build with no
 
 ### Still open here
 
-- **Windows and Linux CI have not run any of this.** The Rust integration was only ever exercised
-  on macOS. `rustc --print native-static-libs`, the MSVC `.lib` naming and the `--offline` path are
-  the three most likely to break.
+- **Windows and Linux CI still have not run any of this**, but the workflow now asks them to and
+  the reason they were not is understood. The lint job runs `cargo fmt --all --check` on tests-rs
+  and the matrix declares `needs: lint`, so a formatting drift that had been there for several
+  commits was silently preventing every platform from building. Formatted, and the workflow now
+  also sets `-DCAD_REQUIRE_RUST=ON`, installs Qt so the shell and `proshell_boundary` are built,
+  and asserts that `rust_boundary`, `dxf_differential` and `proshell_boundary` are actually
+  registered before running the suite.
+
+  **None of that is verified until CI runs.** The three most likely to break are still
+  `rustc --print native-static-libs`, the MSVC `.lib` naming, and — new — whether `vcad` and
+  `proshell` compile under MSVC at all, which no one has ever tried.
 - **The fuzz corpus is thin** — two seeds, both ours. See the fixture notes below; a fuzzer
   starting from thin material stays thin.
 - ~~No differential fuzzing.~~ **Done** — `tests/acceptance/dxf_differential.cpp`, ctest

@@ -81,6 +81,26 @@ jobs:
         working-directory: tests-rs
         run: cargo fmt --all --check
 
+      # rust/cad-parse is a SEPARATE cargo project from tests-rs -- it is driven by cmake and
+      # consumed by the C++ build, rather than driving the C++ build the way tests-rs does. It
+      # therefore has to be named explicitly everywhere; `--workspace` in tests-rs does not reach
+      # it, which is how its twenty-six unit tests ran on no machine but a developer's.
+      - name: Rust formatting (cad-parse)
+        working-directory: rust/cad-parse
+        run: cargo fmt --all --check
+
+      - name: Clippy (cad-parse)
+        working-directory: rust/cad-parse
+        # Denied rather than reported. This crate parses bytes from strangers; a lint about an
+        # unchecked slice index is not a style note here.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cad-parse unit tests
+        working-directory: rust/cad-parse
+        # Pure Rust with no dependencies and no link to the C++ side, so it runs in the lint job
+        # in seconds rather than waiting behind an OCCT build.
+        run: cargo test
+
   test:
     name: ${{ matrix.name }}
     needs: lint
@@ -176,15 +196,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tests-rs
+          # Both cargo projects. rust/cad-parse is small enough that missing it costs seconds
+          # rather than minutes, but an uncached crate is also an uncached TOOLCHAIN check.
+          workspaces: |
+            tests-rs
+            rust/cad-parse
+
+      # Qt, so the desktop shell and modules/proshell are built here rather than only on a
+      # developer's machine. shell_qt returns early when Qt is absent, which means CI has been
+      # skipping the entire shell -- including proshell_boundary, the test whose whole purpose is
+      # to fail in CI on the commit that couples the reusable shell to CAD.
+      - name: Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          cache: true
+
+      - name: Qt runtime dependencies (Linux)
+        if: runner.os == 'Linux'
+        # proshell_boundary runs with QT_QPA_PLATFORM=offscreen, which still loads the xkb and
+        # EGL libraries even though it opens no window.
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-0 libegl1 libgl1
 
       - name: Configure
         id: configure
+        # CAD_REQUIRE_RUST=ON is the point of this line. The option defaults to OFF so that a
+        # contributor without cargo can still build against the dime fallback -- but if CI
+        # inherited that default, a missing or broken Rust toolchain would make CMake quietly skip
+        # the library, the DXF reader would fall back to dime, every test would pass, and the
+        # Windows and Linux coverage of the Rust integration would be exactly zero while looking
+        # green. See the note on the option in CMakeLists.txt.
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=${{ matrix.preset }}
+          -DCAD_REQUIRE_RUST=ON
 
       - name: Binary cache report
         id: pkgs-after
@@ -214,6 +263,22 @@ jobs:
 
       - name: Build
         run: cmake --build build -j
+
+      - name: The tests that matter are actually registered
+        # Guards the failure mode this project keeps meeting: a green run that tested nothing.
+        # Both of these vanish silently when a dependency is absent -- rust_boundary and
+        # dxf_differential need cad::parse, proshell_boundary needs Qt -- and a suite that reports
+        # "100% tests passed" over a list missing them looks exactly like one that ran them.
+        shell: bash
+        run: |
+          registered=$(ctest --test-dir build -N)
+          echo "$registered"
+          for name in rust_boundary dxf_differential proshell_boundary; do
+            if ! echo "$registered" | grep -q "$name"; then
+              echo "::error::$name is not registered — a dependency was silently skipped at configure time"
+              exit 1
+            fi
+          done
 
       - name: C++ tests
         # vcpkg's toolchain copies dependency DLLs next to built executables on Windows, so
@@ -320,6 +385,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake/triplets
           -DCMAKE_BUILD_TYPE=Debug -DCAD_ENABLE_ASAN=ON -DCAD_BUILD_SPIKES=OFF
+          -DCAD_REQUIRE_RUST=ON
       - name: Count cached packages after configure
         id: pkgs-after
         if: ${{ !cancelled() }}
