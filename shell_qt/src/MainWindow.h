@@ -1,8 +1,7 @@
 #pragma once
 
 #include "cad/app/Session.h"
-
-#include <QMainWindow>
+#include "proshell/ShellWindow.h"
 
 #include <map>
 #include <vector>
@@ -18,19 +17,24 @@ class QTabBar;
 class QTableWidget;
 class QTreeWidget;
 
-namespace proshell {
-class Ribbon;
-}
-
 namespace cadqt {
 
 class HomePage;
 class SketchCanvas;
 class Viewport;
 
-/// Inventor's frame: quick access toolbar, ribbon, docks, stacked workspaces, document tabs at
-/// the bottom, status bar.
-class MainWindow : public QMainWindow {
+/// vCAD, on proshell's frame.
+///
+/// The frame -- quick access strip, ribbon, docks, workspace stack, document tabs, status bar --
+/// is `proshell::ShellWindow` and knows nothing about CAD. What is left here is the part that IS
+/// CAD: the command catalogue, the feature browser, the property table, the sketch canvases, and
+/// the session that owns the documents.
+///
+/// Documents are deliberately still ours. ShellWindow hands over the tab bar and the page stack
+/// rather than an abstract document model, because every idea in `cad::app::Session` -- an
+/// environment, a controller per document, "Home is not a document" -- is vCAD's idea about
+/// documents rather than a fact about applications. See the note on ShellWindow.
+class MainWindow : public proshell::ShellWindow {
     Q_OBJECT
 public:
     MainWindow();
@@ -43,13 +47,13 @@ public:
 
 protected:
     /// Prompts for unsaved work in EVERY open document before letting the window go.
-    void closeEvent(QCloseEvent*) override;
+    [[nodiscard]] bool confirmClose() override;
 
 private:
-    void buildTopArea();          ///< QAT + ribbon, in ONE menu widget
-    void buildDocks();
+    void buildQuickAccess();      ///< vCAD's buttons and File menu on the frame's strip
+    void buildBrowserAndProperties();
     void buildWorkspaces();
-    void buildStatusBar();
+    void buildStatusFields();
 
     /// Rebuilds the ribbon's tabs for the active workspace.
     ///
@@ -107,22 +111,9 @@ private:
 
     cad::app::Session session_;
 
-    proshell::Ribbon* ribbon_ = nullptr;
-    QMenu* fileMenu_ = nullptr;
-    /// Held so Home can hide them: Home is a full-window workspace, not a document.
-    QDockWidget* browserDock_ = nullptr;
-    QDockWidget* propertiesDock_ = nullptr;
-
     QTreeWidget* browser_ = nullptr;
     QTableWidget* properties_ = nullptr;
-    QStackedWidget* workspaces_ = nullptr;
     HomePage* home_ = nullptr;
-    /// Home's left rail. Built by HomePage but laid out here, so it spans the full window height
-    /// past the document tab bar rather than being clipped by it.
-    QWidget* homeSidebar_ = nullptr;
-    /// Carries the drag handle between the rail and the content column.
-    QSplitter* homeSplitter_ = nullptr;
-    QTabBar* documentTabs_ = nullptr;
     /// One sketch canvas per open document, parallel to editors_. Held rather than looked up so
     /// switching documents while sketching cannot show another document's sketch.
     std::vector<SketchCanvas*> sketchCanvases_;
@@ -135,7 +126,6 @@ private:
     };
     std::vector<SketchConstraintAction> sketchConstraintActions_;
 
-    QStackedWidget* leftStack_ = nullptr;
     QWidget* commandPanel_ = nullptr;
     QLabel* commandTitle_ = nullptr;
     QFormLayout* commandFields_ = nullptr;
@@ -157,7 +147,6 @@ private:
     QWidget* filterBar_ = nullptr;
     QButtonGroup* selectionFilter_ = nullptr;
 
-    QLabel* statusMessage_ = nullptr;
     QLabel* statusStats_ = nullptr;
     QLabel* statusUnits_ = nullptr;
 

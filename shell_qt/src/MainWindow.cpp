@@ -83,12 +83,16 @@ QString iconNameFor(const std::string& type) {
 
 MainWindow::MainWindow() {
     setWindowTitle(tr("vCAD"));
+    setProductName(tr("vCAD"));
     resize(1500, 940);
 
-    buildTopArea();
-    buildDocks();
+    // The frame first, then vCAD's contents into it. buildChrome() is not called by ShellWindow's
+    // own constructor precisely so that everything below it can assume the widgets exist.
+    buildChrome();
+    buildQuickAccess();
+    buildBrowserAndProperties();
     buildWorkspaces();
-    buildStatusBar();
+    buildStatusFields();
 
     session_.onChanged([this] {
         syncWorkspace();
@@ -115,69 +119,31 @@ MainWindow::~MainWindow() = default;
 
 // ── top area ────────────────────────────────────────────────────────────────────────────
 
-void MainWindow::buildTopArea() {
-    // ONE menu widget holding both strips.
-    //
-    // The previous version called setMenuWidget(ribbon) and then menuBar(), which REPLACES the
-    // menu widget — so the ribbon was destroyed at startup and, because macOS puts QMenuBar in the
-    // global bar, the window showed no commands at all. There is no QMenuBar here now: Inventor
-    // has none either, it has a File tab in the ribbon strip.
-    auto* top = new QWidget(this);
-    auto* topLayout = new QVBoxLayout(top);
-    topLayout->setContentsMargins(0, 0, 0, 0);
-    topLayout->setSpacing(0);
-
-    // Quick access toolbar, the strip above the ribbon.
-    auto* qat = new QWidget(top);
-    qat->setObjectName(QStringLiteral("qat"));
-    auto* qatRow = new QHBoxLayout(qat);
-    qatRow->setContentsMargins(0, 0, 8, 0);
-    qatRow->setSpacing(2);
-
-    auto* fileTab = new QToolButton(qat);
-    fileTab->setText(tr("File"));
-    fileTab->setObjectName(QStringLiteral("fileTab"));
-    fileTab->setPopupMode(QToolButton::InstantPopup);
-    fileMenu_ = new QMenu(fileTab);
-    fileTab->setMenu(fileMenu_);
-    qatRow->addWidget(fileTab);
-    qatRow->addSpacing(6);
-
-    const auto addQat = [&](const QString& iconName, const QString& text,
-                            const std::function<void()>& fn, const QKeySequence& shortcut) {
-        auto* button = new QToolButton(qat);
-        button->setIcon(icon(iconName, 18));
-        button->setIconSize(QSize(18, 18));
-        button->setToolTip(shortcut.isEmpty() ? text
-                                              : text + QStringLiteral(" (")
-                                                    + shortcut.toString(QKeySequence::NativeText)
-                                                    + QStringLiteral(")"));
-        button->setObjectName(QStringLiteral("qatButton"));
-        button->setAutoRaise(true);
-        connect(button, &QToolButton::clicked, this, fn);
-        qatRow->addWidget(button);
-        return button;
-    };
-
-    addQat(QStringLiteral("new"), tr("New part"),
-           [this] { createDocument(DocumentKind::Part); }, QKeySequence::New);
-    addQat(QStringLiteral("open"), tr("Open"), [this] { openDocument(); }, QKeySequence::Open);
-    addQat(QStringLiteral("save"), tr("Save"), [this] { saveDocument(false); },
-           QKeySequence::Save);
-    qatRow->addSpacing(6);
-    addQat(QStringLiteral("undo"), tr("Undo"), [this] {
+void MainWindow::buildQuickAccess() {
+    // vCAD's own buttons on the frame's strip. The strip, the File tab, the ribbon and the
+    // hairline below it are ShellWindow's; what a New button DOES is ours.
+    addQuickAccessButton(QStringLiteral("new"), tr("New part"),
+                         [this] { createDocument(DocumentKind::Part); }, QKeySequence::New);
+    addQuickAccessButton(QStringLiteral("open"), tr("Open"), [this] { openDocument(); },
+                         QKeySequence::Open);
+    addQuickAccessButton(QStringLiteral("save"), tr("Save"), [this] { saveDocument(false); },
+                         QKeySequence::Save);
+    addQuickAccessSpacing();
+    addQuickAccessButton(QStringLiteral("undo"), tr("Undo"), [this] {
         if (auto* c = controller()) c->undo();
     }, QKeySequence::Undo);
-    addQat(QStringLiteral("redo"), tr("Redo"), [this] {
+    addQuickAccessButton(QStringLiteral("redo"), tr("Redo"), [this] {
         if (auto* c = controller()) c->redo();
     }, QKeySequence::Redo);
 
-    qatRow->addStretch(1);
-
     // Selection filter. Non-negotiable in CAD: picking an edge inside a dense assembly is
     // otherwise impossible, and a filter that lives in a preferences dialog is a filter nobody
-    // knows is on. It sits at the right of the QAT, visible at all times, because "why did my
+    // knows is on. It sits at the right of the strip, visible at all times, because "why did my
     // click select the whole body" is a question the UI should already be answering.
+    //
+    // On the strip but not OF it, which is why ShellWindow takes it as an opaque widget rather
+    // than knowing what a selection filter is: an application with nothing to select has no use
+    // for the concept, and one with a different notion of selection needs a different control.
     //
     // The shell owns the setting for now. It becomes a Controller concern the day IPicker
     // resolves a pixel to the nearest entity of a requested TYPE rather than to one element —
@@ -185,7 +151,7 @@ void MainWindow::buildTopArea() {
     //
     // Hidden on Home, which has nothing to select. A filter offering to restrict picking on a
     // page with no geometry is chrome pretending to be a control.
-    filterBar_ = new QWidget(qat);
+    filterBar_ = new QWidget(this);
     auto* filterRow = new QHBoxLayout(filterBar_);
     filterRow->setContentsMargins(0, 0, 0, 0);
     filterRow->setSpacing(2);
@@ -214,61 +180,34 @@ void MainWindow::buildTopArea() {
         selectionFilter_->addButton(button, filterId++);
         filterRow->addWidget(button);
     }
-    qatRow->addWidget(filterBar_);
+    addQuickAccessWidget(filterBar_);
     connect(selectionFilter_, &QButtonGroup::idClicked, this, [this](int) { refreshStatus(); });
 
-    qatRow->addSpacing(10);
-    auto* product = new QLabel(tr("vCAD"), qat);
-    product->setStyleSheet(QStringLiteral("color: #6c7075;"));
-    qatRow->addWidget(product);
-    topLayout->addWidget(qat);
-
-    ribbon_ = new proshell::Ribbon(top);
-    topLayout->addWidget(ribbon_);
-
-    // A hairline closing the ribbon off from the workspace below. Both Inventor and SolidWorks
-    // separate the command area from the graphics area this way, and without it the ribbon and
-    // the viewport read as one undifferentiated surface. QFrame::HLine is not used: it draws a
-    // two-tone bevel that looks like a 1990s group box. This is one device pixel of the theme's
-    // own line colour.
-    auto* rule = new QWidget(top);
-    rule->setFixedHeight(1);
-    rule->setAutoFillBackground(true);
-    {
-        QPalette rulePalette = rule->palette();
-        rulePalette.setColor(QPalette::Window, QColor(0xcf, 0xcd, 0xc9));
-        rule->setPalette(rulePalette);
-    }
-    topLayout->addWidget(rule);
-
-    setMenuWidget(top);
-
     // File menu, on the File tab rather than a menu bar.
-    fileMenu_->addAction(icon(QStringLiteral("part"), 16), tr("New Part"), this,
-                         [this] { createDocument(DocumentKind::Part); });
+    auto* menu = fileMenu();
+    menu->addAction(icon(QStringLiteral("part"), 16), tr("New Part"), this,
+                    [this] { createDocument(DocumentKind::Part); });
     for (const auto kind : {DocumentKind::Assembly, DocumentKind::Drawing,
                             DocumentKind::Presentation}) {
-        auto* action = fileMenu_->addAction(
+        auto* action = menu->addAction(
             icon(QString::fromUtf8(cad::app::toString(kind)).toLower(), 16),
             tr("New %1").arg(QString::fromUtf8(cad::app::toString(kind))));
         // Present but disabled: a user should see the app's intended shape, not wonder whether
         // assemblies exist.
         action->setEnabled(cad::app::implemented(kind));
     }
-    fileMenu_->addSeparator();
-    fileMenu_->addAction(icon(QStringLiteral("open"), 16), tr("Open..."), QKeySequence::Open, this,
-                         [this] { openDocument(); });
-    fileMenu_->addAction(icon(QStringLiteral("save"), 16), tr("Save"), QKeySequence::Save, this,
-                         [this] { saveDocument(false); });
-    fileMenu_->addAction(tr("Save As..."), QKeySequence::SaveAs, this,
-                         [this] { saveDocument(true); });
-    fileMenu_->addSeparator();
-    fileMenu_->addAction(tr("Home"), this, [this] { session_.activateHome(); });
-    fileMenu_->addSeparator();
-    fileMenu_->addAction(tr("Options..."), QKeySequence::Preferences, this,
-                         [this] { showOptions(); });
-    fileMenu_->addSeparator();
-    fileMenu_->addAction(tr("Exit"), QKeySequence::Quit, this, &QWidget::close);
+    menu->addSeparator();
+    menu->addAction(icon(QStringLiteral("open"), 16), tr("Open..."), QKeySequence::Open, this,
+                    [this] { openDocument(); });
+    menu->addAction(icon(QStringLiteral("save"), 16), tr("Save"), QKeySequence::Save, this,
+                    [this] { saveDocument(false); });
+    menu->addAction(tr("Save As..."), QKeySequence::SaveAs, this, [this] { saveDocument(true); });
+    menu->addSeparator();
+    menu->addAction(tr("Home"), this, [this] { session_.activateHome(); });
+    menu->addSeparator();
+    menu->addAction(tr("Options..."), QKeySequence::Preferences, this, [this] { showOptions(); });
+    menu->addSeparator();
+    menu->addAction(tr("Exit"), QKeySequence::Quit, this, &QWidget::close);
 }
 
 QAction* MainWindow::command(const char* id) {
@@ -345,16 +284,16 @@ void MainWindow::openPath(const QString& path) {
     if (!result) {
         QMessageBox::warning(this, tr("Could not open"),
                              QString::fromStdString(result.error().message), QMessageBox::Ok);
-        statusMessage_->setText(tr("Open failed"));
+        setStatusMessage(tr("Open failed"));
         return;
     }
     // Session::openDocument fires its changed callback, which rebuilds the tabs and the ribbon.
-    statusMessage_->setText(tr("Opened %1").arg(QFileInfo(path).fileName()));
+    setStatusMessage(tr("Opened %1").arg(QFileInfo(path).fileName()));
 }
 
 bool MainWindow::saveDocument(bool saveAs) {
     if (session_.homeActive() || session_.active() == nullptr) {
-        statusMessage_->setText(tr("There is no document to save"));
+        setStatusMessage(tr("There is no document to save"));
         return false;
     }
 
@@ -375,7 +314,7 @@ bool MainWindow::saveDocument(bool saveAs) {
     if (!result) {
         QMessageBox::warning(this, tr("Could not save"),
                              QString::fromStdString(result.error().message), QMessageBox::Ok);
-        statusMessage_->setText(tr("Save failed"));
+        setStatusMessage(tr("Save failed"));
         return false;
     }
     syncTitle();
@@ -411,17 +350,14 @@ void MainWindow::syncTitle() {
     setWindowTitle(title);
 }
 
-void MainWindow::closeEvent(QCloseEvent* event) {
+bool MainWindow::confirmClose() {
     // Every open document, not just the active one: quitting must not silently drop edits in a tab
     // the user is not looking at.
     for (std::size_t i = 0; i < session_.count(); ++i) {
         session_.activate(i);
-        if (!confirmDiscardChanges()) {
-            event->ignore();
-            return;
-        }
+        if (!confirmDiscardChanges()) return false;
     }
-    event->accept();
+    return true;
 }
 
 void MainWindow::importFile() {
@@ -447,7 +383,7 @@ void MainWindow::importFile() {
         QMessageBox::warning(this, tr("Import failed"),
                              QString::fromStdString(result.error().message),
                              QMessageBox::Ok);
-        statusMessage_->setText(tr("Import failed"));
+        setStatusMessage(tr("Import failed"));
         return;
     }
     refreshTree();
@@ -456,7 +392,7 @@ void MainWindow::importFile() {
 
 void MainWindow::rebuildRibbon() {
     // Tabs are a function of the active workspace. Home contributes none of its own.
-    ribbon_->clearTabs();
+    ribbon()->clearTabs();
     actions_.clear();
     sketchConstraintActions_.clear();
     parameterisedActions_.clear();
@@ -466,7 +402,7 @@ void MainWindow::rebuildRibbon() {
         // Home's ribbon, matching Inventor: application-level tabs only. Creating documents is
         // the Home page's own job — the sidebar's New... button — so the ribbon does not
         // duplicate it.
-        auto* tools = ribbon_->addTab(tr("Tools"));
+        auto* tools = ribbon()->addTab(tr("Tools"));
         auto* options = tools->addPanel(tr("Options"));
         options->addLarge(planned(tr("Application\nOptions"), QStringLiteral("parameters")));
         options->addLarge(planned(tr("Document\nSettings"), QStringLiteral("note")));
@@ -474,12 +410,12 @@ void MainWindow::rebuildRibbon() {
         cachePanel->addLarge(planned(tr("Cache\nStatus"), QStringLiteral("cache")));
         cachePanel->addSmall(planned(tr("Purge Local"), QStringLiteral("purge")));
 
-        auto* collaborate = ribbon_->addTab(tr("Collaborate"));
+        auto* collaborate = ribbon()->addTab(tr("Collaborate"));
         auto* project = collaborate->addPanel(tr("Project"));
         project->addLarge(planned(tr("Projects"), QStringLiteral("assembly")));
         project->addSmall(planned(tr("Search Paths"), QStringLiteral("open")));
 
-        ribbon_->setCurrentTab(0);
+        ribbon()->setCurrentTab(0);
         return;
     }
 
@@ -501,7 +437,7 @@ void MainWindow::rebuildRibbon() {
     // In the sketch environment the ribbon collapses to ONE tab, as Inventor's does. The app
     // entered this mode for the user, so the commands follow without them choosing a mode.
     if (c->environment() == cad::app::Environment::Sketch) {
-        auto* sketchTab = ribbon_->addTab(tr("Sketch"));
+        auto* sketchTab = ribbon()->addTab(tr("Sketch"));
         auto* draw = sketchTab->addPanel(tr("Draw"));
         const auto addTool = [&](const QString& label, const QString& iconName,
                                  SketchCanvas::Tool tool, const QString& shortcut) {
@@ -579,13 +515,13 @@ void MainWindow::rebuildRibbon() {
                                    QStringLiteral("sketch-finish")));
         finish->addSmall(commandOr("sketch.cancel", tr("Cancel"), QStringLiteral("delete")));
 
-        ribbon_->setCurrentTab(0);
+        ribbon()->setCurrentTab(0);
         refreshCommandStates();
         return;
     }
 
     // ── 3D Model ────────────────────────────────────────────────────────────────────────
-    auto* model = ribbon_->addTab(tr("3D Model"));
+    auto* model = ribbon()->addTab(tr("3D Model"));
 
     auto* sketchPanel = model->addPanel(tr("Sketch"));
     sketchPanel->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
@@ -696,7 +632,7 @@ void MainWindow::rebuildRibbon() {
                                      QStringLiteral("rollforward")));
 
     // ── Sketch ──────────────────────────────────────────────────────────────────────────
-    auto* sketch = ribbon_->addTab(tr("Sketch"));
+    auto* sketch = ribbon()->addTab(tr("Sketch"));
     auto* sketchManage = sketch->addPanel(tr("Manage"));
     sketchManage->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
                                      QStringLiteral("sketch")));
@@ -705,7 +641,7 @@ void MainWindow::rebuildRibbon() {
     sketchManage->addLarge(planned(tr("Delete\nSketch"), QStringLiteral("delete")));
 
     // ── Inspect ─────────────────────────────────────────────────────────────────────────
-    auto* inspect = ribbon_->addTab(tr("Inspect"));
+    auto* inspect = ribbon()->addTab(tr("Inspect"));
     auto* measure = inspect->addPanel(tr("Measure"));
     measure->addLarge(planned(tr("Measure"), QStringLiteral("measure")));
     auto* analysis = inspect->addPanel(tr("Analysis"));
@@ -714,13 +650,13 @@ void MainWindow::rebuildRibbon() {
     analysis->addSmall(planned(tr("Draft Analysis"), QStringLiteral("draft")));
 
     // ── Annotate ────────────────────────────────────────────────────────────────────────
-    auto* annotate = ribbon_->addTab(tr("Annotate"));
+    auto* annotate = ribbon()->addTab(tr("Annotate"));
     auto* annotation = annotate->addPanel(tr("3D Annotation"));
     annotation->addLarge(planned(tr("Dimension"), QStringLiteral("dimension")));
     annotation->addLarge(planned(tr("Note"), QStringLiteral("note")));
 
     // ── Manage ──────────────────────────────────────────────────────────────────────────
-    auto* manage = ribbon_->addTab(tr("Manage"));
+    auto* manage = ribbon()->addTab(tr("Manage"));
     auto* parameters = manage->addPanel(tr("Parameters"));
     parameters->addLarge(planned(tr("Parameters"), QStringLiteral("parameters")));
     // The DDC, surfaced in the UI. No other CAD application has this panel because no other CAD
@@ -730,7 +666,7 @@ void MainWindow::rebuildRibbon() {
     cache->addSmall(planned(tr("Purge Local"), QStringLiteral("purge")));
 
     // ── View ────────────────────────────────────────────────────────────────────────────
-    auto* view = ribbon_->addTab(tr("View"));
+    auto* view = ribbon()->addTab(tr("View"));
     auto* navigate = view->addPanel(tr("Navigate"));
     navigate->addLarge(commandOr("view.fit", tr("Fit"), QStringLiteral("fit")));
     navigate->addLarge(commandOr("view.ortho", tr("Ortho"), QStringLiteral("ortho")));
@@ -742,51 +678,21 @@ void MainWindow::rebuildRibbon() {
     visibility->addSmall(planned(tr("Origin Planes"), QStringLiteral("origin")));
     visibility->addSmall(planned(tr("All Sketches"), QStringLiteral("sketches")));
 
-    ribbon_->setCurrentTab(0);
+    ribbon()->setCurrentTab(0);
     refreshCommandStates();
 }
 
 // ── workspaces ──────────────────────────────────────────────────────────────────────────
 
 void MainWindow::buildWorkspaces() {
-    // Two columns: Home's rail, then everything else stacked over the document tabs.
-    //
-    // The tab bar is deliberately INSIDE the right column rather than spanning the window. With
-    // one full-width bar the rail stopped above it and read as a panel sitting inside the page;
-    // owning the left column down to the status bar is what makes it a sidebar.
-    // A QSplitter rather than a plain layout, so the rail can be dragged. The handle is the
-    // divider the user grabs; the rail's own min/max width bound how far it can go, which is why
-    // those live on the widget instead of here.
-    auto* centre = new QWidget(this);
-    auto* columns = new QHBoxLayout(centre);
-    columns->setContentsMargins(0, 0, 0, 0);
-    columns->setSpacing(0);
+    // The splitter, the page stack and the bottom tab bar are the frame's. What goes IN them, and
+    // what a tab means, is vCAD's -- see the note on ShellWindow for why documents did not move.
+    home_ = new HomePage(session_, workspaces());
+    workspaces()->addWidget(home_);
 
-    homeSplitter_ = new QSplitter(Qt::Horizontal, centre);
-    homeSplitter_->setObjectName(QStringLiteral("homeSplitter"));
-    homeSplitter_->setChildrenCollapsible(false);   // dragging must not make the rail vanish
-    homeSplitter_->setHandleWidth(4);               // 1px reads as a border and cannot be grabbed
-    columns->addWidget(homeSplitter_, 1);
-
-    workspaces_ = new QStackedWidget(homeSplitter_);
-    home_ = new HomePage(session_, workspaces_);
-    workspaces_->addWidget(home_);
-
-    homeSidebar_ = home_->sidebar();
-    homeSplitter_->addWidget(homeSidebar_);
-
-    auto* right = new QWidget(homeSplitter_);
-    auto* layout = new QVBoxLayout(right);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-    layout->addWidget(workspaces_, 1);
-    homeSplitter_->addWidget(right);
-
-    // Only the content column absorbs window resizing; the rail keeps whatever width the user
-    // dragged it to, which is what every CAD sidebar does.
-    homeSplitter_->setStretchFactor(0, 0);
-    homeSplitter_->setStretchFactor(1, 1);
-    homeSplitter_->setSizes({HomePage::sidebarDefaultWidth(), 1});
+    // Home's rail is built by HomePage but placed by the frame, so it spans the full window height
+    // past the document tab bar rather than being clipped by it.
+    setSidebar(home_->sidebar(), HomePage::sidebarDefaultWidth());
 
     connect(home_, &HomePage::openBrowseRequested, this, [this] { openDocument(); });
     connect(home_, &HomePage::openRequested, this,
@@ -794,15 +700,7 @@ void MainWindow::buildWorkspaces() {
     connect(home_, &HomePage::createRequested, this,
             [this](int kind) { createDocument(static_cast<DocumentKind>(kind)); });
 
-    // Document tabs along the BOTTOM, as Inventor does.
-    documentTabs_ = new QTabBar(right);
-    documentTabs_->setObjectName(QStringLiteral("docTabs"));
-    documentTabs_->setExpanding(false);
-    documentTabs_->setDrawBase(false);
-    documentTabs_->setShape(QTabBar::RoundedSouth);
-    layout->addWidget(documentTabs_, 0);
-
-    connect(documentTabs_, &QTabBar::currentChanged, this, [this](int index) {
+    connect(documentTabs(), &QTabBar::currentChanged, this, [this](int index) {
         if (updatingUi_ || index < 0) return;
         // Tab 0 is Home, which is not a document — hence index-1 into the document list.
         if (index == 0) {
@@ -811,27 +709,25 @@ void MainWindow::buildWorkspaces() {
             session_.activate(static_cast<std::size_t>(index - 1));
         }
     });
-    connect(documentTabs_, &QTabBar::tabCloseRequested, this, [this](int index) {
+    connect(documentTabs(), &QTabBar::tabCloseRequested, this, [this](int index) {
         if (index <= 0) return;   // Home cannot be closed
         const auto docIndex = static_cast<std::size_t>(index - 1);
         auto* editor = editors_[docIndex];
         editors_.erase(editors_.begin() + static_cast<std::ptrdiff_t>(docIndex));
-        workspaces_->removeWidget(editor);
+        workspaces()->removeWidget(editor);
         editor->deleteLater();
-        
+
         auto* canvas = sketchCanvases_[docIndex];
         sketchCanvases_.erase(sketchCanvases_.begin() + static_cast<std::ptrdiff_t>(docIndex));
-        workspaces_->removeWidget(canvas);
+        workspaces()->removeWidget(canvas);
         canvas->deleteLater();
 
         session_.close(docIndex);
     });
-
-    setCentralWidget(centre);
 }
 
 void MainWindow::selectRibbonTab(int index) {
-    if (ribbon_ != nullptr) ribbon_->setCurrentTab(index);
+    if (ribbon() != nullptr) ribbon()->setCurrentTab(index);
 }
 
 void MainWindow::openDemoDocument() {
@@ -852,7 +748,7 @@ void MainWindow::openDemoDocument() {
 
 void MainWindow::createDocument(DocumentKind kind) {
     if (!cad::app::implemented(kind)) {
-        statusMessage_->setText(
+        setStatusMessage(
             tr("%1 documents are not implemented yet").arg(QString::fromUtf8(
                 cad::app::toString(kind))));
         return;
@@ -860,7 +756,7 @@ void MainWindow::createDocument(DocumentKind kind) {
     const std::size_t index = session_.create(kind);
     auto* c = session_.documents()[index].controller.get();
 
-    auto* editor = new Viewport(*c, workspaces_);
+    auto* editor = new Viewport(*c, workspaces());
     // Bring the GPU up on the first viewport. Idempotent -- bgfx is a process singleton, so the
     // second document shares the backend -- and a failure is reported rather than fatal: the
     // wireframe fallback keeps the shell fully usable on a machine with no usable device.
@@ -870,11 +766,11 @@ void MainWindow::createDocument(DocumentKind kind) {
     // The sketch surface is a SIBLING in the stack, not an overlay on the viewport. A sketch is
     // edited face-on in its own 2D coordinate system; sharing the 3D camera would mean unprojecting
     // every click onto a plane before it meant anything.
-    auto* canvas = new SketchCanvas(*c, workspaces_);
-    workspaces_->addWidget(canvas);
+    auto* canvas = new SketchCanvas(*c, workspaces());
+    workspaces()->addWidget(canvas);
     sketchCanvases_.push_back(canvas);
     connect(canvas, &SketchCanvas::sketchChanged, this, [this] { refreshStatus(); });
-    workspaces_->addWidget(editor);
+    workspaces()->addWidget(editor);
     editors_.push_back(editor);
 
     // Each document's controller drives the shared panels, but only while it is the active one —
@@ -900,11 +796,11 @@ void MainWindow::createDocument(DocumentKind kind) {
             syncWorkspace();
             rebuildRibbon();
         }
-        if (auto* w = workspaces_->currentWidget()) w->update();
+        if (auto* w = workspaces()->currentWidget()) w->update();
     });
     c->onViewChanged([this, c] {
         if (controller() != c) return;
-        if (auto* w = workspaces_->currentWidget()) {
+        if (auto* w = workspaces()->currentWidget()) {
             // markDirty, not update: the viewport caches its rendered frame and a plain repaint
             // deliberately reuses it. This is the signal that the scene itself moved.
             if (auto* view = qobject_cast<Viewport*>(w)) {
@@ -917,7 +813,7 @@ void MainWindow::createDocument(DocumentKind kind) {
     });
     c->onStatus([this, c](const std::string& text) {
         if (controller() != c) return;
-        statusMessage_->setText(QString::fromStdString(text));
+        setStatusMessage(QString::fromStdString(text));
     });
 
     syncWorkspace();
@@ -930,13 +826,13 @@ void MainWindow::syncWorkspace() {
     // right to: neither has anything to show, and an empty Model tree beside a project page reads
     // as a document that failed to load. They come back with the first document.
     const bool home = session_.homeActive();
-    if (browserDock_ != nullptr) browserDock_->setVisible(!home);
-    if (propertiesDock_ != nullptr) propertiesDock_->setVisible(!home);
+    leftDock()->setVisible(!home);
+    rightDock()->setVisible(!home);
     if (filterBar_ != nullptr) filterBar_->setVisible(!home);
-    if (homeSidebar_ != nullptr) homeSidebar_->setVisible(home);
+    setSidebarVisible(home);
 
     if (home) {
-        workspaces_->setCurrentWidget(home_);
+        workspaces()->setCurrentWidget(home_);
         home_->refresh();
         setWindowTitle(tr("vCAD"));
         return;
@@ -946,13 +842,13 @@ void MainWindow::syncWorkspace() {
     auto* c = controller();
     const bool sketching = c != nullptr && c->environment() == cad::app::Environment::Sketch;
     if (sketching && index < sketchCanvases_.size()) {
-        workspaces_->setCurrentWidget(sketchCanvases_[index]);
+        workspaces()->setCurrentWidget(sketchCanvases_[index]);
         // Frame the sketch on entry: one loaded from a file can be anywhere, and an empty canvas
         // showing the wrong region reads as "the sketch is gone".
         sketchCanvases_[index]->fit();
         sketchCanvases_[index]->setFocus();
     } else {
-        workspaces_->setCurrentWidget(editors_[index]);
+        workspaces()->setCurrentWidget(editors_[index]);
     }
     if (index < session_.count()) {
         setWindowTitle(tr("vCAD — %1")
@@ -962,20 +858,20 @@ void MainWindow::syncWorkspace() {
 
 void MainWindow::refreshDocumentTabs() {
     updatingUi_ = true;
-    while (documentTabs_->count() > 0) documentTabs_->removeTab(0);
+    while (documentTabs()->count() > 0) documentTabs()->removeTab(0);
 
-    documentTabs_->addTab(tr("Home"));
+    documentTabs()->addTab(tr("Home"));
     for (const auto& doc : session_.documents()) {
-        const int i = documentTabs_->addTab(QString::fromStdString(doc.title));
-        documentTabs_->setTabIcon(
+        const int i = documentTabs()->addTab(QString::fromStdString(doc.title));
+        documentTabs()->setTabIcon(
             i, icon(QString::fromUtf8(cad::app::toString(doc.kind)).toLower(), 14));
     }
-    documentTabs_->setTabsClosable(true);
+    documentTabs()->setTabsClosable(true);
     // Home has no close button, because it cannot be closed (ADR 0009).
-    if (auto* button = documentTabs_->tabButton(0, QTabBar::RightSide)) {
+    if (auto* button = documentTabs()->tabButton(0, QTabBar::RightSide)) {
         button->hide();
     }
-    documentTabs_->setCurrentIndex(session_.homeActive()
+    documentTabs()->setCurrentIndex(session_.homeActive()
                                        ? 0
                                        : static_cast<int>(session_.activeIndex()) + 1);
     updatingUi_ = false;
@@ -1031,8 +927,8 @@ void MainWindow::syncCommandPanel() {
     const bool running = c != nullptr && !c->activeCommand().empty();
 
     if (!running) {
-        leftStack_->setCurrentIndex(0);
-        browserDock_->setWindowTitle(tr("Model"));
+        leftStack()->setCurrentIndex(0);
+        leftDock()->setWindowTitle(tr("Model"));
         return;
     }
 
@@ -1062,8 +958,8 @@ void MainWindow::syncCommandPanel() {
     }
 
     commandTitle_->setText(QString::fromStdString(c->activeCommand()));
-    browserDock_->setWindowTitle(tr("Properties"));
-    leftStack_->setCurrentIndex(1);
+    leftDock()->setWindowTitle(tr("Properties"));
+    leftStack()->setCurrentIndex(1);
 
     // Focus the first field so a command can be driven from the keyboard without reaching for the
     // mouse, which is how anyone fast actually works.
@@ -1074,10 +970,10 @@ void MainWindow::syncCommandPanel() {
     }
 }
 
-void MainWindow::buildDocks() {
-    browserDock_ = new QDockWidget(tr("Model"), this);
-    auto* browserDock = browserDock_;
-    browserDock->setFeatures(QDockWidget::DockWidgetMovable);
+void MainWindow::buildBrowserAndProperties() {
+    // The docks themselves are the frame's; the feature tree and the property table are ours.
+    auto* browserDock = leftDock();
+    browserDock->setWindowTitle(tr("Model"));
     browser_ = new QTreeWidget(browserDock);
     browser_->setHeaderHidden(true);
     browser_->setColumnCount(2);
@@ -1093,13 +989,9 @@ void MainWindow::buildDocks() {
     // (UI_RESEARCH.md), and DESKTOP_UX 3.2 was corrected to match. A stack rather than a splitter:
     // the two are alternatives, and showing a squeezed tree beside a squeezed command panel gives
     // the worst of both.
-    leftStack_ = new QStackedWidget(browserDock);
-    leftStack_->addWidget(browser_);          // index 0
+    leftStack()->addWidget(browser_);          // index 0
     commandPanel_ = buildCommandPanel();
-    leftStack_->addWidget(commandPanel_);     // index 1
-    browserDock->setWidget(leftStack_);
-    addDockWidget(Qt::LeftDockWidgetArea, browserDock);
-    resizeDocks({browserDock}, {290}, Qt::Horizontal);
+    leftStack()->addWidget(commandPanel_);     // index 1
 
     browser_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(browser_, &QTreeWidget::customContextMenuRequested, this,
@@ -1116,9 +1008,7 @@ void MainWindow::buildDocks() {
         }
     });
 
-    propertiesDock_ = new QDockWidget(tr("Properties"), this);
-    auto* propertiesDock = propertiesDock_;
-    propertiesDock->setFeatures(QDockWidget::DockWidgetMovable);
+    auto* propertiesDock = rightDock();
     properties_ = new QTableWidget(propertiesDock);
     properties_->setColumnCount(2);
     properties_->setHorizontalHeaderLabels({tr("Property"), tr("Value")});
@@ -1126,8 +1016,6 @@ void MainWindow::buildDocks() {
     properties_->verticalHeader()->setVisible(false);
     properties_->setSelectionBehavior(QAbstractItemView::SelectRows);
     propertiesDock->setWidget(properties_);
-    addDockWidget(Qt::RightDockWidgetArea, propertiesDock);
-    resizeDocks({propertiesDock}, {300}, Qt::Horizontal);
 
     connect(properties_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
         if (updatingUi_ || item->column() != 1) return;
@@ -1143,13 +1031,13 @@ void MainWindow::buildDocks() {
     });
 }
 
-void MainWindow::buildStatusBar() {
-    statusMessage_ = new QLabel(tr("Ready"), this);
+void MainWindow::buildStatusFields() {
+    // The message label is the frame's; these two are vCAD's, and read right to left as
+    // Inventor's do.
     statusStats_ = new QLabel(this);
     statusUnits_ = new QLabel(tr("mm"), this);
-    statusBar()->addWidget(statusMessage_, 1);
-    statusBar()->addPermanentWidget(statusStats_);
-    statusBar()->addPermanentWidget(statusUnits_);
+    addStatusField(statusStats_);
+    addStatusField(statusUnits_);
 }
 
 // ── refresh ─────────────────────────────────────────────────────────────────────────────
@@ -1157,7 +1045,7 @@ void MainWindow::buildStatusBar() {
 void MainWindow::showOptions() {
     auto* c = controller();
     if (c == nullptr) {
-        statusMessage_->setText(tr("Open a document to change options"));
+        setStatusMessage(tr("Open a document to change options"));
         return;
     }
     const auto current = c->preferences();
@@ -1219,7 +1107,7 @@ void MainWindow::showOptions() {
     }
     refreshProperties();
     refreshStatus();
-    statusMessage_->setText(tr("Options applied"));
+    setStatusMessage(tr("Options applied"));
 }
 
 void MainWindow::showBrowserMenu(const QPoint& at) {
