@@ -284,4 +284,3 @@ fn sessions_sharing_a_disk_cache_agree_on_the_result() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
-
