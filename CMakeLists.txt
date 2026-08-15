@@ -34,6 +34,12 @@ option(CAD_BUILD_SHELL_QT   "Build Qt desktop shell (M4)"         OFF)
 option(CAD_ENABLE_ASAN      "Enable AddressSanitizer"             OFF)
 option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 
+# Rust components (rust/cad-parse). OFF-by-default requirement while the library is a stub with
+# no callers: a contributor without a Rust toolchain can still build everything that ships. The
+# day core/ links it — the DXF parser — this flips to ON, and a missing cargo becomes an error
+# instead of a warning.
+option(CAD_REQUIRE_RUST     "Fail the build if the Rust toolchain is missing" OFF)
+
 # assetlib: the content-addressed DDC (ADR 0004). Vendored in-tree — see
 # modules/assetlib/VENDORED.md for provenance, the sync procedure, and why this is a copy
 # rather than a submodule of the engine repository it comes from.
@@ -41,9 +47,17 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CadWarnings)
 include(CadLayering)
 include(CadShaders)
+include(CadRust)
 
 # core/log first, before the vendored modules: it depends on nothing, and planegcs's Base/Console
 # shim routes the solver's diagnostics into it. A target must exist before it is referenced.
+# BEFORE any add_subdirectory that might link it. An IMPORTED target has to exist by the time a
+# consuming CMakeLists is processed — `if(TARGET cad::parse)` in tests/ was silently false when
+# this ran at the bottom of the file, so the boundary test compiled out and the suite reported
+# "no tests matched" rather than a failure. A guard that is false for the wrong reason is worse
+# than no guard.
+cad_add_rust_library()
+
 add_subdirectory(core/log)
 
 add_subdirectory(modules/assetlib EXCLUDE_FROM_ALL)

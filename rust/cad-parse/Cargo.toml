@@ -1,0 +1,31 @@
+[package]
+name = "cad-parse"
+description = "Parsers for untrusted input, consumed by the C++ core as a static library"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+
+[lib]
+name = "cad_parse"
+# staticlib, not cdylib. The C++ core links our modules statically (see cad_core_library:
+# OCCT's global state must not be duplicated across shared boundaries), and a Rust cdylib
+# would add a second runtime library to ship and to find at load time on three platforms.
+crate-type = ["staticlib"]
+
+# DELIBERATELY EMPTY, and the build enforces it with --offline.
+#
+# `cmake --build` must never reach the network. With no dependencies cargo has nothing to
+# fetch, so this holds by construction rather than by policy. Adding a dependency here means
+# vendoring it — at which point --offline still passes and the guarantee is kept.
+[dependencies]
+
+[profile.release]
+# Panics abort rather than unwind. A Rust panic unwinding into a C++ frame is undefined
+# behaviour, and this boundary is C: there is no unwinding contract across it. Aborting is
+# the honest failure — and the parser's job is to RETURN errors, never to panic, so reaching
+# this is a bug either way.
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
