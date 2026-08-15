@@ -113,7 +113,9 @@ fn degenerate_box_dimensions() {
     for (name, dx) in cases {
         let mut s = Session::new().expect("session");
         let case = format!("box with dx = {name}");
-        let Some(b) = try_box(&mut s, *dx, 40.0, 20.0) else { continue };
+        let Some(b) = try_box(&mut s, *dx, 40.0, 20.0) else {
+            continue;
+        };
         if !recompute_survives(&mut s, &case) {
             continue;
         }
@@ -129,19 +131,29 @@ fn degenerate_box_dimensions() {
 fn extreme_aspect_ratio_still_tessellates_finitely() {
     let mut s = Session::new().expect("session");
     let case = "sliver box 0.001 x 1000 x 1";
-    let Some(b) = try_box(&mut s, 0.001, 1000.0, 1.0) else { return };
+    let Some(b) = try_box(&mut s, 0.001, 1000.0, 1.0) else {
+        return;
+    };
     if !recompute_survives(&mut s, case) {
         return;
     }
     assert_honest(&s, b, case);
 
     if let Ok(mesh) = s.tessellate(b, 0.05, 0.35) {
-        for (axis, (lo, hi)) in mesh.bounds_min.iter().zip(mesh.bounds_max.iter()).enumerate() {
+        for (axis, (lo, hi)) in mesh
+            .bounds_min
+            .iter()
+            .zip(mesh.bounds_max.iter())
+            .enumerate()
+        {
             assert!(
                 lo.is_finite() && hi.is_finite(),
                 "{case}: tessellated to non-finite bounds on axis {axis} ({lo}..{hi})"
             );
-            assert!(hi >= lo, "{case}: inverted bounds on axis {axis} ({lo}..{hi})");
+            assert!(
+                hi >= lo,
+                "{case}: inverted bounds on axis {axis} ({lo}..{hi})"
+            );
         }
     }
 }
@@ -158,8 +170,12 @@ fn geometry_far_from_the_origin_keeps_finite_bounds() {
     for distance in [1e3_f64, 1e6, 1e9] {
         let mut s = Session::new().expect("session");
         let case = format!("box translated {distance} mm from the origin");
-        let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else { continue };
-        let Ok(moved) = s.add_translate(b, distance, distance, distance) else { continue };
+        let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else {
+            continue;
+        };
+        let Ok(moved) = s.add_translate(b, distance, distance, distance) else {
+            continue;
+        };
         if !recompute_survives(&mut s, &case) {
             continue;
         }
@@ -172,7 +188,10 @@ fn geometry_far_from_the_origin_keeps_finite_bounds() {
                     lo.is_finite() && hi.is_finite(),
                     "{case}: non-finite bounds on axis {axis} ({lo}..{hi})"
                 );
-                assert!(hi >= lo, "{case}: inverted bounds on axis {axis} ({lo}..{hi})");
+                assert!(
+                    hi >= lo,
+                    "{case}: inverted bounds on axis {axis} ({lo}..{hi})"
+                );
             }
         }
     }
@@ -201,7 +220,9 @@ fn fillet_radius_from_zero_to_impossible() {
     for (name, radius) in cases {
         let mut s = Session::new().expect("session");
         let case = format!("fillet radius {name}");
-        let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else { continue };
+        let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else {
+            continue;
+        };
         if !recompute_survives(&mut s, &case) {
             continue;
         }
@@ -210,7 +231,9 @@ fn fillet_radius_from_zero_to_impossible() {
         if edge.is_empty() {
             continue;
         }
-        let Ok(f) = s.add_fillet(b, &edge, *radius) else { continue };
+        let Ok(f) = s.add_fillet(b, &edge, *radius) else {
+            continue;
+        };
         if !recompute_survives(&mut s, &case) {
             continue;
         }
@@ -239,7 +262,9 @@ fn fillet_radius_from_zero_to_impossible() {
 fn filleting_an_already_filleted_edge() {
     let mut s = Session::new().expect("session");
     let case = "fillet applied twice to the same edge";
-    let Some(b) = try_box(&mut s, 40.0, 40.0, 40.0) else { return };
+    let Some(b) = try_box(&mut s, 40.0, 40.0, 40.0) else {
+        return;
+    };
     if !recompute_survives(&mut s, case) {
         return;
     }
@@ -248,11 +273,15 @@ fn filleting_an_already_filleted_edge() {
     if edge.is_empty() {
         return;
     }
-    let Ok(first) = s.add_fillet(b, &edge, 4.0) else { return };
+    let Ok(first) = s.add_fillet(b, &edge, 4.0) else {
+        return;
+    };
     if !recompute_survives(&mut s, case) {
         return;
     }
-    let Ok(second) = s.add_fillet(first, &edge, 4.0) else { return };
+    let Ok(second) = s.add_fillet(first, &edge, 4.0) else {
+        return;
+    };
     recompute_survives(&mut s, case);
     assert_honest(&s, second, case);
 }
@@ -262,7 +291,9 @@ fn filleting_an_already_filleted_edge() {
 fn chamfer_wider_than_its_face() {
     let mut s = Session::new().expect("session");
     let case = "chamfer 30mm on a 20mm box";
-    let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else { return };
+    let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else {
+        return;
+    };
     if !recompute_survives(&mut s, case) {
         return;
     }
@@ -270,7 +301,9 @@ fn chamfer_wider_than_its_face() {
     if edge.is_empty() {
         return;
     }
-    let Ok(c) = s.add_chamfer(b, &edge, 30.0) else { return };
+    let Ok(c) = s.add_chamfer(b, &edge, 30.0) else {
+        return;
+    };
     recompute_survives(&mut s, case);
     assert_honest(&s, c, case);
 }
@@ -290,20 +323,52 @@ fn booleans_on_coincident_missing_and_engulfing_tools() {
         at: (f64, f64, f64),
     }
     let cases = [
-        Case { name: "tool exactly coincident with the base", tool: (40.0, 40.0, 40.0), at: (0.0, 0.0, 0.0) },
-        Case { name: "tool face-coincident with the base's face", tool: (40.0, 40.0, 40.0), at: (40.0, 0.0, 0.0) },
-        Case { name: "tool entirely inside the base", tool: (10.0, 10.0, 10.0), at: (15.0, 15.0, 15.0) },
-        Case { name: "tool entirely missing the base", tool: (10.0, 10.0, 10.0), at: (500.0, 0.0, 0.0) },
-        Case { name: "tool engulfing the base", tool: (400.0, 400.0, 400.0), at: (-180.0, -180.0, -180.0) },
-        Case { name: "tool sharing one edge only", tool: (40.0, 40.0, 40.0), at: (40.0, 40.0, 0.0) },
+        Case {
+            name: "tool exactly coincident with the base",
+            tool: (40.0, 40.0, 40.0),
+            at: (0.0, 0.0, 0.0),
+        },
+        Case {
+            name: "tool face-coincident with the base's face",
+            tool: (40.0, 40.0, 40.0),
+            at: (40.0, 0.0, 0.0),
+        },
+        Case {
+            name: "tool entirely inside the base",
+            tool: (10.0, 10.0, 10.0),
+            at: (15.0, 15.0, 15.0),
+        },
+        Case {
+            name: "tool entirely missing the base",
+            tool: (10.0, 10.0, 10.0),
+            at: (500.0, 0.0, 0.0),
+        },
+        Case {
+            name: "tool engulfing the base",
+            tool: (400.0, 400.0, 400.0),
+            at: (-180.0, -180.0, -180.0),
+        },
+        Case {
+            name: "tool sharing one edge only",
+            tool: (40.0, 40.0, 40.0),
+            at: (40.0, 40.0, 0.0),
+        },
     ];
 
     for c in cases {
         let mut s = Session::new().expect("session");
-        let Some(base) = try_box(&mut s, 40.0, 40.0, 40.0) else { continue };
-        let Some(tool) = try_box(&mut s, c.tool.0, c.tool.1, c.tool.2) else { continue };
-        let Ok(placed) = s.add_translate(tool, c.at.0, c.at.1, c.at.2) else { continue };
-        let Ok(cut) = s.add_cut(base, placed) else { continue };
+        let Some(base) = try_box(&mut s, 40.0, 40.0, 40.0) else {
+            continue;
+        };
+        let Some(tool) = try_box(&mut s, c.tool.0, c.tool.1, c.tool.2) else {
+            continue;
+        };
+        let Ok(placed) = s.add_translate(tool, c.at.0, c.at.1, c.at.2) else {
+            continue;
+        };
+        let Ok(cut) = s.add_cut(base, placed) else {
+            continue;
+        };
         if !recompute_survives(&mut s, c.name) {
             continue;
         }
@@ -332,9 +397,15 @@ fn booleans_on_coincident_missing_and_engulfing_tools() {
 fn a_boolean_whose_tool_failed_is_blocked_not_computed() {
     let mut s = Session::new().expect("session");
     let case = "cut by a tool with a zero dimension";
-    let Some(base) = try_box(&mut s, 40.0, 40.0, 40.0) else { return };
-    let Some(tool) = try_box(&mut s, 0.0, 10.0, 10.0) else { return };
-    let Ok(cut) = s.add_cut(base, tool) else { return };
+    let Some(base) = try_box(&mut s, 40.0, 40.0, 40.0) else {
+        return;
+    };
+    let Some(tool) = try_box(&mut s, 0.0, 10.0, 10.0) else {
+        return;
+    };
+    let Ok(cut) = s.add_cut(base, tool) else {
+        return;
+    };
     if !recompute_survives(&mut s, case) {
         return;
     }
@@ -370,11 +441,15 @@ fn tessellation_tolerance_extremes() {
     for (name, deflection, angular) in cases {
         let mut s = Session::new().expect("session");
         let case = format!("tessellate a cylinder with {name}");
-        let Ok(c) = s.add_cylinder(20.0, 40.0) else { continue };
+        let Ok(c) = s.add_cylinder(20.0, 40.0) else {
+            continue;
+        };
         if !recompute_survives(&mut s, &case) {
             continue;
         }
-        let Ok(mesh) = s.tessellate(c, *deflection, *angular) else { continue };
+        let Ok(mesh) = s.tessellate(c, *deflection, *angular) else {
+            continue;
+        };
 
         assert!(
             mesh.triangles > 0,
@@ -478,7 +553,10 @@ fn deep_undo_and_redo_leaves_a_computable_document() {
     while s.undo().unwrap_or(false) {}
     while s.redo().unwrap_or(false) {}
 
-    assert!(recompute_survives(&mut s, "after deep undo/redo"), "recompute did not survive");
+    assert!(
+        recompute_survives(&mut s, "after deep undo/redo"),
+        "recompute did not survive"
+    );
     assert_honest(&s, b, "after deep undo and redo");
 }
 
@@ -487,14 +565,18 @@ fn deep_undo_and_redo_leaves_a_computable_document() {
 fn removing_a_depended_on_feature_is_handled() {
     let mut s = Session::new().expect("session");
     let case = "remove the base under a translate";
-    let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else { return };
-    let Ok(moved) = s.add_translate(b, 10.0, 0.0, 0.0) else { return };
+    let Some(b) = try_box(&mut s, 20.0, 20.0, 20.0) else {
+        return;
+    };
+    let Ok(moved) = s.add_translate(b, 10.0, 0.0, 0.0) else {
+        return;
+    };
     if !recompute_survives(&mut s, case) {
         return;
     }
 
     if s.remove(b).is_err() {
-        return;   // refusing to orphan a dependent is a perfectly good answer
+        return; // refusing to orphan a dependent is a perfectly good answer
     }
     recompute_survives(&mut s, case);
     // `moved` may be gone with its input, or present and blocked. Both are honest; a present,

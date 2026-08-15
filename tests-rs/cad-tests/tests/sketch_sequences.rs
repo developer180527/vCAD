@@ -70,11 +70,20 @@ impl World {
     fn new() -> Self {
         let mut s = Session::new().expect("session");
         let sk = s.new_sketch(Plane::Xy).expect("sketch");
-        World { s, sk, geo: Vec::new(), steps: 0 }
+        World {
+            s,
+            sk,
+            geo: Vec::new(),
+            steps: 0,
+        }
     }
 
     fn pick(&self, i: usize) -> Option<Geo> {
-        if self.geo.is_empty() { None } else { Some(self.geo[i % self.geo.len()]) }
+        if self.geo.is_empty() {
+            None
+        } else {
+            Some(self.geo[i % self.geo.len()])
+        }
     }
 
     fn apply(&mut self, a: &Act) {
@@ -92,7 +101,8 @@ impl World {
             Act::Circle(x, y, r) => {
                 let r = f64::from(*r % 200 + 1) / 8.0;
                 if let Ok(g) =
-                    self.s.add_sketch_circle(self.sk, (f64::from(*x) / 8.0, f64::from(*y) / 8.0), r)
+                    self.s
+                        .add_sketch_circle(self.sk, (f64::from(*x) / 8.0, f64::from(*y) / 8.0), r)
                 {
                     self.geo.push(g);
                 }
@@ -140,9 +150,7 @@ impl World {
             }
             Act::Coincident(i, j) => {
                 let c = match (self.pick(*i), self.pick(*j)) {
-                    (Some(a), Some(b)) if a != b => {
-                        Some(Con::Coincident(a, Pt::End, b, Pt::Start))
-                    }
+                    (Some(a), Some(b)) if a != b => Some(Con::Coincident(a, Pt::End, b, Pt::Start)),
                     _ => None,
                 };
                 self.con(c);
@@ -207,8 +215,10 @@ impl World {
                 let before = self.s.sketch_geometry(self.sk).unwrap_or_default();
                 let reparsed = match self.s.sketch_from_text(&text) {
                     Ok(sk) => sk,
-                    Err(e) => panic!("step {}: a sketch we just serialised will not parse: {e:?}",
-                                     self.steps),
+                    Err(e) => panic!(
+                        "step {}: a sketch we just serialised will not parse: {e:?}",
+                        self.steps
+                    ),
                 };
                 let after = self.s.sketch_geometry(reparsed).unwrap_or_default();
                 assert_eq!(
@@ -218,7 +228,11 @@ impl World {
                     self.steps
                 );
                 for (n, (a, b)) in before.iter().zip(after.iter()).enumerate() {
-                    assert_eq!(a.kind, b.kind, "step {}: curve {n} changed kind", self.steps);
+                    assert_eq!(
+                        a.kind, b.kind,
+                        "step {}: curve {n} changed kind",
+                        self.steps
+                    );
                     for k in 0..5 {
                         assert!(
                             (a.p[k] - b.p[k]).abs() < 1e-9,
@@ -245,7 +259,10 @@ impl World {
     }
 
     fn geometry_len(&self) -> usize {
-        self.s.sketch_geometry(self.sk).map(|g| g.len()).unwrap_or(0)
+        self.s
+            .sketch_geometry(self.sk)
+            .map(|g| g.len())
+            .unwrap_or(0)
     }
 
     /// INVARIANT 1, checked after EVERY action.
@@ -255,7 +272,9 @@ impl World {
     /// there the NaN spreads to the DXF export, the saved document and any extrude built on the
     /// profile, each failing far from the cause.
     fn check_finite(&self, after: &Act) {
-        let Ok(geometry) = self.s.sketch_geometry(self.sk) else { return };
+        let Ok(geometry) = self.s.sketch_geometry(self.sk) else {
+            return;
+        };
         for (n, g) in geometry.iter().enumerate() {
             for (k, v) in g.p.iter().enumerate() {
                 assert!(
@@ -295,7 +314,11 @@ fn campaign(seed: u64, sequences: usize, depth: usize) -> (u32, u32, u32) {
                     (r >> 32) as i16 % 200,
                     (r >> 44) as i16 % 200,
                 ),
-                3 => Act::Circle((r >> 8) as i16 % 200, (r >> 20) as i16 % 200, (r >> 32) as u16),
+                3 => Act::Circle(
+                    (r >> 8) as i16 % 200,
+                    (r >> 20) as i16 % 200,
+                    (r >> 32) as u16,
+                ),
                 4 => Act::Arc(
                     (r >> 8) as i16 % 200,
                     (r >> 20) as i16 % 200,
@@ -335,7 +358,10 @@ fn campaign(seed: u64, sequences: usize, depth: usize) -> (u32, u32, u32) {
 #[test]
 fn no_sequence_of_sketch_edits_produces_a_non_finite_coordinate() {
     let (curves, solves, _) = campaign(0x9E37_79B9_7F4A_7C15, 60, 40);
-    assert!(curves > 200, "the generator drew almost nothing: {curves} curves");
+    assert!(
+        curves > 200,
+        "the generator drew almost nothing: {curves} curves"
+    );
     assert!(solves > 50, "the generator barely solved: {solves} solves");
 }
 
@@ -345,7 +371,10 @@ fn a_second_seed_finds_the_same_answer() {
     // independent seeds passing is weak evidence the property holds rather than that the first
     // seed happened to avoid the bug.
     let (curves, _, _) = campaign(0x2545_F491_4F6C_DD1D, 60, 40);
-    assert!(curves > 200, "the generator drew almost nothing: {curves} curves");
+    assert!(
+        curves > 200,
+        "the generator drew almost nothing: {curves} curves"
+    );
 }
 
 #[test]

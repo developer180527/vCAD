@@ -53,9 +53,8 @@ pub struct CadHostPrefix {
     pub element_resolve: Option<
         extern "C" fn(*mut c_void, CadShape, *const CadElementId, *mut CadShape) -> CadStatus,
     >,
-    pub element_name_of: Option<
-        extern "C" fn(*mut c_void, CadShape, CadShape, *mut CadElementId) -> CadStatus,
-    >,
+    pub element_name_of:
+        Option<extern "C" fn(*mut c_void, CadShape, CadShape, *mut CadElementId) -> CadStatus>,
 
     // Declared but unused, purely to reach what follows them. The prefix trick only works if the
     // prefix is complete up to the member being read.
@@ -67,8 +66,7 @@ pub struct CadHostPrefix {
     pub register_format: Option<extern "C" fn()>,
 
     // --- appended in ABI 1.13 ---
-    pub shape_sub_count:
-        Option<extern "C" fn(*mut c_void, CadShape, u32, *mut u32) -> CadStatus>,
+    pub shape_sub_count: Option<extern "C" fn(*mut c_void, CadShape, u32, *mut u32) -> CadStatus>,
     pub shape_sub_at:
         Option<extern "C" fn(*mut c_void, CadShape, u32, u32, *mut CadShape) -> CadStatus>,
 
@@ -104,9 +102,8 @@ pub struct CadFeatureDescPrefix {
     pub reserved1: u32,
     pub plugin_ctx: *mut c_void,
     pub compute: Option<extern "C" fn(*mut c_void, CadComputeCtx) -> CadStatus>,
-    pub external_inputs: Option<
-        extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus,
-    >,
+    pub external_inputs:
+        Option<extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus>,
     pub migrate_params: Option<extern "C" fn()>,
 }
 
@@ -124,7 +121,11 @@ pub struct CadElementId {
 
 impl Default for CadElementId {
     fn default() -> Self {
-        CadElementId { digest: 0, text: std::ptr::null(), text_len: 0 }
+        CadElementId {
+            digest: 0,
+            text: std::ptr::null(),
+            text_len: 0,
+        }
     }
 }
 
@@ -144,7 +145,10 @@ impl Host {
         let session = unsafe { cad_session_create() };
         assert_ne!(session, 0, "session must be created");
         let host = unsafe { cad_plugin_host(session) };
-        assert!(!host.is_null(), "a session must be able to produce a host vtable");
+        assert!(
+            !host.is_null(),
+            "a session must be able to produce a host vtable"
+        );
         Host { session, host }
     }
     fn h(&self) -> &CadHostPrefix {
@@ -155,9 +159,8 @@ impl Host {
     }
     fn box_of(&self, dx: f64, dy: f64, dz: f64) -> (CadStatus, CadShape) {
         let mut shape: CadShape = 0;
-        let status = (self.h().make_box.expect("make_box is offered"))(
-            self.ctx(), dx, dy, dz, &mut shape,
-        );
+        let status =
+            (self.h().make_box.expect("make_box is offered"))(self.ctx(), dx, dy, dz, &mut shape);
         (status, shape)
     }
     fn last_error(&self) -> String {
@@ -165,7 +168,9 @@ impl Host {
         if s.data.is_null() || s.len == 0 {
             return String::new();
         }
-        unsafe { CStr::from_ptr(s.data) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(s.data) }
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -188,7 +193,10 @@ fn the_host_declares_its_own_size_and_generation() {
     );
     assert_eq!(h.abi_major, cad::sys::CAD_ABI_VERSION_MAJOR);
     assert_eq!(h.abi_minor, cad::sys::CAD_ABI_VERSION_MINOR);
-    assert!(!h.host_ctx.is_null(), "host_ctx is passed back to every call");
+    assert!(
+        !h.host_ctx.is_null(),
+        "host_ctx is passed back to every call"
+    );
 }
 
 #[test]
@@ -197,7 +205,10 @@ fn unoffered_entries_are_null_rather_than_dangling() {
     // must check. Asserted so that filling one in later is a deliberate act, and so the discipline
     // is exercised from the first day rather than discovered when a sandboxed tier appears.
     let host = Host::new();
-    assert!(host.h().fillet_edges.is_none(), "fillet_edges is not offered yet");
+    assert!(
+        host.h().fillet_edges.is_none(),
+        "fillet_edges is not offered yet"
+    );
     assert!(host.h().make_box.is_some(), "make_box IS offered");
 }
 
@@ -209,7 +220,12 @@ fn geometry_round_trips_through_handles() {
     assert_ne!(shape, 0, "a successful call must return a non-zero handle");
 
     let valid = (host.h().shape_validate.unwrap())(host.ctx(), shape);
-    assert_eq!(valid, CAD_OK, "a box must be a valid solid: {}", host.last_error());
+    assert_eq!(
+        valid,
+        CAD_OK,
+        "a box must be a valid solid: {}",
+        host.last_error()
+    );
 }
 
 #[test]
@@ -222,7 +238,10 @@ fn a_released_handle_reports_bad_handle_instead_of_crashing() {
     (host.h().shape_release.unwrap())(host.ctx(), shape);
 
     let after = (host.h().shape_validate.unwrap())(host.ctx(), shape);
-    assert_eq!(after, CAD_ERR_BAD_HANDLE, "a released handle must be rejected, not dereferenced");
+    assert_eq!(
+        after, CAD_ERR_BAD_HANDLE,
+        "a released handle must be rejected, not dereferenced"
+    );
     assert!(!host.last_error().is_empty(), "and it must say so");
 }
 
@@ -247,7 +266,10 @@ fn handles_are_never_reused() {
     (host.h().shape_release.unwrap())(host.ctx(), first);
     let (_, second) = host.box_of(1.0, 1.0, 1.0);
 
-    assert_ne!(first, second, "a freed handle id must never be handed out again");
+    assert_ne!(
+        first, second,
+        "a freed handle id must never be handed out again"
+    );
     assert_eq!(
         (host.h().shape_validate.unwrap())(host.ctx(), first),
         CAD_ERR_BAD_HANDLE,
@@ -320,7 +342,11 @@ fn an_unknown_name_is_reported_lost_not_guessed() {
     let host = Host::new();
     let (_, shape) = host.box_of(10.0, 10.0, 10.0);
 
-    let bogus = CadElementId { digest: 0xDEAD_BEEF, text: std::ptr::null(), text_len: 0 };
+    let bogus = CadElementId {
+        digest: 0xDEAD_BEEF,
+        text: std::ptr::null(),
+        text_len: 0,
+    };
     let mut resolved: CadShape = 0;
     let status = (host.h().element_resolve.expect("naming is offered"))(
         host.ctx(),
@@ -329,7 +355,10 @@ fn an_unknown_name_is_reported_lost_not_guessed() {
         &mut resolved,
     );
 
-    assert_eq!(status, CAD_ERR_NAMING_LOST, "an unknown name must be refused, never approximated");
+    assert_eq!(
+        status, CAD_ERR_NAMING_LOST,
+        "an unknown name must be refused, never approximated"
+    );
     assert_eq!(resolved, 0, "and must not write an output handle");
     assert!(!host.last_error().is_empty());
 }
@@ -343,12 +372,8 @@ fn naming_a_shape_that_carries_no_name_is_lost_not_invented() {
     let (_, shape) = host.box_of(10.0, 20.0, 30.0);
 
     let mut id = CadElementId::default();
-    let status = (host.h().element_name_of.expect("naming is offered"))(
-        host.ctx(),
-        shape,
-        shape,
-        &mut id,
-    );
+    let status =
+        (host.h().element_name_of.expect("naming is offered"))(host.ctx(), shape, shape, &mut id);
     assert_eq!(status, CAD_ERR_NAMING_LOST);
     assert!(!host.last_error().is_empty(), "and it must say which");
 }
@@ -362,7 +387,10 @@ fn resolving_against_a_released_shape_is_refused() {
     let id = CadElementId::default();
     let mut resolved: CadShape = 0;
     let status = (host.h().element_resolve.unwrap())(host.ctx(), shape, &id, &mut resolved);
-    assert_eq!(status, CAD_ERR_BAD_HANDLE, "a dead shape cannot resolve names");
+    assert_eq!(
+        status, CAD_ERR_BAD_HANDLE,
+        "a dead shape cannot resolve names"
+    );
 }
 
 // ── sub-shape enumeration, and the determinism it finally makes testable ─────────────────
@@ -375,16 +403,22 @@ fn resolving_against_a_released_shape_is_refused() {
 impl Host {
     fn sub_count(&self, shape: CadShape, kind: u32) -> (CadStatus, u32) {
         let mut n = 0u32;
-        let status = (self.h().shape_sub_count.expect("shape_sub_count is offered"))(
-            self.ctx(), shape, kind, &mut n,
-        );
+        let status =
+            (self
+                .h()
+                .shape_sub_count
+                .expect("shape_sub_count is offered"))(self.ctx(), shape, kind, &mut n);
         (status, n)
     }
 
     fn sub_at(&self, shape: CadShape, kind: u32, index: u32) -> (CadStatus, CadShape) {
         let mut out: CadShape = 0;
         let status = (self.h().shape_sub_at.expect("shape_sub_at is offered"))(
-            self.ctx(), shape, kind, index, &mut out,
+            self.ctx(),
+            shape,
+            kind,
+            index,
+            &mut out,
         );
         (status, out)
     }
@@ -396,9 +430,17 @@ impl Host {
         assert_eq!(status, CAD_OK, "shape_sub_at failed: {}", self.last_error());
         let mut id = CadElementId::default();
         let status = (self.h().element_name_of.expect("naming is offered"))(
-            self.ctx(), shape, face, &mut id,
+            self.ctx(),
+            shape,
+            face,
+            &mut id,
         );
-        assert_eq!(status, CAD_OK, "element_name_of failed: {}", self.last_error());
+        assert_eq!(
+            status,
+            CAD_OK,
+            "element_name_of failed: {}",
+            self.last_error()
+        );
         id.digest
     }
 }
@@ -432,11 +474,11 @@ fn a_face_obtained_from_a_shape_can_be_named_and_resolved_back() {
     assert_ne!(face, 0, "a sub-shape handle is a real handle");
 
     let mut id = CadElementId::default();
-    let status = (host.h().element_name_of.expect("naming is offered"))(
-        host.ctx(), b, face, &mut id,
-    );
+    let status =
+        (host.h().element_name_of.expect("naming is offered"))(host.ctx(), b, face, &mut id);
     assert_eq!(
-        status, CAD_OK,
+        status,
+        CAD_OK,
         "a face of a host-built box must have a name: {}",
         host.last_error()
     );
@@ -445,9 +487,8 @@ fn a_face_obtained_from_a_shape_can_be_named_and_resolved_back() {
     // And back again. This is the round trip a plugin needs to hold a face reference across a
     // rebuild — the guarantee 3.4 promises and could not previously demonstrate.
     let mut resolved: CadShape = 0;
-    let status = (host.h().element_resolve.expect("resolve is offered"))(
-        host.ctx(), b, &id, &mut resolved,
-    );
+    let status =
+        (host.h().element_resolve.expect("resolve is offered"))(host.ctx(), b, &id, &mut resolved);
     assert_eq!(status, CAD_OK, "resolve failed: {}", host.last_error());
     assert_ne!(resolved, 0);
 }
@@ -486,8 +527,12 @@ fn different_geometry_is_named_differently() {
     let (_, small) = host.box_of(20.0, 30.0, 40.0);
     let (_, large) = host.box_of(50.0, 30.0, 40.0);
 
-    let differs = (0..6).any(|i| host.face_name_digest(small, i) != host.face_name_digest(large, i));
-    assert!(differs, "two differently-sized boxes were named identically");
+    let differs =
+        (0..6).any(|i| host.face_name_digest(small, i) != host.face_name_digest(large, i));
+    assert!(
+        differs,
+        "two differently-sized boxes were named identically"
+    );
 }
 
 /// Determinism has to hold across SESSIONS, not just within one — that is the case the DDC
@@ -497,7 +542,9 @@ fn naming_is_identical_across_sessions() {
     let digests_of = || {
         let host = Host::new();
         let (_, b) = host.box_of(20.0, 30.0, 40.0);
-        (0..6).map(|i| host.face_name_digest(b, i)).collect::<Vec<_>>()
+        (0..6)
+            .map(|i| host.face_name_digest(b, i))
+            .collect::<Vec<_>>()
     };
     assert_eq!(
         digests_of(),
@@ -631,9 +678,7 @@ impl Plugin {
     /// every existing call site keeps testing the NULL case, which is the common one.
     fn register_with_external(
         type_name: &str,
-        external: Option<
-            extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus,
-        >,
+        external: Option<extern "C" fn(*mut c_void, u64, CadPathSink, *mut c_void) -> CadStatus>,
     ) -> Self {
         let host = Host::new();
         let state = Box::new(DemoState {
@@ -657,12 +702,25 @@ impl Plugin {
             migrate_params: None,
         };
 
-        let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
-            -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+        let register: extern "C" fn(
+            *mut c_void,
+            *const CadFeatureDescPrefix,
+            *const c_void,
+            u32,
+        ) -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
         let status = register(host.ctx(), &desc, std::ptr::null(), 0);
-        assert_eq!(status, CAD_OK, "register_feature failed: {}", host.last_error());
+        assert_eq!(
+            status,
+            CAD_OK,
+            "register_feature failed: {}",
+            host.last_error()
+        );
 
-        Plugin { host, state, _type_name: type_name }
+        Plugin {
+            host,
+            state,
+            _type_name: type_name,
+        }
     }
 
     fn add_object(&self, ty: &str, size: f64) -> u64 {
@@ -678,7 +736,12 @@ impl Plugin {
     fn recompute(&self) -> CadRecomputeReport {
         let mut report = CadRecomputeReport::default();
         let status = unsafe { cad_recompute(self.host.session, &mut report) };
-        assert_eq!(status, CAD_OK, "recompute call failed: {}", self.host.last_error());
+        assert_eq!(
+            status,
+            CAD_OK,
+            "recompute call failed: {}",
+            self.host.last_error()
+        );
         report
     }
 
@@ -703,7 +766,10 @@ fn a_plugin_feature_computes_into_the_document_with_names() {
         "the plugin feature failed: {}",
         plugin.object_error(object)
     );
-    assert_eq!(report.computed, 1, "exactly the one plugin feature computed");
+    assert_eq!(
+        report.computed, 1,
+        "exactly the one plugin feature computed"
+    );
 
     let mut valid = 0i32;
     unsafe { cad_object_is_valid_shape(plugin.host.session, object, &mut valid) };
@@ -778,8 +844,12 @@ fn registering_the_same_feature_type_twice_is_refused() {
         external_inputs: None,
         migrate_params: None,
     };
-    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
-        -> CadStatus = unsafe { std::mem::transmute(plugin.host.h().register_feature.unwrap()) };
+    let register: extern "C" fn(
+        *mut c_void,
+        *const CadFeatureDescPrefix,
+        *const c_void,
+        u32,
+    ) -> CadStatus = unsafe { std::mem::transmute(plugin.host.h().register_feature.unwrap()) };
 
     // Refused, not replaced: two plugins claiming one type name would decide between themselves
     // by load order, and a document referencing that type would mean different geometry depending
@@ -866,7 +936,11 @@ fn a_plugin_feature_survives_undo_and_redo() {
     // And it still computes afterwards — a restored feature that cannot recompute is a document
     // the user cannot edit further.
     let report = plugin.recompute();
-    assert_eq!(report.failed + report.blocked, 0, "the restored plugin feature will not compute");
+    assert_eq!(
+        report.failed + report.blocked,
+        0,
+        "the restored plugin feature will not compute"
+    );
 }
 
 /// A document containing a plugin feature must save and reopen — WITH the plugin present.
@@ -890,17 +964,30 @@ fn a_plugin_feature_round_trips_through_a_saved_file() {
     let path = std::env::temp_dir().join(format!("cad-plugin-{}.vcad", std::process::id()));
     let path_c = CString::new(path.to_str().unwrap()).unwrap();
     let status = unsafe { cad_document_save(plugin.host.session, path_c.as_ptr()) };
-    assert_eq!(status, CAD_OK, "saving failed: {}", plugin.host.last_error());
+    assert_eq!(
+        status,
+        CAD_OK,
+        "saving failed: {}",
+        plugin.host.last_error()
+    );
 
     // Reopened into a session that has the SAME feature registered, which is what happens when
     // the plugin is installed on both machines.
     let reopened = Plugin::register("com.vcad.test.Cube");
     let status = unsafe { cad_document_open(reopened.host.session, path_c.as_ptr()) };
-    assert_eq!(status, CAD_OK, "reopening failed: {}", reopened.host.last_error());
+    assert_eq!(
+        status,
+        CAD_OK,
+        "reopening failed: {}",
+        reopened.host.last_error()
+    );
 
     let mut count_after = 0u64;
     unsafe { cad_object_count(reopened.host.session, &mut count_after) };
-    assert_eq!(count_after, count_before, "reopening lost the plugin feature");
+    assert_eq!(
+        count_after, count_before,
+        "reopening lost the plugin feature"
+    );
     assert_eq!(
         reopened.digest(),
         digest_before,
@@ -924,8 +1011,6 @@ extern "C" {
 
 // ── §4A: a document must outlive the plugin that made it ────────────────────────────────
 
-
-
 /// Opens a saved document in a session that does NOT have the plugin registered.
 ///
 /// The failure this guards against is the one that ends platforms: opening a colleague's file,
@@ -943,7 +1028,12 @@ fn a_document_opens_without_the_plugin_that_made_it_and_loses_nothing() {
         plugin.add_object("com.vcad.test.Cube", 42.0);
         plugin.recompute();
         let status = unsafe { cad_document_save(plugin.host.session, path_c.as_ptr()) };
-        assert_eq!(status, CAD_OK, "saving failed: {}", plugin.host.last_error());
+        assert_eq!(
+            status,
+            CAD_OK,
+            "saving failed: {}",
+            plugin.host.last_error()
+        );
         plugin.digest()
     };
 
@@ -951,7 +1041,8 @@ fn a_document_opens_without_the_plugin_that_made_it_and_loses_nothing() {
     let bare = Host::new();
     let status = unsafe { cad_document_open(bare.session, path_c.as_ptr()) };
     assert_eq!(
-        status, CAD_OK,
+        status,
+        CAD_OK,
         "a document containing a plugin feature must OPEN without the plugin: {}",
         bare.last_error()
     );
@@ -1056,11 +1147,17 @@ fn a_feature_downstream_of_a_missing_plugin_is_blocked_with_a_reason() {
     }
 
     let bare = Host::new();
-    assert_eq!(unsafe { cad_document_open(bare.session, path_c.as_ptr()) }, CAD_OK);
+    assert_eq!(
+        unsafe { cad_document_open(bare.session, path_c.as_ptr()) },
+        CAD_OK
+    );
     let mut report = CadRecomputeReport::default();
     unsafe { cad_recompute(bare.session, &mut report) };
 
-    assert_eq!(report.needs_plugin, 1, "the plugin feature needs its plugin");
+    assert_eq!(
+        report.needs_plugin, 1,
+        "the plugin feature needs its plugin"
+    );
     assert_eq!(report.blocked, 1, "the feature built on it must be blocked");
 
     // Object 2 is the Translate. Its message must point at what actually stopped it.
@@ -1078,10 +1175,13 @@ fn a_feature_downstream_of_a_missing_plugin_is_blocked_with_a_reason() {
 }
 
 extern "C" {
-    fn cad_object_set_object(session: u64, object: u64, prop: *const c_char, target: u64)
-        -> CadStatus;
+    fn cad_object_set_object(
+        session: u64,
+        object: u64,
+        prop: *const c_char,
+        target: u64,
+    ) -> CadStatus;
 }
-
 
 // --- external inputs -------------------------------------------------------------------------
 //
@@ -1146,9 +1246,11 @@ fn a_feature_without_external_inputs_still_computes() {
     let plugin = Plugin::register_with_external("demo.no_external", None);
     let _object = plugin.add_object("demo.no_external", 8.0);
     plugin.recompute();
-    assert!(plugin.state.calls.load(Ordering::SeqCst) > 0, "compute must still run");
+    assert!(
+        plugin.state.calls.load(Ordering::SeqCst) > 0,
+        "compute must still run"
+    );
 }
-
 
 // --- descriptor negotiation ------------------------------------------------------------------
 //
@@ -1187,8 +1289,8 @@ fn a_descriptor_from_an_older_header_registers_and_computes() {
     // plugin compiled against the 1.13 header would report. external_inputs is populated in memory
     // and MUST be ignored, because from the host's point of view it is past the end of what the
     // plugin sent. If the host reads it anyway, this fires.
-    let short_size = std::mem::offset_of!(CadFeatureDescPrefix, compute)
-        + std::mem::size_of::<*const c_void>();
+    let short_size =
+        std::mem::offset_of!(CadFeatureDescPrefix, compute) + std::mem::size_of::<*const c_void>();
 
     let desc = CadFeatureDescPrefix {
         struct_size: short_size as u32,
@@ -1204,16 +1306,25 @@ fn a_descriptor_from_an_older_header_registers_and_computes() {
         migrate_params: None,
     };
 
-    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
-        -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+    let register: extern "C" fn(
+        *mut c_void,
+        *const CadFeatureDescPrefix,
+        *const c_void,
+        u32,
+    ) -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
     let status = register(host.ctx(), &desc, std::ptr::null(), 0);
     assert_eq!(
-        status, CAD_OK,
+        status,
+        CAD_OK,
         "a descriptor from an older header must register: {}",
         host.last_error()
     );
 
-    let plugin = Plugin { host, state, _type_name: type_name };
+    let plugin = Plugin {
+        host,
+        state,
+        _type_name: type_name,
+    };
     let _object = plugin.add_object("demo.old_abi", 10.0);
     plugin.recompute();
 
@@ -1251,9 +1362,16 @@ fn a_descriptor_too_small_to_hold_a_compute_is_refused() {
         migrate_params: None,
     };
 
-    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
-        -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
-    assert_eq!(register(host.ctx(), &desc, std::ptr::null(), 0), CAD_ERR_INVALID_INPUT);
+    let register: extern "C" fn(
+        *mut c_void,
+        *const CadFeatureDescPrefix,
+        *const c_void,
+        u32,
+    ) -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+    assert_eq!(
+        register(host.ctx(), &desc, std::ptr::null(), 0),
+        CAD_ERR_INVALID_INPUT
+    );
     assert!(!host.last_error().is_empty(), "and it must say why");
 }
 
@@ -1276,7 +1394,14 @@ fn a_zero_struct_size_is_refused() {
         external_inputs: None,
         migrate_params: None,
     };
-    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
-        -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
-    assert_eq!(register(host.ctx(), &desc, std::ptr::null(), 0), CAD_ERR_INVALID_INPUT);
+    let register: extern "C" fn(
+        *mut c_void,
+        *const CadFeatureDescPrefix,
+        *const c_void,
+        u32,
+    ) -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+    assert_eq!(
+        register(host.ctx(), &desc, std::ptr::null(), 0),
+        CAD_ERR_INVALID_INPUT
+    );
 }

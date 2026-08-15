@@ -69,8 +69,18 @@ pub fn placements(n: usize) -> Session {
     for i in 0..n {
         let (x, y, z) = (i % side, (i / side) % side, i / (side * side));
         let t = [
-            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-            x as f32 * 40.0, y as f32 * 40.0, z as f32 * 40.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            x as f32 * 40.0,
+            y as f32 * 40.0,
+            z as f32 * 40.0,
         ];
         s.add_placement(b, Some(&t)).expect("placement");
     }

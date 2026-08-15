@@ -129,8 +129,7 @@ fn object_ids_are_never_reused_across_a_save() {
     t.open(path.to_str().unwrap()).unwrap();
     let fresh = t.add_box(5.0, 5.0, 5.0).unwrap();
     assert_ne!(
-        fresh.0,
-        temp.0,
+        fresh.0, temp.0,
         "a new object was handed the id of one deleted before the save"
     );
 }

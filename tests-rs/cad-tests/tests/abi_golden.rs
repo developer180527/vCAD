@@ -166,7 +166,9 @@ fn statement_name(statement: &str) -> Option<String> {
     // typedef struct { ... } Name;  /  typedef uint64_t Name;
     if s.starts_with("typedef ") {
         let before_semi = s.trim_end_matches(';').trim();
-        let name = before_semi.rsplit(|c: char| c.is_whitespace() || c == '}').next()?;
+        let name = before_semi
+            .rsplit(|c: char| c.is_whitespace() || c == '}')
+            .next()?;
         let name = name.trim();
         if name.is_empty() {
             return None;
@@ -205,7 +207,10 @@ fn the_plugin_abi_is_additive_only() {
     // perfectly plausible, which is precisely what makes that failure dangerous: the test would
     // have gone green forever while guarding none of the 82 exported functions.
     let functions = current.keys().filter(|k| k.starts_with("fn ")).count();
-    let types = current.keys().filter(|k| k.starts_with("type ") || k.starts_with("struct ")).count();
+    let types = current
+        .keys()
+        .filter(|k| k.starts_with("type ") || k.starts_with("struct "))
+        .count();
     let macros = current.keys().filter(|k| k.starts_with("define ")).count();
     assert!(
         functions >= 50 && types >= 5 && macros >= 20,
@@ -285,7 +290,15 @@ fn the_plugin_abi_is_additive_only() {
          one; the old one keeps its behaviour forever. If this change is genuinely intended and \
          no plugin can yet exist to be broken by it, regenerate the snapshot deliberately:\n\
          \n    CAD_ABI_GOLDEN_UPDATE=1 cargo test -p cad-tests --test abi_golden\n",
-        if changed.is_empty() { "(none)".into() } else { changed.join("\n  ") },
-        if removed.is_empty() { "(none)".into() } else { removed.join("\n  ") },
+        if changed.is_empty() {
+            "(none)".into()
+        } else {
+            changed.join("\n  ")
+        },
+        if removed.is_empty() {
+            "(none)".into()
+        } else {
+            removed.join("\n  ")
+        },
     );
 }

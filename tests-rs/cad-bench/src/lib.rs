@@ -44,7 +44,11 @@ impl Sample {
     /// an OCCT healing pass, a cache spill — and averaging it away is how a stutter becomes
     /// invisible to the suite that is supposed to catch it.
     pub fn worst(&self) -> Duration {
-        *self.runs.iter().max().expect("a sample has at least one run")
+        *self
+            .runs
+            .iter()
+            .max()
+            .expect("a sample has at least one run")
     }
 
     pub fn ms(&self) -> f64 {
@@ -68,7 +72,11 @@ where
         body(n);
         timings.push(t0.elapsed());
     }
-    Sample { label: label.to_string(), n, runs: timings }
+    Sample {
+        label: label.to_string(),
+        n,
+        runs: timings,
+    }
 }
 
 /// Times only `body`, with `setup` run outside the clock before each run.
@@ -78,8 +86,13 @@ where
 /// recompute them" — and since building is itself superlinear, the recompute row inherited a
 /// growth curve that was not recompute's. A measurement that includes its own setup is measuring
 /// the setup, which is the whole failure mode this harness was written against.
-pub fn measure_prepared<S, T, F>(label: &str, n: usize, runs: usize, mut setup: S, mut body: F)
-    -> Sample
+pub fn measure_prepared<S, T, F>(
+    label: &str,
+    n: usize,
+    runs: usize,
+    mut setup: S,
+    mut body: F,
+) -> Sample
 where
     S: FnMut(usize) -> T,
     F: FnMut(&mut T),
@@ -94,7 +107,11 @@ where
         body(&mut state);
         timings.push(t0.elapsed());
     }
-    Sample { label: label.to_string(), n, runs: timings }
+    Sample {
+        label: label.to_string(),
+        n,
+        runs: timings,
+    }
 }
 
 /// How a workload's cost grows with its size.
@@ -140,12 +157,20 @@ impl Scaling {
             .iter()
             .map(|&n| measure(label, n, runs, &mut body))
             .collect();
-        Scaling { label: label.to_string(), samples }
+        Scaling {
+            label: label.to_string(),
+            samples,
+        }
     }
 
     /// Measures at each size with the state built outside the clock. See [`measure_prepared`].
-    pub fn measure_prepared<S, T, F>(label: &str, sizes: &[usize], runs: usize,
-                                     mut setup: S, mut body: F) -> Self
+    pub fn measure_prepared<S, T, F>(
+        label: &str,
+        sizes: &[usize],
+        runs: usize,
+        mut setup: S,
+        mut body: F,
+    ) -> Self
     where
         S: FnMut(usize) -> T,
         F: FnMut(&mut T),
@@ -154,7 +179,10 @@ impl Scaling {
             .iter()
             .map(|&n| measure_prepared(label, n, runs, &mut setup, &mut body))
             .collect();
-        Scaling { label: label.to_string(), samples }
+        Scaling {
+            label: label.to_string(),
+            samples,
+        }
     }
 
     /// Observed cost ratios between consecutive sizes, normalised to a doubling.
@@ -185,9 +213,7 @@ impl Scaling {
         if smallest < floor_ms {
             println!(
                 "  {} — too fast to judge growth ({:.3} ms at n={}), not asserted",
-                self.label,
-                smallest,
-                self.samples[0].n
+                self.label, smallest, self.samples[0].n
             );
             return;
         }

@@ -12,7 +12,14 @@ use cad_bench::{heading, measure, Scaling};
 
 fn main() {
     println!("cad-perf — measured, not assumed");
-    println!("build: {}", if cfg!(debug_assertions) { "debug (numbers are not release numbers)" } else { "release" });
+    println!(
+        "build: {}",
+        if cfg!(debug_assertions) {
+            "debug (numbers are not release numbers)"
+        } else {
+            "release"
+        }
+    );
 
     recompute();
     kernel();
@@ -92,11 +99,16 @@ fn tessellation() {
         s.tessellate(o, 0.05, 0.35).expect("tessellate");
     }
     s.reset_mesh_cache_stats().expect("reset");
-    let warm = measure("re-tessellate the same 64 boxes (all cache hits)", 64, 5, |_| {
-        for &o in &objects {
-            s.tessellate(o, 0.05, 0.35).expect("tessellate");
-        }
-    });
+    let warm = measure(
+        "re-tessellate the same 64 boxes (all cache hits)",
+        64,
+        5,
+        |_| {
+            for &o in &objects {
+                s.tessellate(o, 0.05, 0.35).expect("tessellate");
+            }
+        },
+    );
     let stats = s.mesh_cache_stats().expect("stats");
     println!(
         "  re-tessellate 64 cached boxes: {:.3} ms   hits {} misses {}",
@@ -109,10 +121,15 @@ fn tessellation() {
 fn scene() {
     heading("Scene assembly — placements to batches, the CPU half of the renderer");
 
-    Scaling::measure("scene build from n placements", &[1_000, 4_000, 16_000], 3, |n| {
-        let mut s = placements(n);
-        s.scene_update(0.05, 0.35).expect("scene update");
-    })
+    Scaling::measure(
+        "scene build from n placements",
+        &[1_000, 4_000, 16_000],
+        3,
+        |n| {
+            let mut s = placements(n);
+            s.scene_update(0.05, 0.35).expect("scene update");
+        },
+    )
     .report();
 
     let mut s = placements(16_000);
@@ -128,7 +145,9 @@ fn scene() {
         stats.instances,
         stats.unique_meshes
     );
-    println!("    (the digest walk is O(placements) and unavoidable; rebuilds is what must stay at 1)");
+    println!(
+        "    (the digest walk is O(placements) and unavoidable; rebuilds is what must stay at 1)"
+    );
 }
 
 fn sketch() {
@@ -144,7 +163,9 @@ fn sketch() {
         },
     )
     .report();
-    println!("    (measured, not asserted: the solver's complexity class is not something we chose)");
+    println!(
+        "    (measured, not asserted: the solver's complexity class is not something we chose)"
+    );
 }
 
 fn document() {

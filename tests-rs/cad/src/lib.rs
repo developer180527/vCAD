@@ -348,20 +348,22 @@ impl Session {
 
     pub fn add_line(&mut self, sk: Sketch, a: (f64, f64), b: (f64, f64)) -> Result<Geo> {
         let mut g = 0u32;
-        let st = unsafe {
-            sys::cad_sketch_add_line(self.handle, sk.0, a.0, a.1, b.0, b.1, 0, &mut g)
-        };
+        let st =
+            unsafe { sys::cad_sketch_add_line(self.handle, sk.0, a.0, a.1, b.0, b.1, 0, &mut g) };
         self.check(st)?;
         Ok(Geo(g))
     }
 
     /// Construction geometry: guides other geometry, never part of the profile.
-    pub fn add_construction_line(&mut self, sk: Sketch, a: (f64, f64), b: (f64, f64))
-        -> Result<Geo> {
+    pub fn add_construction_line(
+        &mut self,
+        sk: Sketch,
+        a: (f64, f64),
+        b: (f64, f64),
+    ) -> Result<Geo> {
         let mut g = 0u32;
-        let st = unsafe {
-            sys::cad_sketch_add_line(self.handle, sk.0, a.0, a.1, b.0, b.1, 1, &mut g)
-        };
+        let st =
+            unsafe { sys::cad_sketch_add_line(self.handle, sk.0, a.0, a.1, b.0, b.1, 1, &mut g) };
         self.check(st)?;
         Ok(Geo(g))
     }
@@ -373,8 +375,14 @@ impl Session {
         Ok(Geo(g))
     }
 
-    pub fn add_sketch_arc(&mut self, sk: Sketch, c: (f64, f64), r: f64, a0: f64, a1: f64)
-        -> Result<Geo> {
+    pub fn add_sketch_arc(
+        &mut self,
+        sk: Sketch,
+        c: (f64, f64),
+        r: f64,
+        a0: f64,
+        a1: f64,
+    ) -> Result<Geo> {
         let mut g = 0u32;
         let st =
             unsafe { sys::cad_sketch_add_arc(self.handle, sk.0, c.0, c.1, r, a0, a1, 0, &mut g) };
@@ -442,8 +450,9 @@ impl Session {
     pub fn import_dxf(&mut self, path: &str, plane: Plane, scale: f64) -> Result<Sketch> {
         let c = cstr(path)?;
         let mut h: sys::CadSketch = 0;
-        let st =
-            unsafe { sys::cad_sketch_import_dxf(self.handle, c.as_ptr(), plane as i32, scale, &mut h) };
+        let st = unsafe {
+            sys::cad_sketch_import_dxf(self.handle, c.as_ptr(), plane as i32, scale, &mut h)
+        };
         self.check(st)?;
         Ok(Sketch(h))
     }
@@ -454,12 +463,23 @@ impl Session {
         self.check(st)
     }
 
-    pub fn infer(&mut self, sk: Sketch, point_tol: f64, angle_tol: f64, parallel_perp: bool)
-        -> Result<sys::CadInferReport> {
+    pub fn infer(
+        &mut self,
+        sk: Sketch,
+        point_tol: f64,
+        angle_tol: f64,
+        parallel_perp: bool,
+    ) -> Result<sys::CadInferReport> {
         let mut r = sys::CadInferReport::default();
         let st = unsafe {
-            sys::cad_sketch_infer(self.handle, sk.0, point_tol, angle_tol,
-                                  if parallel_perp { 1 } else { 0 }, &mut r)
+            sys::cad_sketch_infer(
+                self.handle,
+                sk.0,
+                point_tol,
+                angle_tol,
+                if parallel_perp { 1 } else { 0 },
+                &mut r,
+            )
         };
         self.check(st)?;
         Ok(r)

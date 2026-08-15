@@ -265,28 +265,83 @@ extern "C" {
     // --- sketches ---
     pub fn cad_sketch_create(s: CadSession, plane: i32, out: *mut CadSketch) -> CadStatus;
     pub fn cad_sketch_release(s: CadSession, sk: CadSketch);
-    pub fn cad_sketch_add_line(s: CadSession, sk: CadSketch, x1: f64, y1: f64, x2: f64, y2: f64,
-                               construction: i32, out: *mut u32) -> CadStatus;
-    pub fn cad_sketch_add_circle(s: CadSession, sk: CadSketch, cx: f64, cy: f64, radius: f64,
-                                 construction: i32, out: *mut u32) -> CadStatus;
-    pub fn cad_sketch_add_arc(s: CadSession, sk: CadSketch, cx: f64, cy: f64, radius: f64,
-                              start: f64, end: f64, construction: i32, out: *mut u32) -> CadStatus;
-    pub fn cad_sketch_constrain(s: CadSession, sk: CadSketch, kind: i32, a: u32, a_point: i32,
-                                b: u32, b_point: i32, value: f64, out: *mut u64) -> CadStatus;
+    pub fn cad_sketch_add_line(
+        s: CadSession,
+        sk: CadSketch,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        construction: i32,
+        out: *mut u32,
+    ) -> CadStatus;
+    pub fn cad_sketch_add_circle(
+        s: CadSession,
+        sk: CadSketch,
+        cx: f64,
+        cy: f64,
+        radius: f64,
+        construction: i32,
+        out: *mut u32,
+    ) -> CadStatus;
+    pub fn cad_sketch_add_arc(
+        s: CadSession,
+        sk: CadSketch,
+        cx: f64,
+        cy: f64,
+        radius: f64,
+        start: f64,
+        end: f64,
+        construction: i32,
+        out: *mut u32,
+    ) -> CadStatus;
+    pub fn cad_sketch_constrain(
+        s: CadSession,
+        sk: CadSketch,
+        kind: i32,
+        a: u32,
+        a_point: i32,
+        b: u32,
+        b_point: i32,
+        value: f64,
+        out: *mut u64,
+    ) -> CadStatus;
     pub fn cad_sketch_solve(s: CadSession, sk: CadSketch, out: *mut CadSolveReport) -> CadStatus;
     pub fn cad_sketch_geometry_count(s: CadSession, sk: CadSketch, out: *mut u64) -> CadStatus;
-    pub fn cad_sketch_geometry(s: CadSession, sk: CadSketch, index: u64,
-                               out: *mut CadSketchGeo) -> CadStatus;
+    pub fn cad_sketch_geometry(
+        s: CadSession,
+        sk: CadSketch,
+        index: u64,
+        out: *mut CadSketchGeo,
+    ) -> CadStatus;
     pub fn cad_sketch_constraint_count(s: CadSession, sk: CadSketch, out: *mut u64) -> CadStatus;
     pub fn cad_sketch_serialize(s: CadSession, sk: CadSketch) -> CadStr;
-    pub fn cad_sketch_deserialize(s: CadSession, text: *const c_char,
-                                  out: *mut CadSketch) -> CadStatus;
-    pub fn cad_sketch_import_dxf(s: CadSession, path: *const c_char, plane: i32, scale: f64,
-                                 out: *mut CadSketch) -> CadStatus;
-    pub fn cad_sketch_export_dxf(s: CadSession, sk: CadSketch, path: *const c_char,
-                                 scale: f64) -> CadStatus;
-    pub fn cad_sketch_infer(s: CadSession, sk: CadSketch, point_tol: f64, angle_tol: f64,
-                            parallel_perp: i32, out: *mut CadInferReport) -> CadStatus;
+    pub fn cad_sketch_deserialize(
+        s: CadSession,
+        text: *const c_char,
+        out: *mut CadSketch,
+    ) -> CadStatus;
+    pub fn cad_sketch_import_dxf(
+        s: CadSession,
+        path: *const c_char,
+        plane: i32,
+        scale: f64,
+        out: *mut CadSketch,
+    ) -> CadStatus;
+    pub fn cad_sketch_export_dxf(
+        s: CadSession,
+        sk: CadSketch,
+        path: *const c_char,
+        scale: f64,
+    ) -> CadStatus;
+    pub fn cad_sketch_infer(
+        s: CadSession,
+        sk: CadSketch,
+        point_tol: f64,
+        angle_tol: f64,
+        parallel_perp: i32,
+        out: *mut CadInferReport,
+    ) -> CadStatus;
 
     pub fn cad_rollback_set(s: CadSession, id: CadObject) -> CadStatus;
     pub fn cad_rollback_get(s: CadSession, out: *mut CadObject) -> CadStatus;

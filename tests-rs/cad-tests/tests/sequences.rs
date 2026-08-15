@@ -142,9 +142,7 @@ impl World {
             }
             Action::Translate(i, x, y, z) => {
                 if let Some(base) = self.pick(*i) {
-                    if let Ok(o) =
-                        self.s.add_translate(base, *x as f64, *y as f64, *z as f64)
-                    {
+                    if let Ok(o) = self.s.add_translate(base, *x as f64, *y as f64, *z as f64) {
                         self.created.push(o);
                     }
                 }
@@ -173,8 +171,8 @@ impl World {
                     // Whatever property this feature happens to have. A miss is refused by the
                     // core, which is itself worth exercising: the shell will send exactly this
                     // when a user edits a field that a retyped feature no longer has.
-                    let prop = ["dx", "dy", "dz", "radius", "height", "distance"]
-                        [*which as usize % 6];
+                    let prop =
+                        ["dx", "dy", "dz", "radius", "height", "distance"][*which as usize % 6];
                     let _ = self.s.set_length(o, prop, *v as f64);
                 }
             }
@@ -428,21 +426,28 @@ fn the_generator_reaches_interesting_states() {
         seed
     };
 
-    let (mut clean, mut failed, mut blocked, mut created, mut checks) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let (mut clean, mut failed, mut blocked, mut created, mut checks) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
 
     for _ in 0..120 {
         let mut world = World::new();
         for _ in 0..24 {
             let r = next();
             let action = match r % 12 {
-                0 | 1 => Action::AddBox((r >> 8) as u16 % 60 + 1, (r >> 16) as u16 % 60 + 1,
-                                        (r >> 24) as u16 % 60 + 1),
+                0 | 1 => Action::AddBox(
+                    (r >> 8) as u16 % 60 + 1,
+                    (r >> 16) as u16 % 60 + 1,
+                    (r >> 24) as u16 % 60 + 1,
+                ),
                 2 => Action::AddCylinder((r >> 8) as u16 % 30 + 1, (r >> 16) as u16 % 60 + 1),
                 3 => Action::Translate((r >> 8) as usize, 10, 0, 0),
                 4 => Action::Cut((r >> 8) as usize, (r >> 24) as usize),
                 5 => Action::Fillet((r >> 8) as usize, (r >> 24) as u16 % 25 + 1),
-                6 | 7 => Action::SetLength((r >> 8) as usize, (r >> 20) as u8,
-                                           (r >> 32) as u16 % 80 + 1),
+                6 | 7 => Action::SetLength(
+                    (r >> 8) as usize,
+                    (r >> 20) as u8,
+                    (r >> 32) as u16 % 80 + 1,
+                ),
                 8 => Action::Remove((r >> 8) as usize),
                 9 => Action::Undo,
                 10 => Action::Recompute,
@@ -454,7 +459,9 @@ fn the_generator_reaches_interesting_states() {
 
         created += world.created.len() as u32;
         for &o in &world.created {
-            let Ok(state) = world.s.state(o) else { continue };
+            let Ok(state) = world.s.state(o) else {
+                continue;
+            };
             checks += 1;
             match state {
                 State::Clean => clean += 1,
@@ -474,7 +481,10 @@ fn the_generator_reaches_interesting_states() {
     // lost their force the moment anyone grew it: `failed + blocked > 10` is trivially true over
     // ten thousand objects, so the check would stop meaning anything exactly when the campaign got
     // more thorough. Expressed as fractions, they hold whatever the campaign size becomes.
-    assert!(created > 500, "the generator built almost nothing: {created} objects");
+    assert!(
+        created > 500,
+        "the generator built almost nothing: {created} objects"
+    );
     assert!(
         clean > created / 4,
         "only {clean} of {created} objects computed successfully; the generator is producing \

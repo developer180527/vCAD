@@ -60,7 +60,10 @@ fn independent_sessions_build_identical_documents() {
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().expect("thread")).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect()
     });
 
     let first = digests[0];
@@ -92,7 +95,10 @@ fn element_names_do_not_depend_on_the_thread() {
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().expect("thread")).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect()
     });
 
     assert!(!names[0].is_empty(), "the edge should have a name at all");
@@ -277,7 +283,10 @@ fn sessions_sharing_a_disk_cache_agree_on_the_result() {
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().expect("thread")).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("thread"))
+            .collect()
     });
 
     for (i, d) in digests.iter().enumerate() {

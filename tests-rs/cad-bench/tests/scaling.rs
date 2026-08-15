@@ -85,8 +85,16 @@ fn re_tessellating_the_same_shapes_is_all_cache_hits() {
     }
 
     let stats = s.mesh_cache_stats().expect("stats");
-    assert_eq!(stats.misses, 0, "re-tessellation missed the cache {} times", stats.misses);
-    assert!(stats.hits >= objects.len() as u64, "expected a hit per shape, got {}", stats.hits);
+    assert_eq!(
+        stats.misses, 0,
+        "re-tessellation missed the cache {} times",
+        stats.misses
+    );
+    assert!(
+        stats.hits >= objects.len() as u64,
+        "expected a hit per shape, got {}",
+        stats.hits
+    );
 }
 
 /// Identical placements collapse to one mesh, and an unchanged document does not rebuild.
@@ -101,15 +109,22 @@ fn identical_placements_dedupe_and_idle_updates_do_not_rebuild() {
 
     s.scene_update(0.05, 0.35).expect("first scene update");
     let first = s.scene_stats().expect("stats");
-    assert_eq!(first.unique_meshes, 1, "one box placed {n} times is one unique mesh");
-    assert_eq!(first.instances, n as u64, "every placement must become an instance");
+    assert_eq!(
+        first.unique_meshes, 1,
+        "one box placed {n} times is one unique mesh"
+    );
+    assert_eq!(
+        first.instances, n as u64,
+        "every placement must become an instance"
+    );
 
     for _ in 0..5 {
         s.scene_update(0.05, 0.35).expect("idle scene update");
     }
     let after = s.scene_stats().expect("stats");
     assert_eq!(
-        after.rebuilds, first.rebuilds,
+        after.rebuilds,
+        first.rebuilds,
         "five updates of an unchanged document rebuilt the scene {} extra times",
         after.rebuilds - first.rebuilds
     );
@@ -152,15 +167,9 @@ fn tessellation_is_linear_in_shape_count() {
 /// Scene assembly sorts placements into a spatial grid, so n log n is the honest expectation.
 #[test]
 fn scene_build_is_loglinear_in_placement_count() {
-    let s = Scaling::measure_prepared(
-        "scene build",
-        &[1_000, 4_000, 16_000],
-        3,
-        placements,
-        |s| {
-            s.scene_update(0.05, 0.35).expect("scene update");
-        },
-    );
+    let s = Scaling::measure_prepared("scene build", &[1_000, 4_000, 16_000], 3, placements, |s| {
+        s.scene_update(0.05, 0.35).expect("scene update");
+    });
     s.report();
     s.assert_growth(Growth::Loglinear, 1.0);
 }

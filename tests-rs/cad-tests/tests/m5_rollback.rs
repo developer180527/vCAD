@@ -36,10 +36,19 @@ fn rolling_back_suspends_later_features() {
 
     assert_eq!(s.rollback().unwrap(), Some(b));
     // The suspended fillet has no geometry at all.
-    assert!(s.volume(f).is_err(), "a suspended feature still had geometry");
+    assert!(
+        s.volume(f).is_err(),
+        "a suspended feature still had geometry"
+    );
     // And it is NOT reported as a failure: nothing is wrong.
-    assert_eq!(report.failed, 0, "a suspended feature was reported as failed");
-    assert_eq!(report.blocked, 0, "a suspended feature was reported as blocked");
+    assert_eq!(
+        report.failed, 0,
+        "a suspended feature was reported as failed"
+    );
+    assert_eq!(
+        report.blocked, 0,
+        "a suspended feature was reported as blocked"
+    );
     // The feature that is still in scope is untouched.
     assert!((s.volume(b).unwrap() - plain).abs() < 1e-9);
 }
@@ -64,7 +73,10 @@ fn rolling_forward_restores_from_cache_without_recomputing() {
     s.set_rollback(None).unwrap();
     let report = s.recompute().unwrap();
 
-    assert!((s.volume(f).unwrap() - filleted).abs() < 1e-9, "rolling forward changed the geometry");
+    assert!(
+        (s.volume(f).unwrap() - filleted).abs() < 1e-9,
+        "rolling forward changed the geometry"
+    );
     assert_eq!(
         report.computed, 0,
         "rolling forward recomputed {} features; the marker must not invalidate cache keys",
@@ -123,8 +135,15 @@ fn the_marker_survives_save_and_reopen() {
 
     let mut t = session();
     t.open(path.to_str().unwrap()).unwrap();
-    assert_eq!(t.rollback().unwrap(), Some(b), "the marker was lost on save/open");
-    assert!(t.volume(f).is_err(), "the reopened document computed a suspended feature");
+    assert_eq!(
+        t.rollback().unwrap(),
+        Some(b),
+        "the marker was lost on save/open"
+    );
+    assert!(
+        t.volume(f).is_err(),
+        "the reopened document computed a suspended feature"
+    );
 }
 
 /// Rolling back to something that does not exist must be refused, not silently ignored.
@@ -132,7 +151,13 @@ fn the_marker_survives_save_and_reopen() {
 fn rolling_back_to_a_missing_object_is_refused() {
     let mut s = session();
     let _ = s.add_box(10.0, 10.0, 10.0).unwrap();
-    let err = s.set_rollback(Some(Object(999))).expect_err("a bogus marker was accepted");
+    let err = s
+        .set_rollback(Some(Object(999)))
+        .expect_err("a bogus marker was accepted");
     assert_eq!(err.code, cad::ErrorCode::BadHandle);
-    assert_eq!(s.rollback().unwrap(), None, "a refused rollback changed the marker anyway");
+    assert_eq!(
+        s.rollback().unwrap(),
+        None,
+        "a refused rollback changed the marker anyway"
+    );
 }

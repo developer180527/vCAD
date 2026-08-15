@@ -39,7 +39,10 @@ use std::time::{Duration, Instant};
 /// A valid DXF, as the seed corpus. Read from the repository fixture so the corpus and the
 /// importer's own acceptance tests cannot drift apart.
 fn seed() -> Vec<u8> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/data/sketch_profile.dxf");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/data/sketch_profile.dxf"
+    );
     std::fs::read(path).unwrap_or_else(|e| panic!("seed corpus missing at {path}: {e}"))
 }
 
@@ -69,7 +72,11 @@ impl Rng {
         self.0
     }
     fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
     }
 }
 
@@ -276,7 +283,10 @@ fn hostile_inputs_are_refused_legibly() {
         ("binary noise", (0..=255u8).cycle().take(4096).collect()),
         ("no newline at all", b"0SECTION2ENTITIES0EOF".to_vec()),
         // A group code with no value: the pairing assumption, violated at the last line.
-        ("dangling group code", b"0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n".to_vec()),
+        (
+            "dangling group code",
+            b"0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n".to_vec(),
+        ),
         // Deep nesting. A recursive-descent parser without a depth limit runs out of stack, which
         // is a crash rather than an error.
         ("nested sections", {

@@ -23,7 +23,9 @@ fn accepts(major: u32, min_host_minor: u32) -> (bool, String) {
     let text = if reason.is_null() {
         String::new()
     } else {
-        unsafe { CStr::from_ptr(reason) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(reason) }
+            .to_string_lossy()
+            .into_owned()
     };
     (ok != 0, text)
 }
