@@ -207,6 +207,33 @@ Still prose, and unenforceable until the calls exist: the rest of §4.6 (`txn_be
 `register_command` are declared and NULL), §4.4 capabilities (advisory until sandboxing, and the
 contract says so), §4.7 dependency isolation (needs the loader).
 
+## Platforms
+
+The shipping target is wider than the matrix was: **Windows (x64 + arm64), Linux (x64 + arm64),
+FreeBSD, macOS (arm64 only)**. Windows arm64 matters specifically for Surface tablets, where
+stylus-driven sketching is the point.
+
+CI now covers five of those. What is worth knowing before extending it further:
+
+- **Our own code is already architecture-clean.** No SIMD, no intrinsics, no arch `#ifdef`s. Of
+  thirteen platform guards, every `__APPLE__` one is an *additive* Metal path rather than an
+  `else` branch, so a new POSIX platform falls through correctly instead of into a Linux-assuming
+  branch. Porting risk is in dependencies and toolchain, not in our sources.
+- **Linux arm64 does not build the Qt shell in CI.** Qt ships no desktop linux/arm64 binaries
+  through the installer, and Ubuntu 24.04's own Qt is 6.4.2 against the 6.5 `shell_qt` requires.
+  The job is marked `expect_shell: false` and says so rather than letting the registration guard
+  fail for a non-bug.
+- **FreeBSD's blocker is vcpkg, not the code.** FreeBSD triplets are community-supported and OCCT
+  and Qt come from ports, so FreeBSD really means a second dependency-acquisition path — CMake
+  finding system packages instead of vcpkg. That work also serves Linux distro packagers, which
+  is the argument for doing it properly rather than as a FreeBSD special case.
+- **FreeBSD arm64 has no prebuilt Rust std** (tier 3). With the DXF reader in Rust and CI policy
+  `CAD_REQUIRE_RUST=ON`, that target needs `-Z build-std` on nightly or an explicit decision that
+  it runs the dime fallback. Undecided.
+- **No stylus support exists at all** — no `QTabletEvent`, no pressure, tilt, proximity or palm
+  rejection, on any platform. That is a feature rather than a port, and it belongs in `proshell`:
+  pressure and tilt are a professional-application capability, not a CAD one.
+
 ## Known test gaps, in priority order
 
 Everything here is a gap someone identified and nobody has closed. Ordered by what a professional

@@ -110,15 +110,55 @@ jobs:
       fail-fast: false       # one platform failing must not hide the others
       matrix:
         include:
-          - name: Linux (gcc)
+          # `triplet` is not decoration: several steps below need to name the vcpkg install
+          # directory, and hard-coding x64 there is what makes a matrix silently untestable on a
+          # second architecture.
+          - name: Linux x64 (gcc)
             os: ubuntu-24.04
             preset: RelWithDebInfo
-          - name: Windows (MSVC)
+            triplet: x64-linux
+            qt_via: aqt
+            expect_shell: true
+          - name: Linux arm64 (gcc)
+            os: ubuntu-24.04-arm
+            preset: RelWithDebInfo
+            triplet: arm64-linux
+            # Qt ships no desktop Linux/arm64 binaries through the online installer, so aqt has
+            # nothing to fetch. The distribution's own Qt 6 is the supported route on that
+            # platform anyway -- which is how a FreeBSD or a distro packager will build this too.
+            qt_via: apt
+            # ...and Ubuntu 24.04 ships Qt 6.4.2, below the 6.5 that shell_qt requires. So this
+            # job builds the core, the Rust integration and OCCT on arm64, and does NOT build the
+            # desktop shell. Stated rather than discovered: without this flag the registration
+            # guard below would fail the job for a missing proshell_boundary, which would be the
+            # guard working correctly and reporting something that is not a bug.
+            #
+            # Revisit when Qt ships desktop linux/arm64 binaries, or when the distribution
+            # catches up. proshell has no architecture-specific code, so what is untested here is
+            # the toolchain, not the shell.
+            expect_shell: false
+          - name: Windows x64 (MSVC)
             os: windows-2022
             preset: RelWithDebInfo
-          - name: macOS (arm64)
+            triplet: x64-windows
+            msvc_arch: amd64
+            qt_via: aqt
+            qt_arch: win64_msvc2022_64
+            expect_shell: true
+          - name: Windows arm64 (MSVC)
+            os: windows-11-arm
+            preset: RelWithDebInfo
+            triplet: arm64-windows
+            msvc_arch: arm64
+            qt_via: aqt
+            qt_arch: win64_msvc2022_arm64
+            expect_shell: true
+          - name: macOS arm64
             os: macos-14
             preset: RelWithDebInfo
+            triplet: arm64-osx
+            qt_via: aqt
+            expect_shell: true
 
     steps:
       # No submodules: assetlib is vendored in-tree at modules/assetlib.
@@ -145,10 +185,17 @@ jobs:
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
           # Prefix covers everything that changes the built bytes: runner image, pinned vcpkg
-          # commit, manifest, triplet overlays. Nothing else may invalidate an hour of OCCT.
-          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
+          # commit, manifest, and THIS platform's triplet overlay. Nothing else may invalidate an
+          # hour of OCCT.
+          #
+          # This platform's triplet, not the whole directory. Globbing `cmake/triplets/*.cmake`
+          # reads correctly and means that adding a triplet for a NEW platform invalidates the
+          # cache of every EXISTING one -- so supporting one more architecture would cost a cold
+          # OCCT rebuild on all of them, which is the sort of bill that stops people adding
+          # platforms.
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', format('cmake/triplets/{0}.cmake', matrix.triplet)) }}-${{ github.run_id }}
           restore-keys: |
-            vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-
+            vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', format('cmake/triplets/{0}.cmake', matrix.triplet)) }}-
             vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
 
       - name: Count cached packages before configure
@@ -186,6 +233,10 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
+        with:
+          # Without this the ARM runner sets up an x64 toolchain and builds x64 binaries on an
+          # ARM machine -- which links, runs under emulation, and tests nothing anyone ships.
+          arch: ${{ matrix.msvc_arch }}
 
       - uses: actions/setup-python@v5
         with:
@@ -212,11 +263,17 @@ jobs:
       # developer's machine. shell_qt returns early when Qt is absent, which means CI has been
       # skipping the entire shell -- including proshell_boundary, the test whose whole purpose is
       # to fail in CI on the commit that couples the reusable shell to CAD.
-      - name: Qt
+      - name: Qt (installer)
+        if: matrix.qt_via == 'aqt'
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.*'
+          arch: ${{ matrix.qt_arch }}
           cache: true
+
+      - name: Qt (distribution)
+        if: matrix.qt_via == 'apt'
+        run: sudo apt-get install -y --no-install-recommends qt6-base-dev
 
       - name: Qt runtime dependencies (Linux)
         if: runner.os == 'Linux'
@@ -265,7 +322,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', format('cmake/triplets/{0}.cmake', matrix.triplet)) }}-${{ github.run_id }}
 
       - name: Build
         run: cmake --build build -j
@@ -279,7 +336,13 @@ jobs:
         run: |
           registered=$(ctest --test-dir build -N)
           echo "$registered"
-          for name in rust_boundary dxf_differential proshell_boundary; do
+          expected="rust_boundary dxf_differential"
+          if [ "${{ matrix.expect_shell }}" = "true" ]; then
+            expected="$expected proshell_boundary"
+          else
+            echo "note: this platform does not build the Qt shell; proshell_boundary not expected"
+          fi
+          for name in $expected; do
             if ! echo "$registered" | grep -q "$name"; then
               echo "::error::$name is not registered — a dependency was silently skipped at configure time"
               exit 1
@@ -315,7 +378,7 @@ jobs:
           # default library linkage is DYNAMIC, so OCCT itself ships as DLLs alongside our
           # cad_abi.dll. The Rust test binary needs to find both.
           $abi = "${{ github.workspace }}\build\abi"
-          $deps = "${{ github.workspace }}\build\vcpkg_installed\x64-windows\bin"
+          $deps = "${{ github.workspace }}\build\vcpkg_installed\${{ matrix.triplet }}\bin"
           $env:PATH = "$abi;$deps;$env:PATH"
           cargo test --workspace
 
@@ -365,9 +428,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
+          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-linux.cmake') }}-${{ github.run_id }}
           restore-keys: |
-            vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-
+            vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-linux.cmake') }}-
             vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-
 
       - name: Count cached packages before configure
@@ -406,7 +469,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-archives
-          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}-${{ github.run_id }}
+          key: vcpkg-ubuntu-24.04-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/x64-linux.cmake') }}-${{ github.run_id }}
 
       - name: Build
         run: cmake --build build-asan -j
