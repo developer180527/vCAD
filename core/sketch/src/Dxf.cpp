@@ -6,6 +6,10 @@
 
 #include "cad/log/Log.h"
 
+#if CAD_HAVE_RUST_PARSE
+#include "cad_parse.h"
+#endif
+
 #include <dime/Input.h>
 #include <dime/Model.h>
 #include <dime/entities/Arc.h>
@@ -19,6 +23,7 @@
 #include <dime/util/Linear.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -45,13 +50,52 @@ bool equalsIgnoringCase(const std::string& a, const std::string& b) {
               });
 }
 
-/// Everything the traversal callback needs. dime's callback takes a void*, so this is what it
-/// points at.
+/// One entity as the FILE described it: raw coordinates, no projection, no scaling, no policy.
+///
+/// This type is the seam. Reading DXF bytes and building a sketch are two jobs, and keeping a
+/// neutral value between them means the second one is written once no matter who does the first.
+/// That matters right now because there are two readers — the Rust parser and vendored dime — and
+/// the whole point of running them against the same acceptance tests is that everything downstream
+/// of the bytes is identical code, not merely similar code.
+struct RawEntity {
+    enum class Kind { Line, Circle, Arc, Point, Polyline };
+
+    Kind kind = Kind::Line;
+    std::string layer;
+    /// x,y,z triples. Two for a line, one for a circle/arc/point centre, n for a polyline.
+    std::vector<std::array<double, 3>> points;
+    double radius = 0.0;
+    /// DEGREES, as the file stores them. Converted once, in buildSketch.
+    double startAngle = 0.0;
+    double endAngle = 0.0;
+    long long flags = 0;
+    /// Per-segment bulges, or empty when no segment curves.
+    std::vector<double> bulges;
+
+    /// True when `points` are already the DRAWING's 2D coordinates rather than model-space 3D,
+    /// so x and y map straight onto the sketch plane's two axes and z is meaningless.
+    ///
+    /// This is the LWPOLYLINE case, and the asymmetry with the heavyweight POLYLINE is real rather
+    /// than an oversight. An LWPOLYLINE stores 2D vertices plus a single elevation for the whole
+    /// entity: its x and y ARE the drawing's two axes, whatever plane the user imports onto.
+    /// A POLYLINE stores genuine 3D vertices, which have to be projected. Running both through
+    /// projection would collapse every LWPOLYLINE to a line when importing onto XZ or YZ, because
+    /// its "y" would be read as an out-of-plane depth it never was.
+    bool planar = false;
+};
+
+/// What one reader produced, before any of it becomes a sketch.
+struct RawDocument {
+    std::vector<RawEntity> entities;
+    std::map<std::string, std::size_t> unsupported;
+    std::size_t malformed = 0;
+};
+
+/// Everything the sketch-building pass carries.
 struct Context {
     Sketch* sketch = nullptr;
     DxfImportOptions options;
     DxfImportReport report;
-    std::map<std::string, std::size_t> unsupported;
 };
 
 /// Projects a DXF 3D coordinate onto the sketch plane.
@@ -60,24 +104,21 @@ struct Context {
 /// non-zero out-of-plane component — which would refuse most real files, since exporters leave
 /// stray Z values everywhere — we project and RECORD that we did. A silent projection would turn a
 /// slightly-3D drawing into a subtly wrong flat one with no indication.
-std::pair<double, double> project(const dimeVec3f& v, Context& ctx) {
+std::pair<double, double> project(const std::array<double, 3>& v, Context& ctx) {
     const double scale = ctx.options.scale;
     double u = 0.0;
     double w = 0.0;
     double out = 0.0;
     switch (ctx.options.plane) {
-        case Plane::XY: u = v.x; w = v.y; out = v.z; break;
-        case Plane::XZ: u = v.x; w = v.z; out = v.y; break;
-        case Plane::YZ: u = v.y; w = v.z; out = v.x; break;
+        case Plane::XY: u = v[0]; w = v[1]; out = v[2]; break;
+        case Plane::XZ: u = v[0]; w = v[2]; out = v[1]; break;
+        case Plane::YZ: u = v[1]; w = v[2]; out = v[0]; break;
     }
     if (std::abs(out) > 1e-9) ctx.report.projected = true;
     return {u * scale, w * scale};
 }
 
-bool onConstructionLayer(const dimeEntity* entity, const DxfImportOptions& options) {
-    const char* layer = entity->getLayerName();
-    if (layer == nullptr) return false;
-    const std::string name(layer);
+bool onConstructionLayer(const std::string& name, const DxfImportOptions& options) {
     return std::any_of(options.constructionLayers.begin(), options.constructionLayers.end(),
                        [&](const std::string& candidate) {
                            return equalsIgnoringCase(name, candidate);
@@ -99,100 +140,222 @@ void addLine(Context& ctx, std::pair<double, double> a, std::pair<double, double
     if (construction) ++ctx.report.construction;
 }
 
-bool visit(const dimeState* /*state*/, dimeEntity* entity, void* userdata) {
-    auto& ctx = *static_cast<Context*>(userdata);
+/// Turns raw entities into sketch geometry, applying every option and filling the report.
+///
+/// The whole domain half of the import, and the ONLY copy of it. Both readers produce a
+/// RawDocument and stop; scaling, projection, construction-layer matching, degenerate rejection
+/// and the counters all happen exactly once, here. That is what makes the acceptance tests a real
+/// comparison between the two readers rather than a comparison between two whole importers.
+void buildSketch(const RawDocument& raw, Context& ctx) {
+    for (const auto& entity : raw.entities) {
+        const bool construction = onConstructionLayer(entity.layer, ctx.options);
+
+        // `planar` entities carry the drawing's own 2D coordinates; everything else is model-space
+        // 3D that has to be flattened onto the target plane. See RawEntity::planar.
+        const auto toPlane = [&](const std::array<double, 3>& p) {
+            if (!entity.planar) return project(p, ctx);
+            return std::pair<double, double>{p[0] * ctx.options.scale, p[1] * ctx.options.scale};
+        };
+
+        switch (entity.kind) {
+            case RawEntity::Kind::Line: {
+                if (entity.points.size() < 2) {
+                    ++ctx.report.malformed;
+                    break;
+                }
+                addLine(ctx, toPlane(entity.points[0]), toPlane(entity.points[1]), construction);
+                break;
+            }
+            case RawEntity::Kind::Circle: {
+                if (entity.points.empty()) {
+                    ++ctx.report.malformed;
+                    break;
+                }
+                const auto centre = toPlane(entity.points[0]);
+                const double radius = entity.radius * ctx.options.scale;
+                if (ctx.options.dropDegenerate && radius <= kTiny) {
+                    ++ctx.report.degenerate;
+                    break;
+                }
+                ctx.sketch->addCircle(centre.first, centre.second, radius, construction);
+                ++ctx.report.circles;
+                if (construction) ++ctx.report.construction;
+                break;
+            }
+            case RawEntity::Kind::Arc: {
+                if (entity.points.empty()) {
+                    ++ctx.report.malformed;
+                    break;
+                }
+                const auto centre = toPlane(entity.points[0]);
+                const double radius = entity.radius * ctx.options.scale;
+                if (ctx.options.dropDegenerate && radius <= kTiny) {
+                    ++ctx.report.degenerate;
+                    break;
+                }
+                // DXF arc angles are DEGREES, counter-clockwise; ours are radians. Getting this
+                // wrong produces an arc of plausible size in the wrong place, which is easy to
+                // miss. Converted HERE and nowhere else, so a reader cannot convert them twice.
+                ctx.sketch->addArc(centre.first, centre.second, radius,
+                                   entity.startAngle * kDegToRad, entity.endAngle * kDegToRad,
+                                   construction);
+                ++ctx.report.arcs;
+                if (construction) ++ctx.report.construction;
+                break;
+            }
+            case RawEntity::Kind::Point: {
+                if (entity.points.empty()) {
+                    ++ctx.report.malformed;
+                    break;
+                }
+                const auto p = toPlane(entity.points[0]);
+                ctx.sketch->addPoint(p.first, p.second, construction);
+                ++ctx.report.points;
+                if (construction) ++ctx.report.construction;
+                break;
+            }
+            case RawEntity::Kind::Polyline: {
+                if (entity.points.size() < 2) {
+                    if (!entity.points.empty()) ++ctx.report.malformed;
+                    break;
+                }
+                std::vector<std::pair<double, double>> pts;
+                pts.reserve(entity.points.size());
+                for (const auto& p : entity.points) pts.push_back(toPlane(p));
+
+                // Bulges make a polyline segment an arc. Both readers expose them, but
+                // reconstructing an arc from a bulge needs the chord and the included angle, and
+                // getting that subtly wrong is worse than a straight line the user can see is
+                // straight. Flattened and COUNTED, so the report can say the profile lost
+                // curvature.
+                for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+                    if (i < entity.bulges.size() && entity.bulges[i] != 0.0) {
+                        ++ctx.report.flattenedBulges;
+                    }
+                    addLine(ctx, pts[i], pts[i + 1], construction);
+                }
+                // Flag 1 means closed: the last vertex joins the first, and that segment is not
+                // stored. Missing it leaves a profile one edge short of closing, which toWire()
+                // then rejects as open — a confusing failure for a file that really is closed.
+                if ((entity.flags & 1) != 0 && pts.size() > 2) {
+                    addLine(ctx, pts.back(), pts.front(), construction);
+                }
+                ++ctx.report.polylines;
+                break;
+            }
+        }
+    }
+
+    ctx.report.malformed += raw.malformed;
+    for (const auto& [kind, count] : raw.unsupported) {
+        ctx.report.unsupported.emplace_back(kind, count);
+    }
+}
+
+// --------------------------------------------------------------------------------------------
+// Reader: vendored dime
+//
+// Retained as the fallback for builds without a Rust toolchain, since CAD_REQUIRE_RUST is off by
+// default. It now only fills a RawDocument — every crash guard in dxfLinesArePaired below still
+// stands in front of it, because this path still hands a stranger's bytes to C.
+//
+// COMPILED IN BOTH CONFIGURATIONS, deliberately, even though it is only CALLED in one. A fallback
+// behind an #if that nobody builds stops compiling within a release or two, and discovers that on
+// the machine that has no cargo — which is exactly the machine that needs it. The cost is that
+// dime stays linked; the benefit is that the fallback is real.
+// --------------------------------------------------------------------------------------------
+
+[[maybe_unused]] std::array<double, 3> triple(const dimeVec3f& v) {
+    // dime declares `typedef float dxfdouble`, so these widen. Explicit rather than implicit: the
+    // precision floor is dime's and is documented on importDxf, and a silent promotion here would
+    // make it look as though the value had ever been a double.
+    return {static_cast<double>(v.x), static_cast<double>(v.y), static_cast<double>(v.z)};
+}
+
+[[maybe_unused]] bool visit(const dimeState* /*state*/, dimeEntity* entity,
+                            void* userdata) {
+    auto& raw = *static_cast<RawDocument*>(userdata);
     const char* rawName = entity->getEntityName();
     const std::string name = rawName != nullptr ? rawName : "";
-    const bool construction = onConstructionLayer(entity, ctx.options);
+    const char* rawLayer = entity->getLayerName();
+    const std::string layer = rawLayer != nullptr ? rawLayer : "";
 
     if (name == "LINE") {
         auto* line = static_cast<dimeLine*>(entity);
-        addLine(ctx, project(line->getCoords(0), ctx), project(line->getCoords(1), ctx),
-                construction);
+        RawEntity e;
+        e.kind = RawEntity::Kind::Line;
+        e.layer = layer;
+        e.points = {triple(line->getCoords(0)), triple(line->getCoords(1))};
+        raw.entities.push_back(std::move(e));
     } else if (name == "CIRCLE") {
         auto* circle = static_cast<dimeCircle*>(entity);
-        const auto centre = project(circle->getCenter(), ctx);
-        const double radius = circle->getRadius() * ctx.options.scale;
-        if (ctx.options.dropDegenerate && radius <= kTiny) {
-            ++ctx.report.degenerate;
-        } else {
-            ctx.sketch->addCircle(centre.first, centre.second, radius, construction);
-            ++ctx.report.circles;
-            if (construction) ++ctx.report.construction;
-        }
+        RawEntity e;
+        e.kind = RawEntity::Kind::Circle;
+        e.layer = layer;
+        e.points = {triple(circle->getCenter())};
+        e.radius = static_cast<double>(circle->getRadius());
+        raw.entities.push_back(std::move(e));
     } else if (name == "ARC") {
         auto* arc = static_cast<dimeArc*>(entity);
         dimeVec3f c;
         arc->getCenter(c);
-        const auto centre = project(c, ctx);
-        const double radius = arc->getRadius() * ctx.options.scale;
-        if (ctx.options.dropDegenerate && radius <= kTiny) {
-            ++ctx.report.degenerate;
-        } else {
-            // DXF arc angles are DEGREES, counter-clockwise; ours are radians. Getting this wrong
-            // produces an arc of plausible size in the wrong place, which is easy to miss.
-            ctx.sketch->addArc(centre.first, centre.second, radius,
-                               arc->getStartAngle() * kDegToRad, arc->getEndAngle() * kDegToRad,
-                               construction);
-            ++ctx.report.arcs;
-            if (construction) ++ctx.report.construction;
-        }
+        RawEntity e;
+        e.kind = RawEntity::Kind::Arc;
+        e.layer = layer;
+        e.points = {triple(c)};
+        e.radius = static_cast<double>(arc->getRadius());
+        e.startAngle = static_cast<double>(arc->getStartAngle());
+        e.endAngle = static_cast<double>(arc->getEndAngle());
+        raw.entities.push_back(std::move(e));
     } else if (name == "POINT") {
         auto* point = static_cast<dimePoint*>(entity);
-        const auto p = project(point->getCoords(), ctx);
-        ctx.sketch->addPoint(p.first, p.second, construction);
-        ++ctx.report.points;
-        if (construction) ++ctx.report.construction;
+        RawEntity e;
+        e.kind = RawEntity::Kind::Point;
+        e.layer = layer;
+        e.points = {triple(point->getCoords())};
+        raw.entities.push_back(std::move(e));
     } else if (name == "LWPOLYLINE") {
         auto* poly = static_cast<dimeLWPolyline*>(entity);
         const int count = poly->getNumVertices();
         const dxfdouble* xs = poly->getXCoords();
         const dxfdouble* ys = poly->getYCoords();
+        // getBulgeS, plural, and it can be null: a polyline with no curved segments stores no
+        // bulge array at all rather than an array of zeros.
         const dxfdouble* bulges = poly->getBulges();
         if (count >= 2 && xs != nullptr && ys != nullptr) {
-            const double scale = ctx.options.scale;
-            // Bulges make a polyline segment an arc. dime exposes them, but reconstructing an arc
-            // from a bulge needs the chord and the included angle, and getting that subtly wrong is
-            // worse than a straight line the user can see is straight. Flattened and COUNTED, so
-            // the report can say the profile lost curvature.
-            for (int i = 0; i + 1 < count; ++i) {
-                // getBulgeS, plural, and it can be null: a polyline with no curved segments
-                // stores no bulge array at all rather than an array of zeros.
-                if (bulges != nullptr && bulges[i] != 0.0) ++ctx.report.flattenedBulges;
-                addLine(ctx, {xs[i] * scale, ys[i] * scale},
-                        {xs[i + 1] * scale, ys[i + 1] * scale}, construction);
+            RawEntity e;
+            e.kind = RawEntity::Kind::Polyline;
+            e.layer = layer;
+            e.flags = poly->getFlags();
+            e.planar = true;
+            for (int i = 0; i < count; ++i) {
+                e.points.push_back({static_cast<double>(xs[i]), static_cast<double>(ys[i]), 0.0});
             }
-            // Flag 1 means closed: the last vertex joins the first, and that segment is not stored.
-            // Missing it leaves a profile that is one edge short of closing, which toWire() then
-            // rejects as open — a confusing failure for a file that really is closed.
-            if ((poly->getFlags() & 1) != 0 && count > 2) {
-                addLine(ctx, {xs[count - 1] * scale, ys[count - 1] * scale},
-                        {xs[0] * scale, ys[0] * scale}, construction);
+            if (bulges != nullptr) {
+                for (int i = 0; i < count; ++i) {
+                    e.bulges.push_back(static_cast<double>(bulges[i]));
+                }
             }
-            ++ctx.report.polylines;
+            raw.entities.push_back(std::move(e));
         }
     } else if (name == "POLYLINE") {
         // The older heavyweight polyline: vertices are separate VERTEX entities owned by it.
         auto* poly = static_cast<dimePolyline*>(entity);
         const int count = poly->getNumCoordVertices();
-        std::vector<std::pair<double, double>> pts;
-        pts.reserve(static_cast<std::size_t>(std::max(count, 0)));
+        RawEntity e;
+        e.kind = RawEntity::Kind::Polyline;
+        e.layer = layer;
+        e.flags = poly->getFlags();
         for (int i = 0; i < count; ++i) {
             if (const dimeVertex* v = poly->getCoordVertex(i)) {
-                pts.push_back(project(v->getCoords(), ctx));
+                e.points.push_back(triple(v->getCoords()));
             }
         }
-        for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
-            addLine(ctx, pts[i], pts[i + 1], construction);
-        }
-        if ((poly->getFlags() & 1) != 0 && pts.size() > 2) {
-            addLine(ctx, pts.back(), pts.front(), construction);
-        }
-        if (!pts.empty()) ++ctx.report.polylines;
+        if (!e.points.empty()) raw.entities.push_back(std::move(e));
     } else if (!name.empty()) {
         // Counted by type, not just skipped. "SPLINE x 4" tells a user whether what is missing
         // mattered; "some entities were skipped" does not.
-        ++ctx.unsupported[name];
+        ++raw.unsupported[name];
     }
     return true;   // keep traversing
 }
@@ -203,6 +366,7 @@ std::string DxfImportReport::summary() const {
     std::string text = std::to_string(imported()) + " entities";
     if (construction > 0) text += ", " + std::to_string(construction) + " construction";
     if (degenerate > 0) text += ", " + std::to_string(degenerate) + " degenerate dropped";
+    if (malformed > 0) text += ", " + std::to_string(malformed) + " unreadable";
     if (flattenedBulges > 0) {
         text += ", " + std::to_string(flattenedBulges) + " curved polyline segments flattened";
     }
@@ -215,6 +379,130 @@ std::string DxfImportReport::summary() const {
     }
     return text;
 }
+
+#if CAD_HAVE_RUST_PARSE
+// --------------------------------------------------------------------------------------------
+// Reader: the Rust parser
+//
+// The reason this exists is narrow and worth stating plainly: DXF is the one surface in this
+// application where the bytes come from a stranger. People email each other part files. Fuzzing
+// the dime path found a segfault from 23 bytes, a 28-second hang from 82 bytes, and a one-past-the
+// -end write — three memory-safety or denial-of-service bugs in an afternoon, in code that had
+// been working correctly for years on well-formed input.
+//
+// None of the guards below go away when this path is taken; see the note on dxfLinesArePaired.
+// --------------------------------------------------------------------------------------------
+
+/// Reads a NUL-terminated string through one of the buffer-returning accessors.
+///
+/// The accessors return the FULL length even when they wrote nothing, so the retry is a single
+/// resize rather than a doubling loop. Worth doing properly: silently truncating here would move
+/// an entity onto a different layer, which changes whether it is construction geometry.
+template <class Accessor>
+std::string readString(Accessor&& accessor) {
+    char stack[128];
+    const std::size_t needed = accessor(stack, sizeof(stack));
+    if (needed == 0) return {};
+    if (needed < sizeof(stack)) return std::string(stack, needed);
+
+    std::string heap(needed + 1, '\0');
+    const std::size_t written = accessor(heap.data(), heap.size());
+    if (written != needed) return {};
+    heap.resize(needed);
+    return heap;
+}
+
+kernel::Result<RawDocument> readWithRust(const std::filesystem::path& path) {
+    int code = CAD_DXF_OK;
+    CadDxfDocument* parsed = cad_dxf_parse_file(path.string().c_str(), &code);
+    if (parsed == nullptr) {
+        const std::string message = readString([&](char* buffer, std::size_t capacity) {
+            return cad_dxf_error_message(code, buffer, capacity);
+        });
+        CAD_WARN(log::Category::Io)
+            << "dxf: rust parser rejected " << path.string() << " (code " << code << "): "
+            << message;
+        return Error{ErrorCode::InvalidInput, message,
+                     path.string() + ": parser code " + std::to_string(code)};
+    }
+
+    // The handle is released on every path out of here, including the throwing ones the vector
+    // growth below can take.
+    struct Guard {
+        CadDxfDocument* doc;
+        ~Guard() { cad_dxf_free(doc); }
+    } guard{parsed};
+
+    RawDocument raw;
+    const std::size_t count = cad_dxf_entity_count(parsed);
+    raw.entities.reserve(count);
+    raw.malformed = cad_dxf_malformed_count(parsed);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        RawEntity entity;
+        entity.layer = readString([&](char* buffer, std::size_t capacity) {
+            return cad_dxf_entity_layer(parsed, i, buffer, capacity);
+        });
+        entity.radius = cad_dxf_entity_radius(parsed, i);
+        entity.startAngle = cad_dxf_entity_start_angle(parsed, i);
+        entity.endAngle = cad_dxf_entity_end_angle(parsed, i);
+        entity.flags = cad_dxf_entity_flags(parsed, i);
+
+        switch (cad_dxf_entity_kind(parsed, i)) {
+            case CAD_DXF_LINE: entity.kind = RawEntity::Kind::Line; break;
+            case CAD_DXF_CIRCLE: entity.kind = RawEntity::Kind::Circle; break;
+            case CAD_DXF_ARC: entity.kind = RawEntity::Kind::Arc; break;
+            case CAD_DXF_POINT: entity.kind = RawEntity::Kind::Point; break;
+            case CAD_DXF_POLYLINE:
+                entity.kind = RawEntity::Kind::Polyline;
+                // The parser folds LWPOLYLINE and POLYLINE into one kind, and both arrive as the
+                // drawing's 2D coordinates -- it never reads a vertex Z. See RawEntity::planar.
+                entity.planar = true;
+                break;
+            default:
+                // An index past the end returns -1, and a kind this build does not know about
+                // means the header and the library are different vintages. Either way the entity
+                // is not something we can place, and counting it is more useful than guessing.
+                ++raw.malformed;
+                CAD_WARN(log::Category::Io)
+                    << "dxf: entity " << i << " has an unknown kind; header and cad-parse "
+                    << "library may be out of step";
+                continue;
+        }
+
+        const std::size_t points = cad_dxf_entity_point_count(parsed, i);
+        entity.points.reserve(points);
+        for (std::size_t j = 0; j < points; ++j) {
+            double x = 0.0;
+            double y = 0.0;
+            if (cad_dxf_entity_point(parsed, i, j, &x, &y) == 0) break;
+            entity.points.push_back({x, y, 0.0});
+        }
+
+        const std::size_t bulges = cad_dxf_entity_bulge_count(parsed, i);
+        entity.bulges.reserve(bulges);
+        for (std::size_t j = 0; j < bulges; ++j) {
+            entity.bulges.push_back(cad_dxf_entity_bulge(parsed, i, j));
+        }
+
+        raw.entities.push_back(std::move(entity));
+    }
+
+    const std::size_t kinds = cad_dxf_unsupported_count(parsed);
+    for (std::size_t i = 0; i < kinds; ++i) {
+        std::string name = readString([&](char* buffer, std::size_t capacity) {
+            return cad_dxf_unsupported_name(parsed, i, buffer, capacity);
+        });
+        if (!name.empty()) raw.unsupported[name] = cad_dxf_unsupported_occurrences(parsed, i);
+    }
+
+    CAD_DEBUG(log::Category::Io)
+        << "dxf: rust parser read " << path.filename().string() << " -- " << raw.entities.size()
+        << " entities, " << raw.malformed << " unreadable, " << raw.unsupported.size()
+        << " unsupported types";
+    return raw;
+}
+#endif  // CAD_HAVE_RUST_PARSE
 
 /// Rejects a DXF whose group codes and values are not paired.
 ///
@@ -392,8 +680,21 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
         return paired.error();
     }
 
+    RawDocument raw;
+#if CAD_HAVE_RUST_PARSE
+    // The Rust reader when the build has one. The guards above still run in front of it: they cost
+    // one pass over a file that is about to be read anyway, and they are the difference between
+    // "this build is safe" and "this build is safe as long as CAD_REQUIRE_RUST was on", which is
+    // not a property anyone can check from a crash report.
+    {
+        auto parsed = readWithRust(path);
+        if (!parsed) return parsed.error();
+        raw = std::move(parsed.value());
+    }
+#else
     dimeInput input;
     if (!input.setFile(path.string().c_str())) {
+        CAD_WARN(log::Category::Io) << "dxf: could not open " << path.string();
         return Error{ErrorCode::InvalidInput, "That DXF file could not be opened.", path.string()};
     }
 
@@ -401,7 +702,7 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
     if (!model.read(&input)) {
         // dime has already printed its own parse diagnostic to stderr by this point. Ours records
         // WHICH file, which its message does not, and puts both in the same log.
-        CAD_WARN(log::Category::Io) << "dime could not parse " << path.string();
+        CAD_WARN(log::Category::Io) << "dxf: dime could not parse " << path.string();
         // dime returns false for a malformed file. Deliberately not partial: half a profile looks
         // like a complete one and there is no way for the user to tell which half is missing.
         return Error{ErrorCode::InvalidInput,
@@ -410,21 +711,47 @@ kernel::Result<Sketch> importDxf(const std::filesystem::path& path,
                      path.string()};
     }
 
+    model.traverseEntities(visit, &raw);
+    CAD_DEBUG(log::Category::Io)
+        << "dxf: dime read " << path.filename().string() << " -- " << raw.entities.size()
+        << " entities, " << raw.unsupported.size() << " unsupported types";
+#endif
+
     Context ctx;
     Sketch sketch(options.plane);
     ctx.sketch = &sketch;
     ctx.options = options;
 
-    model.traverseEntities(visit, &ctx);
+    buildSketch(raw, ctx);
 
-    for (const auto& [kind, count] : ctx.unsupported) {
-        ctx.report.unsupported.emplace_back(kind, count);
-    }
     if (report != nullptr) *report = ctx.report;
-    CAD_INFO(log::Category::Io) << "imported " << path.filename().string() << ": "
+
+    // Fidelity loss gets its own line at WARNING, not a clause buried in the INFO summary. These
+    // are the two things a user comes back to the log about — "why is my profile open" and "why is
+    // this the wrong size" — and both are answered by geometry that was in the file and is not in
+    // the sketch.
+    if (ctx.report.malformed > 0) {
+        CAD_WARN(log::Category::Io)
+            << "dxf: " << ctx.report.malformed << " entities in " << path.filename().string()
+            << " could not be read and were dropped";
+    }
+    if (ctx.report.flattenedBulges > 0) {
+        CAD_WARN(log::Category::Io)
+            << "dxf: " << ctx.report.flattenedBulges << " curved polyline segments in "
+            << path.filename().string() << " were flattened to straight lines";
+    }
+    for (const auto& [kind, count] : ctx.report.unsupported) {
+        CAD_DEBUG(log::Category::Io)
+            << "dxf: not imported from " << path.filename().string() << ": " << kind << " x"
+            << count;
+    }
+
+    CAD_INFO(log::Category::Io) << "dxf: imported " << path.filename().string() << ": "
                                 << ctx.report.summary();
 
     if (ctx.report.imported() == 0) {
+        CAD_WARN(log::Category::Io) << "dxf: " << path.filename().string()
+                                    << " contained no importable geometry";
         return Error{ErrorCode::InvalidInput,
                      "That DXF contains no geometry we can import.",
                      ctx.report.summary()};

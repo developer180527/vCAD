@@ -32,7 +32,7 @@ product. Everything here is at or below LGPL, which is what keeps the plugin sto
 | Open CASCADE Technology | LGPL-2.1 with exception | Geometry kernel. Dynamically linked. |
 | **planegcs** (FreeCAD) | **LGPL-2.1-or-later** | 2D constraint solver, **vendored** — see `modules/planegcs/VENDORED.md`. Built SHARED to satisfy the relink obligation. |
 | Qt | LGPL-3 / commercial | Desktop shell only. Dynamically linked; never reaches `core/`. |
-| dime (Coin3D) | BSD-3-Clause | DXF read/write. Permissive. |
+| dime (Coin3D) | BSD-3-Clause | DXF read, FALLBACK path only. Permissive. |
 | Eigen | MPL-2.0 | Linear algebra. |
 | Boost (Graph, Math) | BSL-1.0 | Required by planegcs. |
 | SQLite | Public domain | Native document format. |

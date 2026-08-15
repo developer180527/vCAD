@@ -1,7 +1,7 @@
 # Pick up here
 
-Written 15 Aug 2026, at the end of the session that finished steps 3b and 4. Everything below was
-verified on that commit, not remembered.
+Written 15 Aug 2026, at the end of the session that ported the DXF reader to Rust. Everything below
+was verified on that commit, not remembered.
 
 **The tree is green and every promise currently marked (RESOLVED) is genuinely tested.** Nothing is
 half-wired. You can start clean.
@@ -13,14 +13,21 @@ half-wired. You can start clean.
 | Check | Result |
 |---|---|
 | C++ tests (`ctest --test-dir build`) | green |
-| Rust tests (`cd tests-rs && cargo test --workspace`) | green; `plugin_host.rs` 29, plus new `sequences.rs` and `concurrency.rs` |
+| Rust tests (`cd tests-rs && cargo test --workspace`) | green; `plugin_host.rs` 29, plus `sequences.rs`, `concurrency.rs`, `dxf_fuzz.rs` |
+| Parser tests (`cd rust/cad-parse && cargo test`) | green |
+| DXF differential (`-DCAD_USE_RUST_DXF=OFF`, rebuild, rerun) | identical output |
 | Layering (`cmake --build build`) | Layering OK |
 | Qt shell (`cmake --build build-qt --target vcad`) | builds clean |
-| ABI golden snapshot | no drift, regenerated for 1.15 |
+| ABI golden snapshot | no drift, regenerated for 1.16 |
+
+**153 tests in `tests-rs`, 25 in `rust/cad-parse`, 31 C++ tests, zero failures** at the time of
+writing.
 
 Two build directories, on purpose: `build` (core, tests, spikes) and `build-qt` (renderer + Qt
 shell). Rust links the library from `build/abi`, so **run `cmake --build build` before
-`cargo test`** or the suite tests a stale library.
+`cargo test`** or the suite tests a stale library. Note that `--target cad_sketch` is NOT enough —
+`tests-rs` links `build/abi`, so a partial build silently tests the old DXF reader while the log
+still shows the old wording. Build everything.
 
 **Run the Rust suite in PARALLEL at least once before believing it.** A harness bug that only
 appears under concurrency passed cleanly under `--test-threads=1` and aborted the process the
@@ -28,7 +35,92 @@ moment the full suite ran — see the note at the bottom.
 
 ---
 
-## Start here: step 5, error containment (§5)
+## Done: the DXF parser in Rust
+
+**All three steps are finished and the Rust reader is the default.** Importers parse untrusted
+bytes from strangers — the one place in vCAD where an attacker controls the input, and the largest
+CVE source in this industry. That argument covers the bytes and nothing past them, which is why
+only the bytes moved.
+
+1. **Fuzzing the dime importer** (`tests-rs/cad-tests/tests/dxf_fuzz.rs`) found three real bugs in
+   what shipped: a SIGSEGV from 23 bytes, a 28.7-second hang from 82 bytes, and a one-past-the-end
+   write. All three are guarded in `Dxf.cpp` and the guards still run in front of BOTH readers.
+2. **Build integration** proved on a stub: `rust/cad-parse` as a `staticlib`, `cmake/CadRust.cmake`,
+   `--offline --locked`, `panic = "abort"`.
+3. **The parser** is `rust/cad-parse/src/dxf.rs` with its C surface in `src/dxf_c.rs` and the
+   hand-written header in `rust/include/cad_parse.h`.
+
+### The shape that makes it verifiable
+
+`Dxf.cpp` was restructured so **both readers stop at a neutral `RawEntity` list** and a single
+`buildSketch` does all projection, scaling, construction-layer matching, degenerate rejection and
+counting. The domain half exists once. Without that, comparing the readers would compare two whole
+importers, which proves much less.
+
+`-DCAD_USE_RUST_DXF=OFF` selects dime. **Run the DXF tests both ways after touching this code** —
+that is the only thing separating "the new reader agrees with the old one" from "the new reader
+agrees with tests written alongside it". They currently produce byte-identical output on
+`tests/data/sketch_profile.dxf`, down to the constraint-inference numbers downstream.
+
+dime is **compiled in both configurations** even though it is called in only one. A fallback behind
+an `#if` nobody builds stops compiling within a release or two, and discovers that on the machine
+with no cargo — exactly the machine that needs it.
+
+### Two behaviour changes, both deliberate
+
+- **Partial imports.** dime refused any file it could not read completely; the Rust reader imports
+  what parses and counts the rest in `DxfImportReport::malformed`, with a WARNING and a clause in
+  `summary()`. The old policy's argument was sound — half a profile looks like a whole profile —
+  and what changed is that there is now a number saying how much was lost. Revisit if a user ever
+  reports acting on a partial import; refusing on `malformed > 0` is a two-line change.
+- **Precision.** The Rust reader is f64; dime is f32. See the note on `importDxf` before tightening
+  any round-trip tolerance — tightening it to what Rust alone delivers breaks the dime build for a
+  reason unrelated to whatever is being tested.
+
+### What is NOT ported, and should not be
+
+`DxfExport.cpp` writes files we control. It has no untrusted input and none of the security
+argument applies. It also stays the independent implementation that makes an export/import round
+trip a real check rather than the same code run twice.
+
+### Still open here
+
+- **Windows and Linux CI have not run any of this.** The Rust integration was only ever exercised
+  on macOS. `rustc --print native-static-libs`, the MSVC `.lib` naming and the `--offline` path are
+  the three most likely to break.
+- **The fuzz corpus is thin** — two seeds, both ours. See the fixture notes below; a fuzzer
+  starting from thin material stays thin.
+- **No differential fuzzing.** The two readers are compared on one hand-built file. Running the
+  same mutated corpus through both and comparing reports would be a much stronger check, and the
+  `RawEntity` seam is what makes it cheap to write.
+- **INSERT / BLOCKS are not expanded** by either reader — counted as unsupported so the user is
+  told, rather than silently handed an empty sketch. Real drawings use blocks heavily, so this is
+  the most likely next complaint from an actual user.
+
+### Test fixtures: what to fetch and what to watch for
+
+**These are DATA, used to harden a parser — not code, and not shipped.** That framing settles most
+of the licensing question: sample CAD corpora exist to be tested against, and using them that way
+is what they are for. Two practical points remain, and they are practical rather than legal:
+
+- The repository is **public**, so committing a file redistributes it whether or not it ships.
+  Prefer sources that plainly allow that — OCCT's own test data, NIST's PMI/CAD corpus (US
+  government, public domain), ODA/Autodesk published DXF samples. Record where each came from in a
+  `README` beside them; six months on, "where did this file come from" is unanswerable otherwise.
+- **Size.** Real assemblies run to tens or hundreds of megabytes and do not belong in git. Commit
+  small fixtures directly; fetch large ones with a script that checksums what it downloads, so CI
+  fails loudly if a remote file changes underneath it.
+
+What the corpus needs to cover, because a fuzzer starting from thin material stays thin:
+
+- files from DIFFERENT producers (SolidWorks, CATIA, Inventor, FreeCAD) — each writes valid-but
+  -different STEP, and disagreement between producers is where importers break;
+- an assembly, not only single parts;
+- geometry with the tolerance soup real data carries: near-degenerate faces, seams, tiny edges;
+- at least one file known to be MALFORMED, so the error path has a real specimen and not only a
+  mutated one.
+
+## After that: step 5, error containment (§5)
 
 Step 4 is done (ABI 1.15). Writing its test first was worth it: the DATA was never at risk —
 parameters are ordinary typed properties, so a document already round-tripped through a session
@@ -43,6 +135,33 @@ returns nonsense, that never returns — plus honest attribution when it is not.
 
 Read §5 before designing; the boundary between "contained" and "not survivable" is the whole
 decision, and promising more than in-process C can deliver is worse than promising nothing.
+
+## Known test gaps, in priority order
+
+Everything here is a gap someone identified and nobody has closed. Ordered by what a professional
+losing work would care about.
+
+1. **The four accessors added in 1.16 have NO tests** — `compute_param_element`,
+   `compute_param_count`, `compute_param_element_at`, `compute_param_shape_at`. They are the
+   machinery a fillet plugin needs, and they were wired without tests. Smallest item here.
+2. **Importer fuzzing.** Zero fuzz targets exist. See the section above.
+3. **A hostile plugin.** ADR 0011 enforcement point 3 requires one and it does not exist: a plugin
+   returning unknown status codes, setting output twice, releasing handles it does not own,
+   registering during compute, returning CAD_OK having done nothing. "A boundary that only survives
+   well-behaved callers is not a boundary" is our own sentence.
+4. **`migrate_params` is declared and never exercised.** The whole parameter-evolution story is
+   untested behaviour.
+5. **`compute_version` cache invalidation.** We assert identical features SHARE a cache entry;
+   nothing asserts that bumping the version stops them sharing. That is the "stale geometry
+   survives a rebuild" bug.
+6. **The NaN-revert path is not proven to run.** `sketch_sequences.rs` asserts no coordinate is ever
+   non-finite, and that invariant holds over the campaign — but nothing confirms the revert branch
+   was ever ENTERED. The guard holding and the guard being tested are different claims.
+7. **Shared DDC tier under concurrency.** `concurrency.rs` pins per-session locking; two sessions
+   sharing the on-disk cache is a real data-race surface and is uncovered.
+8. **Autosave and crash recovery do not exist.** No test can cover this because the feature is
+   absent. For a tool someone keeps a day's work in, this is a larger reliability risk than
+   anything above — and native plugins being able to take the process down makes it worse.
 
 ## Then
 
@@ -89,6 +208,20 @@ Also open, from the performance work and not on the plugin thread at all:
 - **`Session` already has a `scratch` string** for strings returned across the boundary. Reuse it.
 - **Recompute skips objects that are Clean with an output** (`Engine.cpp`). This is why the Import
   cache fix is only half a fix: the key is now correct, but nothing *notices* a file changed.
+- **Add to `CadHost` at the END.** Checked this session by looking: `compute_fail` was last, and
+  the five 1.16 accessors follow it. The golden snapshot reports a middle insertion as
+  "CHANGED: struct CadHost" rather than as an addition — but only if you read WHICH of the two it
+  said.
+- **`external_inputs` runs at CACHE-KEY time, not during compute.** That is why it lives on the
+  descriptor and takes a `CadFeatureCtx` rather than a `CadComputeCtx`: when the key is built, no
+  input has been computed. An earlier design had the plugin declare it from inside compute, which
+  cannot work — the key it changes has already been computed by then. It was declared-but-unwired
+  for a while, which silently reintroduced the Import bug through the plugin path.
+- **`CadFeatureCtx` and `CadComputeCtx` share one handle space deliberately**, so the parameter
+  accessors are written once and serve both moments a plugin reads its own parameters.
+- **An invariant written `if let Ok(v) = ...` is an invariant that turns itself off.** The Clean
+  -object volume check did exactly this: a Clean object whose volume could not be computed passed
+  without comment. Assert the call succeeded, then assert the value.
 - **A test harness must not keep host state in a `static mut`.** The fake plugin did, passed under
   `--test-threads=1`, and SIGABRT'd under the parallel suite. `plugin_ctx` is what a plugin carries
   its state in; a harness that cheats around it is not testing the boundary it claims to.
@@ -109,5 +242,25 @@ strong and made the bug look unfindable. Evidence: the offscreen path repaints c
 `sendPostedEvents` pass, so the pending zero-timer that calls `grab()` never runs. `sample` puts the
 main thread in an ordinary Qt repaint, not in the grab.
 
+## Decisions made, so they are not relitigated
+
+- **Sandbox tier is WASM.** Makes `CAD_CAP_*` enforceable rather than advisory and a plugin crash
+  survivable, and it fits a C99 ABI over integers with no exceptions. Native plugins remain for
+  what WASM cannot do, but they stay trusted code and the installer must say so. Needs its own ADR:
+  memory ownership across the linear-memory boundary, what a handle means when the guest cannot
+  hold a host pointer, and the per-recompute cost.
+- **Importers move to Rust; the exporter does not.** Untrusted input is the whole argument, and
+  `DxfExport.cpp` writes files we control.
+- **Plugin UI is declarative, never drawn.** Two shells (Qt, SwiftUI) mean a plugin that draws
+  works on one. A plugin cannot create a top-level ribbon tab — that is a user decision in
+  settings, not a plugin decision at registration. Revit had to retrofit that limit; FreeCAD's
+  equivalent is workbench proliferation.
+- **The API is forever; the geometry is reproducible only within a kernel generation.** A 2026
+  plugin loads in 2036. The shape it produces may differ if the kernel improved, and the document
+  says so. This is the one real boundary on the decade promise and it is deliberate.
+
+---
+
 `docs/STATUS.md` was last audited 13 Aug and is now well behind, missing the renderer and plugin
 threads entirely. Its own header warns that reading it without re-auditing is how it starts lying.
+Re-audit it rather than trusting it.

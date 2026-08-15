@@ -1148,3 +1148,135 @@ fn a_feature_without_external_inputs_still_computes() {
     plugin.recompute();
     assert!(plugin.state.calls.load(Ordering::SeqCst) > 0, "compute must still run");
 }
+
+
+// --- descriptor negotiation ------------------------------------------------------------------
+//
+// ADR 0011's entire decade promise rests on one mechanism: a receiver reads `struct_size` and uses
+// only the fields that fit inside it. That was enforced at COMPILE time (m2_abi_layout.cpp checks
+// struct_size sits at offset 0) and checked host-side, but nothing ever handed the host a
+// deliberately SHORT descriptor -- an old plugin, which is the only case the promise is about.
+//
+// Until the compatibility museum exists, this is the closest thing to it.
+
+static OLD_PLUGIN_EXTERNAL_CALLS: AtomicU32 = AtomicU32::new(0);
+
+extern "C" fn must_never_be_called(
+    _plugin_ctx: *mut c_void,
+    _fc: u64,
+    _sink: CadPathSink,
+    _sink_ctx: *mut c_void,
+) -> CadStatus {
+    OLD_PLUGIN_EXTERNAL_CALLS.fetch_add(1, Ordering::SeqCst);
+    CAD_OK
+}
+
+#[test]
+fn a_descriptor_from_an_older_header_registers_and_computes() {
+    OLD_PLUGIN_EXTERNAL_CALLS.store(0, Ordering::SeqCst);
+
+    let host = Host::new();
+    let state = Box::new(DemoState {
+        host: host.host,
+        host_ctx: host.ctx(),
+        calls: AtomicU32::new(0),
+    });
+    let type_name = CString::new("demo.old_abi").unwrap();
+
+    // The struct is today's, but struct_size says it ends right after `compute` -- exactly what a
+    // plugin compiled against the 1.13 header would report. external_inputs is populated in memory
+    // and MUST be ignored, because from the host's point of view it is past the end of what the
+    // plugin sent. If the host reads it anyway, this fires.
+    let short_size = std::mem::offset_of!(CadFeatureDescPrefix, compute)
+        + std::mem::size_of::<*const c_void>();
+
+    let desc = CadFeatureDescPrefix {
+        struct_size: short_size as u32,
+        struct_version: 1,
+        type_name: type_name.as_ptr(),
+        compute_version: 1,
+        reserved0: 0,
+        param_schema_version: 1,
+        reserved1: 0,
+        plugin_ctx: &*state as *const DemoState as *mut c_void,
+        compute: Some(demo_compute),
+        external_inputs: Some(must_never_be_called),
+        migrate_params: None,
+    };
+
+    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
+        -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+    let status = register(host.ctx(), &desc, std::ptr::null(), 0);
+    assert_eq!(
+        status, CAD_OK,
+        "a descriptor from an older header must register: {}",
+        host.last_error()
+    );
+
+    let plugin = Plugin { host, state, _type_name: type_name };
+    let _object = plugin.add_object("demo.old_abi", 10.0);
+    plugin.recompute();
+
+    assert!(
+        plugin.state.calls.load(Ordering::SeqCst) > 0,
+        "an old plugin must still compute"
+    );
+    assert_eq!(
+        OLD_PLUGIN_EXTERNAL_CALLS.load(Ordering::SeqCst),
+        0,
+        "the host read external_inputs from a descriptor whose struct_size says it is not there. \
+         That is reading past the end of what a plugin sent, and it is the exact failure the \
+         size-prefix rule exists to prevent."
+    );
+}
+
+#[test]
+fn a_descriptor_too_small_to_hold_a_compute_is_refused() {
+    // The floor. A descriptor that cannot even contain the function that makes it a feature is not
+    // an old plugin, it is a corrupt one, and guessing at it would mean calling a pointer read
+    // from whatever happened to be in memory.
+    let host = Host::new();
+    let type_name = CString::new("demo.too_small").unwrap();
+    let desc = CadFeatureDescPrefix {
+        struct_size: 8,
+        struct_version: 1,
+        type_name: type_name.as_ptr(),
+        compute_version: 1,
+        reserved0: 0,
+        param_schema_version: 1,
+        reserved1: 0,
+        plugin_ctx: std::ptr::null_mut(),
+        compute: Some(demo_compute),
+        external_inputs: None,
+        migrate_params: None,
+    };
+
+    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
+        -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+    assert_eq!(register(host.ctx(), &desc, std::ptr::null(), 0), CAD_ERR_INVALID_INPUT);
+    assert!(!host.last_error().is_empty(), "and it must say why");
+}
+
+#[test]
+fn a_zero_struct_size_is_refused() {
+    // What a plugin that forgot to set the field looks like. Accepting it would mean treating an
+    // uninitialised descriptor as a valid one.
+    let host = Host::new();
+    let type_name = CString::new("demo.zero_size").unwrap();
+    let desc = CadFeatureDescPrefix {
+        struct_size: 0,
+        struct_version: 1,
+        type_name: type_name.as_ptr(),
+        compute_version: 1,
+        reserved0: 0,
+        param_schema_version: 1,
+        reserved1: 0,
+        plugin_ctx: std::ptr::null_mut(),
+        compute: Some(demo_compute),
+        external_inputs: None,
+        migrate_params: None,
+    };
+    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
+        -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+    assert_eq!(register(host.ctx(), &desc, std::ptr::null(), 0), CAD_ERR_INVALID_INPUT);
+}

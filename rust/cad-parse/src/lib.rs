@@ -18,6 +18,12 @@
 //! Panics abort rather than unwind: unwinding into a C++ frame is undefined behaviour, and a
 //! parser whose job is to return errors should never panic anyway.
 
+pub mod dxf;
+pub mod dxf_c;
+
+#[cfg(test)]
+mod dxf_tests;
+
 use std::os::raw::{c_char, c_int};
 
 /// ABI generation for this library, checked by the C++ side at startup.
@@ -69,7 +75,10 @@ mod tests {
     fn the_build_id_refuses_a_buffer_it_would_overflow() {
         let mut small = [0i8; 4];
         let written = unsafe { cad_parse_build_id(small.as_mut_ptr(), small.len()) };
-        assert_eq!(written, 0, "a buffer too small must be refused, not truncated");
+        assert_eq!(
+            written, 0,
+            "a buffer too small must be refused, not truncated"
+        );
         let written = unsafe { cad_parse_build_id(std::ptr::null_mut(), 64) };
         assert_eq!(written, 0, "a null buffer must be refused");
     }
