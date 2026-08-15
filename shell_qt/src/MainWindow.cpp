@@ -2,7 +2,7 @@
 
 #include "HomePage.h"
 #include "Icons.h"
-#include "Ribbon.h"
+#include "proshell/Ribbon.h"
 #include "SketchCanvas.h"
 #include "Viewport.h"
 
@@ -223,7 +223,7 @@ void MainWindow::buildTopArea() {
     qatRow->addWidget(product);
     topLayout->addWidget(qat);
 
-    ribbon_ = new Ribbon(top);
+    ribbon_ = new proshell::Ribbon(top);
     topLayout->addWidget(ribbon_);
 
     // A hairline closing the ribbon off from the workspace below. Both Inventor and SolidWorks

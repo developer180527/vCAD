@@ -25,7 +25,7 @@
 
 #include <vector>
 
-namespace cadqt {
+namespace proshell {
 
 /// A group of related commands with a caption. `Panel` rather than `Group` to match Inventor's
 /// own terminology, so screenshots and docs line up.
@@ -80,4 +80,4 @@ private:
     bool collapsed_ = false;
 };
 
-}  // namespace cadqt
+}  // namespace proshell

@@ -1,10 +1,10 @@
-#include "Ribbon.h"
+#include "proshell/Ribbon.h"
 
 #include <QFrame>
 #include <QLabel>
 #include <QVBoxLayout>
 
-namespace cadqt {
+namespace proshell {
 namespace {
 
 constexpr int kLargeIcon = 32;
@@ -179,4 +179,4 @@ void Ribbon::setCollapsed(bool collapsed) {
     collapseButton_->setToolTip(collapsed ? tr("Expand the ribbon") : tr("Collapse the ribbon"));
 }
 
-}  // namespace cadqt
+}  // namespace proshell

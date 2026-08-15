@@ -1,8 +1,8 @@
-#include "Theme.h"
+#include "proshell/Theme.h"
 
 #include <QPalette>
 
-namespace cadqt {
+namespace proshell {
 
 void applyTheme(QApplication& app) {
     app.setStyle(QStringLiteral("Fusion"));
@@ -205,4 +205,4 @@ void applyTheme(QApplication& app) {
     )"));
 }
 
-}  // namespace cadqt
+}  // namespace proshell

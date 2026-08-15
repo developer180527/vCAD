@@ -20,18 +20,19 @@ endif()
 
 qt_standard_project_setup()
 
+# The shell chrome now lives in modules/proshell, which knows nothing about CAD. What remains here
+# is vCAD: the command catalogue, the CAD glyph vocabulary, the viewport and the sketch canvas.
+add_subdirectory(${CMAKE_SOURCE_DIR}/modules/proshell ${CMAKE_BINARY_DIR}/modules/proshell)
+
 qt_add_executable(vcad
   src/main.cpp
   src/MainWindow.cpp
-  src/Ribbon.cpp
-  src/Theme.cpp
   src/Icons.cpp
   src/Viewport.cpp
   src/SketchCanvas.cpp
-  src/MarkingMenu.cpp
   src/HomePage.cpp
 )
-target_link_libraries(vcad PRIVATE cad::app Qt6::Widgets)
+target_link_libraries(vcad PRIVATE cad::app proshell::proshell Qt6::Widgets)
 cad_set_warnings(vcad)
 
 # The shader binaries have to sit beside the binary, because that is where main.cpp now tells

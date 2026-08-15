@@ -2,7 +2,7 @@
 #include <QApplication>
 #include <QString>
 
-namespace cadqt {
+namespace proshell {
 
 /// Dark palette + stylesheet, matching current Inventor.
 ///
@@ -11,4 +11,4 @@ namespace cadqt {
 /// there is nothing to license, scale or forget to install.
 void applyTheme(QApplication&);
 
-}  // namespace cadqt
+}  // namespace proshell

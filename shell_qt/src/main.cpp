@@ -1,5 +1,6 @@
 #include "MainWindow.h"
-#include "Theme.h"
+#include "Icons.h"
+#include "proshell/Theme.h"
 #include "Viewport.h"
 
 #include "cad/kernel/Diagnostics.h"
@@ -200,7 +201,10 @@ int main(int argc, char** argv) {
     // startup, rather than discovered by a viewport that has already picked a path.
     cadqt::Viewport::setForceOffscreen(!shotPath.isEmpty());
 
-    cadqt::applyTheme(app);
+    proshell::applyTheme(app);
+    // Before any UI is built: proshell hands back a placeholder for a glyph nobody claims, so
+    // registering late means a window full of empty squares rather than a crash.
+    cadqt::registerCadIcons();
 
     cadqt::MainWindow window;
     if (!shotPath.isEmpty()) return screenshot(app, window, shotPath, shotTab, shotHome);

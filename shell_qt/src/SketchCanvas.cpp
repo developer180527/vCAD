@@ -1,6 +1,6 @@
 #include "SketchCanvas.h"
 
-#include "MarkingMenu.h"
+#include "proshell/MarkingMenu.h"
 
 #include "cad/app/Controller.h"
 #include "Icons.h"
@@ -540,7 +540,7 @@ void SketchCanvas::showMarkingMenu(const QPoint& globalPos) {
         };
     };
 
-    std::vector<MarkingMenu::Item> items;
+    std::vector<proshell::MarkingMenu::Item> items;
     // Eight wedges maximum, and the SAME eight regardless of selection — disabled rather than
     // absent. A radial menu whose items move depending on context destroys the muscle memory that
     // is the only reason to make it radial.
@@ -566,7 +566,7 @@ void SketchCanvas::showMarkingMenu(const QPoint& globalPos) {
     items.push_back({tr("Select"), icon(QStringLiteral("select")),
                      [this] { setTool(Tool::Select); }, true});
 
-    MarkingMenu::popup(this, globalPos, std::move(items));
+    proshell::MarkingMenu::popup(this, globalPos, std::move(items));
 }
 
 void SketchCanvas::syncContextToolbar() {

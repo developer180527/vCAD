@@ -1,4 +1,4 @@
-#include "MarkingMenu.h"
+#include "proshell/MarkingMenu.h"
 
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -8,7 +8,7 @@
 #include <cmath>
 #include <numbers>
 
-namespace cadqt {
+namespace proshell {
 namespace {
 
 constexpr int kRadius = 96;        ///< outer radius in pixels
@@ -118,4 +118,4 @@ void MarkingMenu::keyPressEvent(QKeyEvent* event) {
     else QWidget::keyPressEvent(event);
 }
 
-}  // namespace cadqt
+}  // namespace proshell

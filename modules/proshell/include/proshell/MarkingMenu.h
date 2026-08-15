@@ -7,7 +7,7 @@
 #include <functional>
 #include <vector>
 
-namespace cadqt {
+namespace proshell {
 
 /// A radial right-click menu, as Inventor has.
 ///
@@ -52,4 +52,4 @@ private:
     int highlighted_ = -1;
 };
 
-}  // namespace cadqt
+}  // namespace proshell

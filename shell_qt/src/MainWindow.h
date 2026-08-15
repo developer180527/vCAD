@@ -18,11 +18,14 @@ class QTabBar;
 class QTableWidget;
 class QTreeWidget;
 
+namespace proshell {
+class Ribbon;
+}
+
 namespace cadqt {
 
 class HomePage;
 class SketchCanvas;
-class Ribbon;
 class Viewport;
 
 /// Inventor's frame: quick access toolbar, ribbon, docks, stacked workspaces, document tabs at
@@ -104,7 +107,7 @@ private:
 
     cad::app::Session session_;
 
-    Ribbon* ribbon_ = nullptr;
+    proshell::Ribbon* ribbon_ = nullptr;
     QMenu* fileMenu_ = nullptr;
     /// Held so Home can hide them: Home is a full-window workspace, not a document.
     QDockWidget* browserDock_ = nullptr;

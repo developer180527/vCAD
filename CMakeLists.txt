@@ -107,10 +107,15 @@ add_subdirectory(abi)
 
 add_subdirectory(bindings/python)
 
+# BEFORE any subdirectory that registers a test. add_test() outside an enabled testing context is
+# silently discarded -- not an error, just a suite that reports "No tests were found". proshell
+# registers its boundary probe and is built in the Qt configuration, where CAD_BUILD_TESTS is off,
+# so gating this on that option loses the one test that configuration has.
+enable_testing()
+
 add_subdirectory(shell_qt)
 
 if(CAD_BUILD_TESTS)
-  enable_testing()
   find_package(Catch2 3 REQUIRED)
   add_subdirectory(tests)
 endif()
