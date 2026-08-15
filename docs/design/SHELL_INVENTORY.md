@@ -38,7 +38,7 @@ Two rules keep the exercise honest:
 | Document tabs along the bottom | **Present** | |
 | Status bar: message, units, stats | **Present** | |
 | Home workspace: rail, project strip, recent | **Present** | |
-| 3D viewport | **Placeholder** | Qt-painted; bgfx is a separate job |
+| 3D viewport | **Present** | bgfx presents directly: `paintEngine()` returns null and `paintEvent` submits. The Qt-painted path remains as the fallback and for `--shot`. Corrected 15 Aug 2026 — this row said Placeholder long after it stopped being one. |
 | Sketch canvas | **Present** | Draw, snap, select, constrain, delete |
 | Logging | **Present** | Categories, file sink beside the binary, Qt and OCCT adopted |
 | — | | |
@@ -84,6 +84,10 @@ doing the shell first: **none of it is blocked by the instancing bug.**
 
 ## What this deliberately does not include
 
-The 3D viewport stays a placeholder throughout. Wiring bgfx is its own job with its own
-prerequisite (item 4's compositing decision), and mixing it into shell work is how both end up
-half-done.
+The 3D viewport stayed a placeholder throughout the shell work, and that was the right call:
+wiring bgfx was its own job with its own prerequisite (item 4's compositing decision), and mixing
+it into shell work is how both end up half-done.
+
+**It has since been wired** — the viewport presents through bgfx and the Qt-painted path is the
+fallback. Kept here rather than deleted, because the reasoning is what makes the sequencing
+decision reusable next time, and only the status changed.
