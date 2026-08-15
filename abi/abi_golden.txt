@@ -1,5 +1,5 @@
 define CAD_ABI_VERSION_MAJOR	0288695b698e5310
-define CAD_ABI_VERSION_MINOR	aaeab21cba2de3d8
+define CAD_ABI_VERSION_MINOR	aaeac21cba2de58b
 define CAD_CAP_FILESYSTEM	434d3d3abfc808cf
 define CAD_CAP_NETWORK	8abedaf5b56d3cb5
 define CAD_CAP_SUBPROCESS	4bac296961c20be1
@@ -149,7 +149,7 @@ type CadObject	0003c852835aba17
 type CadParamDesc	1f0520f000eb5b5b
 type CadParamKind	94967658a5c74e3e
 type CadPluginDesc	21e9a6f2d1be6937
-type CadRecomputeReport	103d36ad016ffe22
+type CadRecomputeReport	3d2c44fb606fa979
 type CadSceneStats	e7d800cc8c7f0889
 type CadSession	b65095ca2de5a480
 type CadShape	ff496b606cb0f903
