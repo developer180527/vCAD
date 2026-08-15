@@ -18,12 +18,15 @@
 #include <QLabel>
 #include <QPainter>
 #include <QMenu>
+#include <QTimer>
 #include <cstdio>
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <QStatusBar>
 #include <QVBoxLayout>
 
+#include "proshell/HomeModel.h"
+#include "proshell/HomePage.h"
 #include "proshell/Icons.h"
 #include "proshell/MarkingMenu.h"
 #include "proshell/Ribbon.h"
@@ -53,6 +56,32 @@ bool paintProbeGlyph(QPainter& g, const QString& name, int size) {
     }
     return false;
 }
+
+/// The four things the home page asks an application. All of them, for a whole screen.
+///
+/// Note what is NOT here: the card grid, the search box, the sort control, the list/grid toggle,
+/// the empty state, the rail and its links. Those are proshell's, and they are the bulk of the
+/// four hundred lines the home page actually is.
+class ProbeHomeModel : public proshell::HomeModel {
+public:
+    [[nodiscard]] QString productName() const override { return QStringLiteral("Probe 0.1"); }
+    [[nodiscard]] QString productDetail() const override {
+        return QStringLiteral("architecture · not CAD");
+    }
+
+    [[nodiscard]] std::vector<proshell::DocumentKind> documentKinds() const override {
+        return {{0, QStringLiteral("Storey"), QStringLiteral("storey"), true},
+                {1, QStringLiteral("Site"), QStringLiteral("wall"), true},
+                {2, QStringLiteral("Schedule"), QStringLiteral("no-such-glyph"), false}};
+    }
+
+    [[nodiscard]] std::vector<proshell::RecentDocument> recent() const override { return {}; }
+
+    [[nodiscard]] std::vector<proshell::SummaryField> summary() const override {
+        return {{QStringLiteral("Site: none"), false, false},
+                {QStringLiteral("● Survey loaded"), true, true}};
+    }
+};
 
 /// An application on the frame, in a domain that is not CAD.
 ///
@@ -127,15 +156,12 @@ private:
     }
 
     void buildPages() {
-        auto* rail = new QLabel(QStringLiteral("\n  Home rail\n\n  (the application's,\n"
-                                               "  not the frame's)"),
-                                this);
-        rail->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-        rail->setMinimumWidth(180);
-        setSidebar(rail, 240);
-
-        home_ = newPage(QStringLiteral("Home — right-click for the marking menu"));
+        // The real home page, on the probe's own model. If a CAD type ever leaks into it, this
+        // stops compiling.
+        home_ = new proshell::HomePage(homeModel_, workspaces());
         workspaces()->addWidget(home_);
+        setSidebar(home_->sidebar(), proshell::HomePage::sidebarDefaultWidth());
+        home_->refresh();
         documentTabs()->addTab(QStringLiteral("Home"));
 
         connect(documentTabs(), &QTabBar::currentChanged, this, [this](int index) {
@@ -174,7 +200,8 @@ private:
         return page;
     }
 
-    QLabel* home_ = nullptr;
+    ProbeHomeModel homeModel_;
+    proshell::HomePage* home_ = nullptr;
     int storeys_ = 0;
 };
 
@@ -208,15 +235,23 @@ int main(int argc, char** argv) {
 
     if (!shot.isEmpty()) {
         window->show();
-        // Two passes of the event loop: the first delivers show and the resulting layout requests,
-        // the second lets the layout settle before the pixels are read. Grabbing after one leaves
-        // widgets at their pre-layout geometry, which is a picture of a bug that is not there.
-        QApplication::processEvents();
-        QApplication::processEvents();
-        const bool ok = window->grab().save(shot);
-        std::fprintf(stderr, "%s %s\n", ok ? "wrote" : "FAILED to write", qPrintable(shot));
+
+        // Two turns of the REAL event loop, not two calls to processEvents(). The first delivers
+        // show and resize, and the layout that follows only lands on the second. processEvents()
+        // is not equivalent: deferred deletes and posted layout requests need actual loop turns,
+        // and grabbing without them catches the window mid-layout -- widgets stacked at their
+        // pre-layout positions, which photographs as a rendering bug that is not there.
+        QTimer::singleShot(0, &app, [&app, window, shot] {
+            QTimer::singleShot(0, &app, [&app, window, shot] {
+                const bool ok = window->grab().save(shot);
+                std::fprintf(stderr, "%s %s\n", ok ? "wrote" : "FAILED to write",
+                             qPrintable(shot));
+                app.exit(ok ? 0 : 1);
+            });
+        });
+        const int code = app.exec();
         delete window;
-        return ok ? 0 : 1;
+        return code;
     }
 
     window->show();

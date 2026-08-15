@@ -27,11 +27,14 @@ qt_add_library(proshell STATIC
   src/Icons.cpp
   src/MarkingMenu.cpp
   src/ShellWindow.cpp
+  src/HomePage.cpp
   include/proshell/Ribbon.h
   include/proshell/Theme.h
   include/proshell/Icons.h
   include/proshell/MarkingMenu.h
   include/proshell/ShellWindow.h
+  include/proshell/HomePage.h
+  include/proshell/HomeModel.h
 )
 
 target_include_directories(proshell PUBLIC include)

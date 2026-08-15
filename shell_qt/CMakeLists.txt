@@ -30,7 +30,7 @@ qt_add_executable(vcad
   src/Icons.cpp
   src/Viewport.cpp
   src/SketchCanvas.cpp
-  src/HomePage.cpp
+  src/CadHomeModel.cpp
 )
 target_link_libraries(vcad PRIVATE cad::app proshell::proshell Qt6::Widgets)
 cad_set_warnings(vcad)

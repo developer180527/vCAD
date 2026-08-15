@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CadHomeModel.h"
 #include "cad/app/Session.h"
 #include "proshell/ShellWindow.h"
 
@@ -17,9 +18,12 @@ class QTabBar;
 class QTableWidget;
 class QTreeWidget;
 
+namespace proshell {
+class HomePage;
+}
+
 namespace cadqt {
 
-class HomePage;
 class SketchCanvas;
 class Viewport;
 
@@ -110,10 +114,13 @@ private:
     [[nodiscard]] cad::app::Controller* controller() noexcept { return session_.active(); }
 
     cad::app::Session session_;
+    /// Answers proshell's home-page questions from the session. Declared after it, since it
+    /// holds a reference.
+    CadHomeModel homeModel_{session_};
 
     QTreeWidget* browser_ = nullptr;
     QTableWidget* properties_ = nullptr;
-    HomePage* home_ = nullptr;
+    proshell::HomePage* home_ = nullptr;
     /// One sketch canvas per open document, parallel to editors_. Held rather than looked up so
     /// switching documents while sketching cannot show another document's sketch.
     std::vector<SketchCanvas*> sketchCanvases_;

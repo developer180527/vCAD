@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 
-#include "HomePage.h"
+#include "proshell/HomePage.h"
 #include "Icons.h"
 #include "proshell/Ribbon.h"
 #include "SketchCanvas.h"
@@ -687,17 +687,17 @@ void MainWindow::rebuildRibbon() {
 void MainWindow::buildWorkspaces() {
     // The splitter, the page stack and the bottom tab bar are the frame's. What goes IN them, and
     // what a tab means, is vCAD's -- see the note on ShellWindow for why documents did not move.
-    home_ = new HomePage(session_, workspaces());
+    home_ = new proshell::HomePage(homeModel_, workspaces());
     workspaces()->addWidget(home_);
 
     // Home's rail is built by HomePage but placed by the frame, so it spans the full window height
     // past the document tab bar rather than being clipped by it.
-    setSidebar(home_->sidebar(), HomePage::sidebarDefaultWidth());
+    setSidebar(home_->sidebar(), proshell::HomePage::sidebarDefaultWidth());
 
-    connect(home_, &HomePage::openBrowseRequested, this, [this] { openDocument(); });
-    connect(home_, &HomePage::openRequested, this,
+    connect(home_, &proshell::HomePage::openBrowseRequested, this, [this] { openDocument(); });
+    connect(home_, &proshell::HomePage::openRequested, this,
             [this](const QString& path) { openPath(path); });
-    connect(home_, &HomePage::createRequested, this,
+    connect(home_, &proshell::HomePage::createRequested, this,
             [this](int kind) { createDocument(static_cast<DocumentKind>(kind)); });
 
     connect(documentTabs(), &QTabBar::currentChanged, this, [this](int index) {
