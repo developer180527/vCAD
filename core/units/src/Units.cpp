@@ -8,8 +8,8 @@
 namespace cad::units {
 namespace {
 
-using kernel::Error;
-using kernel::ErrorCode;
+using base::Error;
+using base::ErrorCode;
 
 std::string_view trim(std::string_view s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
@@ -73,7 +73,7 @@ const char* suffix(UnitSystem u) noexcept {
     return "mm";
 }
 
-kernel::Result<Length> parseLength(std::string_view text, UnitSystem assumed) {
+base::Result<Length> parseLength(std::string_view text, UnitSystem assumed) {
     std::string_view s = trim(text);
     if (s.empty()) {
         return Error{ErrorCode::InvalidInput, "Enter a length."};
@@ -115,7 +115,7 @@ kernel::Result<Length> parseLength(std::string_view text, UnitSystem assumed) {
     return Length::fromBase(total);
 }
 
-kernel::Result<Angle> parseAngle(std::string_view text) {
+base::Result<Angle> parseAngle(std::string_view text) {
     std::string_view s = trim(text);
     if (s.empty()) return Error{ErrorCode::InvalidInput, "Enter an angle."};
 
@@ -165,7 +165,7 @@ std::string format(Angle a, int decimals) {
     return buf;
 }
 
-kernel::Result<double> scaleToMillimetres(std::string_view unitName) {
+base::Result<double> scaleToMillimetres(std::string_view unitName) {
     double factor = 0.0;
     if (lengthFactor(trim(unitName), factor)) return factor;
     return Error{ErrorCode::Unsupported,

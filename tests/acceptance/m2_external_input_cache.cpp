@@ -11,6 +11,7 @@
 // permanent cost for a temporary convenience. cacheKeyOf is documented as exposed for exactly this.
 
 #include "cad/document/Document.h"
+#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -51,7 +52,7 @@ std::uint64_t keyForImportOf(const std::filesystem::path& path) {
     doc = doc.replace(std::make_shared<const document::ObjectData>(
         object->withProperty("path", path.string())));
 
-    const auto registry = recompute::FeatureRegistry::builtins();
+    const auto registry = features::builtins();
     auto key = recompute::Engine::cacheKeyOf(doc, *doc.find(id), registry);
     REQUIRE(key);
     return key.value();
@@ -96,7 +97,7 @@ TEST_CASE("a missing imported file still produces a key", "[m2][cache]") {
     // Deliberately not an error. Refusing to build a key for an unreadable file would leave the
     // feature unable to recompute even to report its own failure, so a broken path would freeze
     // rather than fail legibly.
-    const auto registry = recompute::FeatureRegistry::builtins();
+    const auto registry = features::builtins();
     document::Document doc;
     auto [next, id] = doc.add("Import");
     doc = next;

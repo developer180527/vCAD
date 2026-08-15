@@ -6,6 +6,7 @@
 // see docs/M3.md.
 
 #include "cad/document/Document.h"
+#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 #include "cad/render/BgfxBackend.h"
 #include "cad/render/Camera.h"
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
     }
 
     // A box, recomputed, tessellated, batched, submitted.
-    recompute::FeatureRegistry registry = recompute::FeatureRegistry::builtins();
+    recompute::FeatureRegistry registry = features::builtins();
     recompute::MemoryCache cache;
     recompute::MemoryBlobStore blobs;
     render::MeshCache meshes(blobs);

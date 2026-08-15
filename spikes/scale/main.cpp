@@ -15,6 +15,7 @@
 //         spike_scale 250000 20
 
 #include "cad/document/Document.h"
+#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 #include "cad/render/BgfxBackend.h"
 #include "cad/render/Camera.h"
@@ -82,7 +83,7 @@ int main(int argc, char** argv) {
     //
     // Distinct DIMENSIONS, so their content hashes differ and dedupe cannot collapse them. That
     // is the honest version of this test: identical parts would make the draw-call claim trivial.
-    recompute::FeatureRegistry registry = recompute::FeatureRegistry::builtins();
+    recompute::FeatureRegistry registry = features::builtins();
     recompute::MemoryCache cache;
     recompute::MemoryBlobStore blobs;
     render::MeshCache meshes(blobs);

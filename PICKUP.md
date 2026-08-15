@@ -207,6 +207,34 @@ Still prose, and unenforceable until the calls exist: the rest of §4.6 (`txn_be
 `register_command` are declared and NULL), §4.4 capabilities (advisory until sandboxing, and the
 contract says so), §4.7 dependency isolation (needs the loader).
 
+## The platform tier: two of three edges cut
+
+The reusable thing in this codebase is not the shell, it is **a parametric document with a cached
+dependency graph, stable element identity, and a plugin ABI**. That was true in principle and false
+in the build graph: three edges tied the engine to the B-rep kernel.
+
+- ~~`units → kernel`~~ **cut.** It was `Result.h` and nothing else — a module about millimetres
+  linked OCCT to say "that unit is not recognised". `Result`, `Error` and `ErrorCode` now live in
+  `core/base`, which depends on nothing. `cad/kernel/Result.h` remains as an alias header so the
+  ~200 call sites that say `kernel::Result` did not have to change; they are all correct.
+- ~~`recompute → sketch`~~ **cut.** It was `Features.cpp` — the built-in feature catalogue living
+  inside the engine module, so the dependency graph, dirty propagation, caching and rollback
+  dragged in planegcs. Now `core/features`, and `FeatureRegistry::builtins()` became the free
+  function `cad::features::builtins()` so the engine's own header names no feature type at all.
+  **`core/recompute` now reaches the kernel only for `Result`/`Error`. Zero geometry.**
+- `document → kernel` **not cut, and possibly should not be.** `document::Output` holds a
+  `kernel::Shape` and a `naming::ElementMap` by value, so the header needs both definitions.
+  Removing it means type-erasing `Output`, which touches ~21 sites and is the core data structure.
+
+  Before paying that: **who is it for?** Any application with 3D geometry — BIM, EDA's board and
+  enclosure work, anything doing clash detection — wants exactly "geometry plus stable names" as a
+  feature output. `Output` is only wrong for an application with no geometry at all, such as a pure
+  schematic or netlist tool. That is a real target but a narrower one than it first appears, and
+  the honest question is whether it justifies restructuring the node every feature writes to.
+
+The two edges that were cut cost one include line and one file move between them. The third is a
+different kind of change and should be decided rather than drifted into.
+
 ## Platforms
 
 The shipping target is wider than the matrix was: **Windows (x64 + arm64), Linux (x64 + arm64),

@@ -69,7 +69,6 @@ public:
     [[nodiscard]] std::vector<std::string> names() const;
 
     /// The built-in set, so tests and the app share exactly one definition of "Box".
-    static FeatureRegistry builtins();
 
 private:
     std::unordered_map<std::string, FeatureType> types_;

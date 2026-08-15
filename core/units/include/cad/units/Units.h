@@ -7,7 +7,7 @@
 // two separate is deliberate: no part of the geometry pipeline should ever consult a
 // user-facing unit preference.
 
-#include "cad/kernel/Result.h"
+#include "cad/base/Result.h"
 #include "cad/units/Quantity.h"
 
 #include <string>
@@ -32,11 +32,11 @@ const char* suffix(UnitSystem) noexcept;
 ///
 /// Also accepts feet-and-inches ("2ft 6in", "2' 6\"") because mechanical drawings in the
 /// US market still use it.
-kernel::Result<Length> parseLength(std::string_view text, UnitSystem assumed);
+base::Result<Length> parseLength(std::string_view text, UnitSystem assumed);
 
 /// Parses an angle: "45", "45deg", "45°", "0.785rad". Bare values are degrees — unlike
 /// length there is a genuine convention here, and radians are always suffixed.
-kernel::Result<Angle> parseAngle(std::string_view text);
+base::Result<Angle> parseAngle(std::string_view text);
 
 /// Formats for display. `decimals` < 0 selects a sensible default per system.
 std::string format(Length, UnitSystem, int decimals = -1);
@@ -45,6 +45,6 @@ std::string format(Angle, int decimals = -1);
 /// Scale factor from a foreign file's unit into our base (mm). Used at import.
 /// Returns an error rather than 1.0 for an unrecognised unit name: a wrong scale is worse
 /// than a refused import (docs/FORMATS.md rule 2).
-kernel::Result<double> scaleToMillimetres(std::string_view unitName);
+base::Result<double> scaleToMillimetres(std::string_view unitName);
 
 }  // namespace cad::units

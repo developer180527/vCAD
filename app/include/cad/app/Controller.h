@@ -11,6 +11,7 @@
 
 #include "cad/document/Document.h"
 #include "cad/recompute/DdcCache.h"
+#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 #include "cad/render/Camera.h"
 #include "cad/render/BgfxBackend.h"
@@ -464,7 +465,7 @@ private:
     /// no output yet.
     [[nodiscard]] std::vector<naming::ElementName> edgesOf(document::ObjectId) const;
 
-    recompute::FeatureRegistry registry_ = recompute::FeatureRegistry::builtins();
+    recompute::FeatureRegistry registry_ = features::builtins();
     recompute::MemoryCache cache_;
     recompute::MemoryBlobStore blobs_;
     std::unique_ptr<render::MeshCache> meshes_;

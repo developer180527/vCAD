@@ -23,6 +23,7 @@
 #include "cad/sketch/Sketch.h"
 #include "cad/io/Format.h"
 #include "cad/recompute/DdcCache.h"
+#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 #include "cad/render/Camera.h"
 #include "cad/render/NullBackend.h"
@@ -51,7 +52,7 @@ using cad::recompute::FeatureRegistry;
 using cad::recompute::MemoryCache;
 
 struct Session {
-    FeatureRegistry registry = FeatureRegistry::builtins();
+    FeatureRegistry registry = cad::features::builtins();
 
     /// Shapes handed out across the C boundary, by handle.
     ///

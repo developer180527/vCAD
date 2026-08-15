@@ -1,6 +1,6 @@
-#include "cad/kernel/Result.h"
+#include "cad/base/Result.h"
 
-namespace cad::kernel {
+namespace cad::base {
 
 const char* toString(ErrorCode c) noexcept {
     switch (c) {
@@ -18,4 +18,4 @@ const char* toString(ErrorCode c) noexcept {
     return "Unknown";
 }
 
-}  // namespace cad::kernel
+}  // namespace cad::base

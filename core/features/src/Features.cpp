@@ -1,4 +1,4 @@
-#include "cad/recompute/Engine.h"
+#include "cad/features/Builtins.h"
 
 #include "cad/kernel/Booleans.h"
 #include "cad/kernel/Fillet.h"
@@ -299,7 +299,12 @@ kernel::Result<Output> computeImport(const ComputeContext& ctx) {
 
 }  // namespace
 
-FeatureRegistry FeatureRegistry::builtins() {
+}  // namespace cad::recompute
+
+namespace cad::features {
+
+recompute::FeatureRegistry builtins() {
+    using namespace cad::recompute;
     FeatureRegistry r;
     r.add({"Box", 1, computeBox});
     r.add({"Cylinder", 1, computeCylinder});
@@ -323,4 +328,4 @@ FeatureRegistry FeatureRegistry::builtins() {
     return r;
 }
 
-}  // namespace cad::recompute
+}  // namespace cad::features

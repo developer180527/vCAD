@@ -12,6 +12,7 @@
 #include "cad/io/Format.h"
 #include "cad/naming/ElementMap.h"
 #include "cad/recompute/DdcCache.h"
+#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 #include "cad/units/Units.h"
 
@@ -112,7 +113,7 @@ public:
     const recompute::Cache& cache() const { return *cache_; }
 
 private:
-    recompute::FeatureRegistry registry_ = recompute::FeatureRegistry::builtins();
+    recompute::FeatureRegistry registry_ = features::builtins();
     io::FormatRegistry formats_ = io::FormatRegistry::builtins();
     std::unique_ptr<recompute::Cache> cache_;
     document::History history_{document::Document{}};

@@ -105,5 +105,5 @@ TEST_CASE("M1: an unknown import unit is refused, not assumed", "[m1][units]") {
     // docs/FORMATS.md rule 2: a wrong scale is worse than a refused import.
     auto bad = scaleToMillimetres("smoots");
     REQUIRE_FALSE(bad.ok());
-    CHECK(bad.error().code == cad::kernel::ErrorCode::Unsupported);
+    CHECK(bad.error().code == cad::base::ErrorCode::Unsupported);
 }
