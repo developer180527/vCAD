@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 13
+#define CAD_ABI_VERSION_MINOR 14
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -356,6 +356,41 @@ struct CadHost {
     CadStatus (*shape_sub_count)(void* ctx, CadShape s, uint32_t kind, uint32_t* out);
     CadStatus (*shape_sub_at)(void* ctx, CadShape s, uint32_t kind, uint32_t index,
                               CadShape* out);
+
+    /* --- appended in 1.14: compute context accessors -------------------------------------
+     *
+     * How a plugin's compute reads its inputs and returns its result. On CadHost rather than on
+     * the descriptor so the set can grow without touching any struct layout.
+     *
+     * READ-ONLY BY CONSTRUCTION. There is no compute_set_param here, no document handle, and no
+     * transaction reachable from a CadComputeCtx. §4.1's determinism rule is enforced by the
+     * SHAPE of this API rather than by asking politely: a compute cannot mutate the document
+     * because nothing here lets it. Do not add a convenience that breaks this. */
+
+    /* Inputs: the already-computed outputs of the features this one depends on, in declaration
+     * order. Each shape is borrowed for the duration of the compute and must not be released. */
+    CadStatus (*compute_input_count)(void* ctx, CadComputeCtx cc, uint32_t* out);
+    CadStatus (*compute_input_shape)(void* ctx, CadComputeCtx cc, uint32_t index, CadShape* out);
+
+    /* Parameters, by the `name` declared in CadParamDesc. A missing or wrongly-typed parameter
+     * is CAD_ERR_INVALID_INPUT, never a silent default: a plugin reading a parameter that is not
+     * there has a bug, and returning 0.0 would hide it inside geometry. */
+    CadStatus (*compute_param_real)(void* ctx, CadComputeCtx cc, const char* name, double* out);
+    CadStatus (*compute_param_int)(void* ctx, CadComputeCtx cc, const char* name, int64_t* out);
+    CadStatus (*compute_param_text)(void* ctx, CadComputeCtx cc, const char* name, CadStr* out);
+
+    /* The result. Exactly one call per successful compute; a second is CAD_ERR_INVALID_INPUT. */
+    CadStatus (*compute_set_output)(void* ctx, CadComputeCtx cc, CadShape shape);
+
+    /* The failure MESSAGE. A CadStatus is a code, and a code cannot say "the flange radius is
+     * larger than the material allows". Without this every plugin failure would surface as a
+     * generic string, which fails the bar the core already meets: recompute names the feature
+     * responsible and says what went wrong, and blocked dependents quote it.
+     *
+     * `detail` is for developers and goes to the log, never to the user — the same split as
+     * kernel::Error's message/detail. */
+    CadStatus (*compute_fail)(void* ctx, CadComputeCtx cc, const char* message,
+                              const char* detail);
 };
 
 /* Sub-shape kinds for shape_sub_count / shape_sub_at.

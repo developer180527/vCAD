@@ -7,6 +7,7 @@
 #include "cad/abi/cad_plugin_abi.h"
 
 #include <bit>
+#include <cstddef>
 
 #include "cad/log/Log.h"
 
@@ -80,9 +81,34 @@ struct Session {
         bool hasOutput = false;
         std::string failMessage;
         std::string failDetail;
+        /// Incremented per host-built shape, and passed to NamingContext as the op tag.
+        ///
+        /// Without it every shape a compute builds would be named with the same (serial, 0) pair
+        /// and collide. Deterministic because 4.1 already requires the plugin's calls to be — an
+        /// order-dependent counter is only a problem for a compute that is already broken.
+        std::uint16_t opTag = 0;
     };
     std::unordered_map<std::uint64_t, ActiveCompute> computes;
     std::uint64_t nextCompute = 1;
+
+    /// The compute currently on the stack, innermost last. A stack rather than a single slot
+    /// because 4.6 forbidding re-entrancy is a rule for PLUGINS; the host should not corrupt its
+    /// own bookkeeping when one breaks it.
+    std::vector<std::uint64_t> computeStack;
+
+    /// Feature descriptors registered by plugins, kept alive for the session.
+    ///
+    /// The strings are COPIED. A plugin's descriptor is usually a static, but nothing in the
+    /// contract says so, and a registration that stored borrowed pointers would fail only for
+    /// plugins that build their descriptor on the stack — the worst kind of bug to find in
+    /// third-party code.
+    struct RegisteredFeature {
+        std::string type;
+        void* pluginCtx = nullptr;
+        CadStatus (*compute)(void*, CadComputeCtx) = nullptr;
+        std::uint32_t computeVersion = 1;
+    };
+    std::vector<std::unique_ptr<RegisteredFeature>> features;
 
     /// The vtable handed to plugins. Built once per session, on demand.
     std::unique_ptr<CadHost> host;
@@ -419,6 +445,32 @@ std::uint32_t serialForShapes(const char* op,
     return folded == 0 ? 1u : folded;
 }
 
+Session::ActiveCompute* activeCompute(Session& s, CadComputeCtx cc) {
+    const auto it = s.computes.find(cc);
+    return it == s.computes.end() ? nullptr : &it->second;
+}
+
+/// The compute a host geometry call is running inside, or null at top level.
+///
+/// This is what lets a shape built during a compute be named with its FEATURE's serial rather
+/// than a hash of the request. The feature serial derives from the object id, so it is stable
+/// across rebuilds and distinct between two features that happen to build identical geometry —
+/// which a request hash alone cannot be.
+Session::ActiveCompute* innermostCompute(Session& s) {
+    if (s.computeStack.empty()) return nullptr;
+    return activeCompute(s, s.computeStack.back());
+}
+
+/// The (serial, opTag) a host-built shape should be named with.
+std::pair<std::uint32_t, std::uint16_t> namingIdentityFor(Session& s, const char* op,
+                                                          std::initializer_list<double> args) {
+    if (Session::ActiveCompute* active = innermostCompute(s); active != nullptr &&
+                                                              active->ctx != nullptr) {
+        return {active->ctx->namingSerial, active->opTag++};
+    }
+    return {serialFor(op, args), 0};
+}
+
 CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out) {
     Session* s = hostSession(ctx);
     if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
@@ -434,7 +486,8 @@ CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out)
     // The serial is derived from the request, so identical calls name identically. See
     // serialFor: counting interns instead made these names session-dependent.
     // once register_feature lands, a plugin's compute output takes its feature's serial instead.
-    cad::naming::NamingContext naming(serialFor("make_box", {dx, dy, dz}), 0);
+    const auto [serial, opTag] = namingIdentityFor(*s, "make_box", {dx, dy, dz});
+    cad::naming::NamingContext naming(serial, opTag);
     auto map = naming.nameprimitive(built.value().op.shape(), built.value().taggedFaces);
     if (!map) {
         s->hostError = map.error().message;
@@ -464,8 +517,15 @@ CadStatus hostBoolean(void* ctx, CadShape a, CadShape b, CadShape* out, bool cut
     // so a plugin that fused two named boxes got back anonymous geometry — nothing downstream
     // could reference a face of it, which is exactly the failure PLUGIN_CONTRACT.md 4.2 tells
     // plugins not to cause. The host must not cause it either.
-    cad::naming::NamingContext naming(serialForShapes(cut ? "boolean_cut" : "boolean_fuse",
-                                                      {leftStored, rightStored}), 0);
+    std::uint32_t serial = serialForShapes(cut ? "boolean_cut" : "boolean_fuse",
+                                          {leftStored, rightStored});
+    std::uint16_t opTag = 0;
+    if (Session::ActiveCompute* active = innermostCompute(*s);
+        active != nullptr && active->ctx != nullptr) {
+        serial = active->ctx->namingSerial;
+        opTag = active->opTag++;
+    }
+    cad::naming::NamingContext naming(serial, opTag);
     auto map = naming.propagate(result.value(),
                                 {&leftStored->shape, &rightStored->shape},
                                 {&leftStored->names, &rightStored->names});
@@ -565,6 +625,259 @@ CadStatus hostShapeSubAt(void* ctx, CadShape handle, std::uint32_t kind, std::ui
     return CAD_OK;
 }
 
+// ── registration ────────────────────────────────────────────────────────────────────────
+
+CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadParamDesc* params,
+                              std::uint32_t paramCount) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || desc == nullptr) return CAD_ERR_INVALID_INPUT;
+
+    // struct_size before anything else. A descriptor from a newer header is longer than ours and
+    // must not be read past our own end; one from an older header is shorter and its trailing
+    // members are simply absent. This is the negotiation ADR 0011 rests on, and reading a field
+    // without checking is how it stops working.
+    if (desc->struct_size < offsetof(CadFeatureDesc, compute) + sizeof(desc->compute)) {
+        s->hostError = "This feature descriptor is too small to contain a compute function.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    if (desc->type_name == nullptr || *desc->type_name == '\0' || desc->compute == nullptr) {
+        s->hostError = "A feature needs a type name and a compute function.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    if (paramCount > 0 && params == nullptr) {
+        s->hostError = "A feature declaring parameters must supply them.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    if (s->registry.find(desc->type_name) != nullptr) {
+        // Refused, not replaced. Two plugins claiming one type name would silently decide between
+        // themselves by load order, and a document referencing that type would mean different
+        // geometry depending on what happened to be installed.
+        s->hostError = std::string("A feature type called '") + desc->type_name +
+                       "' is already registered.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+
+    auto stored = std::make_unique<Session::RegisteredFeature>();
+    stored->type = desc->type_name;
+    stored->pluginCtx = desc->plugin_ctx;
+    stored->compute = desc->compute;
+    stored->computeVersion = desc->compute_version;
+    Session::RegisteredFeature* feature = stored.get();
+    s->features.push_back(std::move(stored));
+
+    cad::recompute::FeatureType type;
+    type.name = feature->type;
+    type.version = feature->computeVersion;
+
+    // The bridge. `s` and `feature` both outlive the registry: the session owns both, and the
+    // registry is destroyed with it.
+    type.compute = [s, feature](const cad::recompute::ComputeContext& cc)
+        -> cad::kernel::Result<cad::recompute::Output> {
+        const CadComputeCtx handle = s->nextCompute++;
+        s->computes.emplace(handle, Session::ActiveCompute{&cc, 0, false, {}, {}, 0});
+        s->computeStack.push_back(handle);
+
+        const CadStatus status = feature->compute(feature->pluginCtx, handle);
+
+        // Copied out before erasing: the plugin's message has to outlive its own frame.
+        Session::ActiveCompute finished = s->computes[handle];
+        s->computeStack.pop_back();
+        s->computes.erase(handle);
+
+        if (status != CAD_OK || !finished.hasOutput) {
+            // compute_fail's message if the plugin left one, and a plain statement if it did not.
+            // Never a bare status code: 3.5 promises a plugin's failures are as legible as a
+            // built-in's, and "operation failed" in a model tree is what that promise exists to
+            // prevent.
+            std::string message = finished.failMessage;
+            if (message.empty()) {
+                message = status == CAD_OK
+                              ? std::string("'") + feature->type + "' produced no shape."
+                              : std::string("'") + feature->type + "' could not be computed.";
+            }
+            return cad::kernel::Error{cad::kernel::ErrorCode::Internal, std::move(message),
+                                      std::move(finished.failDetail)};
+        }
+
+        Session::StoredShape* result = lookupStored(*s, finished.output);
+        if (result == nullptr) {
+            return cad::kernel::Error{cad::kernel::ErrorCode::Internal,
+                                      std::string("'") + feature->type +
+                                          "' returned a shape that no longer exists."};
+        }
+        if (result->names.size() == 0) {
+            // A shape with no names cannot be built on: a fillet on one of its faces would have
+            // nothing to reference and would break on the next edit. 4.2 requires plugins to name
+            // what they create; this is where that requirement is actually enforced rather than
+            // documented.
+            return cad::kernel::Error{cad::kernel::ErrorCode::NamingLost,
+                                      std::string("'") + feature->type +
+                                          "' produced geometry with no element names."};
+        }
+        return cad::recompute::Output{result->shape, result->names};
+    };
+
+    s->registry.add(std::move(type));
+    return CAD_OK;
+}
+
+// ── compute context ─────────────────────────────────────────────────────────────────────
+
+CadStatus hostComputeInputCount(void* ctx, CadComputeCtx cc, std::uint32_t* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::ActiveCompute* active = activeCompute(*s, cc);
+    if (active == nullptr || active->ctx == nullptr) {
+        s->hostError = "That compute is no longer running.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    *out = static_cast<std::uint32_t>(active->ctx->inputs.size());
+    return CAD_OK;
+}
+
+CadStatus hostComputeInputShape(void* ctx, CadComputeCtx cc, std::uint32_t index, CadShape* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::ActiveCompute* active = activeCompute(*s, cc);
+    if (active == nullptr || active->ctx == nullptr) {
+        s->hostError = "That compute is no longer running.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    if (index >= active->ctx->inputs.size()) {
+        s->hostError = "There is no input at that index.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    const auto* input = active->ctx->inputs[index];
+    // Interned WITH its element map, so a plugin can name a face of its input — which is the
+    // whole point of a feature that modifies something rather than creating it.
+    *out = intern(*s, input->shape, input->map);
+    return CAD_OK;
+}
+
+/// One property of the object being computed, or a legible refusal.
+const cad::document::PropertyValue* computeProperty(Session& s, CadComputeCtx cc,
+                                                    const char* name, CadStatus& status) {
+    Session::ActiveCompute* active = activeCompute(s, cc);
+    if (active == nullptr || active->ctx == nullptr) {
+        s.hostError = "That compute is no longer running.";
+        status = CAD_ERR_BAD_HANDLE;
+        return nullptr;
+    }
+    if (name == nullptr) {
+        status = CAD_ERR_INVALID_INPUT;
+        return nullptr;
+    }
+    const auto* value = active->ctx->object.find(name);
+    if (value == nullptr) {
+        // Refused, never defaulted. A plugin reading a parameter that is not there has a bug, and
+        // handing back 0.0 would bury it inside geometry where it surfaces as a wrong part.
+        s.hostError = std::string("This feature has no parameter called '") + name + "'.";
+        status = CAD_ERR_INVALID_INPUT;
+        return nullptr;
+    }
+    status = CAD_OK;
+    return value;
+}
+
+CadStatus hostComputeParamReal(void* ctx, CadComputeCtx cc, const char* name, double* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+
+    // Length and Angle answer in base units, the same convention the C ABI uses everywhere else:
+    // millimetres and degrees cross the boundary as plain doubles.
+    if (const auto* length = std::get_if<cad::units::Length>(value)) {
+        *out = length->base();
+        return CAD_OK;
+    }
+    if (const auto* angle = std::get_if<cad::units::Angle>(value)) {
+        *out = angle->base();
+        return CAD_OK;
+    }
+    if (const auto* real = std::get_if<double>(value)) {
+        *out = *real;
+        return CAD_OK;
+    }
+    s->hostError = std::string("'") + name + "' is not a number.";
+    return CAD_ERR_INVALID_INPUT;
+}
+
+CadStatus hostComputeParamInt(void* ctx, CadComputeCtx cc, const char* name, std::int64_t* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+    if (const auto* i = std::get_if<std::int64_t>(value)) {
+        *out = *i;
+        return CAD_OK;
+    }
+    if (const auto* b = std::get_if<bool>(value)) {
+        *out = *b ? 1 : 0;
+        return CAD_OK;
+    }
+    s->hostError = std::string("'") + name + "' is not a whole number.";
+    return CAD_ERR_INVALID_INPUT;
+}
+
+CadStatus hostComputeParamText(void* ctx, CadComputeCtx cc, const char* name, CadStr* out) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
+    CadStatus status = CAD_OK;
+    const auto* value = computeProperty(*s, cc, name, status);
+    if (value == nullptr) return status;
+    const auto* text = std::get_if<std::string>(value);
+    if (text == nullptr) {
+        s->hostError = std::string("'") + name + "' is not text.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    // Into the session's scratch, like every other string crossing this boundary: valid until the
+    // next call on this session, and the plugin is told to copy it immediately (4.5).
+    s->scratch = *text;
+    out->data = s->scratch.c_str();
+    out->len = s->scratch.size();
+    return CAD_OK;
+}
+
+CadStatus hostComputeSetOutput(void* ctx, CadComputeCtx cc, CadShape shape) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::ActiveCompute* active = activeCompute(*s, cc);
+    if (active == nullptr || active->ctx == nullptr) {
+        s->hostError = "That compute is no longer running.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    if (active->hasOutput) {
+        // Refused rather than overwritten: a compute that sets two outputs does not know what it
+        // is building, and silently keeping the last would make which one survive an accident of
+        // control flow.
+        s->hostError = "This compute has already produced its output.";
+        return CAD_ERR_INVALID_INPUT;
+    }
+    if (lookupStored(*s, shape) == nullptr) {
+        s->hostError = "That shape no longer exists.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    active->output = shape;
+    active->hasOutput = true;
+    return CAD_OK;
+}
+
+CadStatus hostComputeFail(void* ctx, CadComputeCtx cc, const char* message, const char* detail) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr) return CAD_ERR_INVALID_INPUT;
+    Session::ActiveCompute* active = activeCompute(*s, cc);
+    if (active == nullptr) {
+        s->hostError = "That compute is no longer running.";
+        return CAD_ERR_BAD_HANDLE;
+    }
+    active->failMessage = message != nullptr ? message : "";
+    active->failDetail = detail != nullptr ? detail : "";
+    return CAD_OK;
+}
+
 CadStatus hostElementNameOf(void* ctx, CadShape shape, CadShape sub, CadElementId* out) {
     Session* s = hostSession(ctx);
     if (s == nullptr || out == nullptr) return CAD_ERR_INVALID_INPUT;
@@ -647,6 +960,14 @@ const CadHost* cad_plugin_host(CadSession handle) {
             h.element_name_of = &hostElementNameOf;
             h.shape_sub_count = &hostShapeSubCount;
             h.shape_sub_at = &hostShapeSubAt;
+            h.register_feature = &hostRegisterFeature;
+            h.compute_input_count = &hostComputeInputCount;
+            h.compute_input_shape = &hostComputeInputShape;
+            h.compute_param_real = &hostComputeParamReal;
+            h.compute_param_int = &hostComputeParamInt;
+            h.compute_param_text = &hostComputeParamText;
+            h.compute_set_output = &hostComputeSetOutput;
+            h.compute_fail = &hostComputeFail;
             // fillet_edges, txn_* and register_* stay NULL for now. See the note above:
             // plugins are required to check, and this makes them do it from the start.
         }

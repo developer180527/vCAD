@@ -130,12 +130,20 @@ class of crash nobody can reproduce.
    is a host bug.
 3. **Existing behaviour never changes.** Additive-only, per ADR 0011. A call that worked in 1.9
    works identically in 1.40 and in 2.x through the compatibility shim.
-4. **The naming system is available. (PARTIAL)** `element_resolve` and `element_name_of` are wired
-   and tested for their negatives — an unknown name is refused rather than approximated, and a
-   released shape cannot resolve. **But there is no sub-shape enumeration**, so a plugin has no way
-   to obtain a face handle to name in the first place. Found by writing the tests, not by reviewing
-   the design. Until it lands, `element_*` are usable only for a name a plugin already holds, and
-   `shape_faces`/`shape_edges` are the next thing the vtable needs.
+4. **The naming system is available. (RESOLVED)** `element_resolve` and `element_name_of` are
+   wired, and `shape_sub_count` / `shape_sub_at` (ABI 1.13) are how a plugin obtains the sub-shape
+   to name in the first place — the gap that made this PARTIAL, found by writing the tests rather
+   than by reviewing the design. The full round trip is covered: enumerate a face, name it, resolve
+   it back, plus refusals for an unknown name, an unknown kind, an out-of-range index and a
+   released shape.
+
+   Enumeration order is stable for a given shape and **means nothing across edits**. The durable
+   reference is the name, never the index; a plugin storing "face 3" has reintroduced exactly the
+   problem this system removes.
+
+   Closing it exposed a bug underneath: host-built shapes were named from a session counter, so
+   identical requests produced different names. That is a §4.1 violation reachable through the
+   host rather than through a badly-written plugin — see the note there.
 
    `element_resolve` and `element_name_of` are in the vtable
    because a plugin must be able to hold a reference to a face across a rebuild — the same
@@ -170,6 +178,14 @@ network.
 **And `compute_version` must be bumped whenever output changes for identical inputs.** Forgetting
 it leaves stale cached shapes that survive a rebuild — the single most commonly forgotten field in
 any content pipeline.
+
+**The host is held to this too, and was caught breaking it.** `make_box` took its naming serial
+from a per-session intern counter, so two identical calls in one session produced different element
+names and the same call in a fresh session produced different ones again. Nothing about the plugin
+was wrong; the names it received simply were not a function of what it asked for. Host calls now
+derive their serial from the request when there is no compute running, and from the FEATURE's
+serial when there is — which is also what keeps two features that build identical geometry from
+colliding. Regression: `identical_geometry_is_named_identically` and `naming_is_identical_across_sessions`.
 
 ### 4.2 Emit names for what you create
 
@@ -634,7 +650,8 @@ Fixed, so it does not get relitigated per step. Each lands independently and is 
 | 1 | ~~**Golden header snapshot test**~~ **(RESOLVED)** | `tests-rs/cad-tests/tests/abi_golden.rs`; 149 declarations pinned, verified red and green |
 | 2 | ~~`CadParamDesc` + `min_host_minor` in the header~~ **(RESOLVED)** | ABI 1.10. Layout pinned by static_assert, acceptance rule tested via `cad_abi_accepts` |
 | 3a | ~~Shape handles and a live host vtable~~ **(RESOLVED)** | `cad_plugin_host`; 9 tests on the §3 promises |
-| 3b | Compute context accessors | Needs registration; the other phase-1 blocker |
+| 3a+ | ~~Sub-shape enumeration~~ **(RESOLVED)** | ABI 1.13. `shape_sub_count` / `shape_sub_at`; closes §3.4, and exposed the naming-serial bug under it |
+| 3b | ~~`register_feature` and the compute accessors~~ **(RESOLVED)** | ABI 1.14. An in-process fake plugin registers a feature, computes from a parameter, and its output lands in the document with names — and two identical ones share a cache entry |
 | 4 | **Unknown-feature preservation** (§4A) | Failure must not nuke the user's *data*. Independent of the loader and valuable without it |
 | 5 | Error containment (§5) | Failure must not nuke the *app* |
 | 6 | **The loader**, plus the compatibility museum and hostile-plugin test | Built last, against a finished contract |

@@ -8,7 +8,7 @@
 //! These tests check the promises in PLUGIN_CONTRACT.md §3 — the ones that are cheap to write down
 //! and expensive to actually hold.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 
 pub type CadShape = u64;
@@ -71,6 +71,41 @@ pub struct CadHostPrefix {
         Option<extern "C" fn(*mut c_void, CadShape, u32, *mut u32) -> CadStatus>,
     pub shape_sub_at:
         Option<extern "C" fn(*mut c_void, CadShape, u32, u32, *mut CadShape) -> CadStatus>,
+
+    // --- appended in ABI 1.14: compute context ---
+    pub compute_input_count:
+        Option<extern "C" fn(*mut c_void, CadComputeCtx, *mut u32) -> CadStatus>,
+    pub compute_input_shape:
+        Option<extern "C" fn(*mut c_void, CadComputeCtx, u32, *mut CadShape) -> CadStatus>,
+    pub compute_param_real:
+        Option<extern "C" fn(*mut c_void, CadComputeCtx, *const c_char, *mut f64) -> CadStatus>,
+    pub compute_param_int:
+        Option<extern "C" fn(*mut c_void, CadComputeCtx, *const c_char, *mut i64) -> CadStatus>,
+    pub compute_param_text:
+        Option<extern "C" fn(*mut c_void, CadComputeCtx, *const c_char, *mut CadStr) -> CadStatus>,
+    pub compute_set_output:
+        Option<extern "C" fn(*mut c_void, CadComputeCtx, CadShape) -> CadStatus>,
+    pub compute_fail: Option<
+        extern "C" fn(*mut c_void, CadComputeCtx, *const c_char, *const c_char) -> CadStatus,
+    >,
+}
+
+pub type CadComputeCtx = u64;
+
+/// Only the prefix, for the same append-only reason as CadHostPrefix.
+#[repr(C)]
+pub struct CadFeatureDescPrefix {
+    pub struct_size: u32,
+    pub struct_version: u32,
+    pub type_name: *const c_char,
+    pub compute_version: u32,
+    pub reserved0: u32,
+    pub param_schema_version: u32,
+    pub reserved1: u32,
+    pub plugin_ctx: *mut c_void,
+    pub compute: Option<extern "C" fn(*mut c_void, CadComputeCtx) -> CadStatus>,
+    pub external_inputs: Option<extern "C" fn()>,
+    pub migrate_params: Option<extern "C" fn()>,
 }
 
 pub const CAD_SUB_FACE: u32 = 1;
@@ -495,5 +530,258 @@ fn enumerating_a_released_shape_is_refused() {
     (host.h().shape_release.expect("release is offered"))(host.ctx(), b);
 
     let (status, _) = host.sub_count(b, CAD_SUB_FACE);
+    assert_eq!(status, CAD_ERR_BAD_HANDLE);
+}
+
+// ── step 3b: a feature registered by a plugin, computed by the engine ────────────────────
+//
+// The first end-to-end proof the plugin stack works: register a feature type, add an object of
+// that type to the document, recompute, and find geometry in the tree WITH names attached.
+//
+// In-process rather than a loaded .so on purpose. The loader is built last (PLUGIN_CONTRACT.md
+// §8) precisely so the contract is not frozen around its first client, and this exercises every
+// part of the boundary the loader will use without existing yet.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+extern "C" {
+    fn cad_object_add(session: u64, ty: *const c_char, out: *mut u64) -> CadStatus;
+    fn cad_object_set_real(session: u64, object: u64, prop: *const c_char, v: f64) -> CadStatus;
+    fn cad_recompute(session: u64, out: *mut CadRecomputeReport) -> CadStatus;
+    fn cad_object_is_valid_shape(session: u64, object: u64, out: *mut i32) -> CadStatus;
+    fn cad_object_face_count(session: u64, object: u64, out: *mut u64) -> CadStatus;
+    fn cad_object_error(session: u64, object: u64) -> *const c_char;
+    fn cad_mesh_element_name(session: u64, object: u64, slot: u32) -> CadStr;
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct CadRecomputeReport {
+    computed: u64,
+    cached: u64,
+    skipped: u64,
+    failed: u64,
+    blocked: u64,
+}
+
+/// The fake plugin's own state, reached through `plugin_ctx`.
+///
+/// NOT globals. The first version kept the host vtable in a `static mut`, which passed under
+/// `--test-threads=1` and aborted the moment the suite ran in parallel — each test overwriting
+/// the pointer the others were using. `plugin_ctx` exists precisely so a plugin carries its own
+/// state instead, and a test harness that cheats around it is not testing the boundary it claims
+/// to.
+struct DemoState {
+    host: *const CadHostPrefix,
+    host_ctx: *mut c_void,
+    /// Compute invocations, so a test can tell a cache hit from a recompute.
+    calls: AtomicU32,
+}
+
+/// A feature that builds a cube from one parameter. The smallest thing that exercises the whole
+/// path: read a parameter, build geometry through the host, hand it back.
+extern "C" fn demo_compute(plugin_ctx: *mut c_void, cc: CadComputeCtx) -> CadStatus {
+    let state = unsafe { &*(plugin_ctx as *const DemoState) };
+    state.calls.fetch_add(1, Ordering::SeqCst);
+    let (host, ctx) = (unsafe { &*state.host }, state.host_ctx);
+
+    let name = CString::new("size").unwrap();
+    let mut size = 0.0f64;
+    let status = (host.compute_param_real.unwrap())(ctx, cc, name.as_ptr(), &mut size);
+    if status != CAD_OK {
+        return status;
+    }
+
+    // Refused through compute_fail, so the model tree shows a sentence rather than a code. This
+    // is the difference PLUGIN_CONTRACT.md §7.2 argues for at length.
+    if size <= 0.0 {
+        let message = CString::new("The cube size must be greater than zero.").unwrap();
+        let detail = CString::new("demo_compute: size <= 0").unwrap();
+        (host.compute_fail.unwrap())(ctx, cc, message.as_ptr(), detail.as_ptr());
+        return CAD_ERR_INVALID_INPUT;
+    }
+
+    let mut shape: CadShape = 0;
+    let status = (host.make_box.unwrap())(ctx, size, size, size, &mut shape);
+    if status != CAD_OK {
+        return status;
+    }
+    (host.compute_set_output.unwrap())(ctx, cc, shape)
+}
+
+struct Plugin {
+    host: Host,
+    /// Boxed so its address is stable while `plugin_ctx` points at it, and dropped with the test.
+    state: Box<DemoState>,
+    _type_name: CString,
+}
+
+impl Plugin {
+    /// Registers the demo feature and returns the session it lives in.
+    fn register(type_name: &str) -> Self {
+        let host = Host::new();
+        let state = Box::new(DemoState {
+            host: host.host,
+            host_ctx: host.ctx(),
+            calls: AtomicU32::new(0),
+        });
+        let type_name = CString::new(type_name).unwrap();
+
+        let desc = CadFeatureDescPrefix {
+            struct_size: std::mem::size_of::<CadFeatureDescPrefix>() as u32,
+            struct_version: 1,
+            type_name: type_name.as_ptr(),
+            compute_version: 1,
+            reserved0: 0,
+            param_schema_version: 1,
+            reserved1: 0,
+            plugin_ctx: &*state as *const DemoState as *mut c_void,
+            compute: Some(demo_compute),
+            external_inputs: None,
+            migrate_params: None,
+        };
+
+        let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
+            -> CadStatus = unsafe { std::mem::transmute(host.h().register_feature.unwrap()) };
+        let status = register(host.ctx(), &desc, std::ptr::null(), 0);
+        assert_eq!(status, CAD_OK, "register_feature failed: {}", host.last_error());
+
+        Plugin { host, state, _type_name: type_name }
+    }
+
+    fn add_object(&self, ty: &str, size: f64) -> u64 {
+        let ty = CString::new(ty).unwrap();
+        let mut object = 0u64;
+        let status = unsafe { cad_object_add(self.host.session, ty.as_ptr(), &mut object) };
+        assert_eq!(status, CAD_OK, "add failed: {}", self.host.last_error());
+        let prop = CString::new("size").unwrap();
+        unsafe { cad_object_set_real(self.host.session, object, prop.as_ptr(), size) };
+        object
+    }
+
+    fn recompute(&self) -> CadRecomputeReport {
+        let mut report = CadRecomputeReport::default();
+        let status = unsafe { cad_recompute(self.host.session, &mut report) };
+        assert_eq!(status, CAD_OK, "recompute call failed: {}", self.host.last_error());
+        report
+    }
+
+    fn object_error(&self, object: u64) -> String {
+        unsafe {
+            CStr::from_ptr(cad_object_error(self.host.session, object))
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+}
+
+#[test]
+fn a_plugin_feature_computes_into_the_document_with_names() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+    let object = plugin.add_object("com.vcad.test.Cube", 25.0);
+
+    let report = plugin.recompute();
+    assert_eq!(
+        report.failed + report.blocked,
+        0,
+        "the plugin feature failed: {}",
+        plugin.object_error(object)
+    );
+    assert_eq!(report.computed, 1, "exactly the one plugin feature computed");
+
+    let mut valid = 0i32;
+    unsafe { cad_object_is_valid_shape(plugin.host.session, object, &mut valid) };
+    assert_eq!(valid, 1, "a plugin feature must produce a valid solid");
+
+    let mut faces = 0u64;
+    unsafe { cad_object_face_count(plugin.host.session, object, &mut faces) };
+    assert_eq!(faces, 6, "a cube has six faces");
+
+    // The part that matters. Geometry that arrives unnamed cannot be built on: a fillet on one of
+    // these faces would have nothing to reference and would break on the next edit. §4.2 requires
+    // plugins to name what they create, and this is the assertion that it actually happened.
+    let name = unsafe { cad_mesh_element_name(plugin.host.session, object, 0) };
+    assert!(
+        !name.data.is_null() && name.len > 0,
+        "the plugin's output reached the document with NO element names"
+    );
+}
+
+#[test]
+fn a_plugin_feature_that_fails_says_why_in_its_own_words() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+    let object = plugin.add_object("com.vcad.test.Cube", -5.0);
+
+    let report = plugin.recompute();
+    assert_eq!(report.failed, 1, "a negative size must fail the feature");
+
+    let message = plugin.object_error(object);
+    assert!(
+        message.contains("greater than zero"),
+        "the plugin's own message must survive to the model tree, got: {message:?}"
+    );
+}
+
+/// Two objects of the same plugin type, identical parameters — the second must come from the
+/// cache rather than running compute again.
+///
+/// This is the plugin stack meeting the DDC, and it only works because the feature's output is
+/// named deterministically. It is also why the naming serial had to be fixed first: a compute
+/// whose names varied per call would produce a cache entry that disagreed with a fresh compute.
+#[test]
+fn identical_plugin_features_share_a_cache_entry() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+    plugin.add_object("com.vcad.test.Cube", 30.0);
+    plugin.add_object("com.vcad.test.Cube", 30.0);
+    let report = plugin.recompute();
+
+    assert_eq!(report.failed + report.blocked, 0);
+    let calls = plugin.state.calls.load(Ordering::SeqCst);
+    assert_eq!(
+        calls, 1,
+        "two identical plugin features ran compute {calls} times; the second must be a cache hit"
+    );
+    assert_eq!(report.cached, 1, "the second is served from the cache");
+}
+
+#[test]
+fn registering_the_same_feature_type_twice_is_refused() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+
+    let type_name = CString::new("com.vcad.test.Cube").unwrap();
+    let desc = CadFeatureDescPrefix {
+        struct_size: std::mem::size_of::<CadFeatureDescPrefix>() as u32,
+        struct_version: 1,
+        type_name: type_name.as_ptr(),
+        compute_version: 1,
+        reserved0: 0,
+        param_schema_version: 1,
+        reserved1: 0,
+        plugin_ctx: &*plugin.state as *const DemoState as *mut c_void,
+        compute: Some(demo_compute),
+        external_inputs: None,
+        migrate_params: None,
+    };
+    let register: extern "C" fn(*mut c_void, *const CadFeatureDescPrefix, *const c_void, u32)
+        -> CadStatus = unsafe { std::mem::transmute(plugin.host.h().register_feature.unwrap()) };
+
+    // Refused, not replaced: two plugins claiming one type name would decide between themselves
+    // by load order, and a document referencing that type would mean different geometry depending
+    // on what happened to be installed.
+    let status = register(plugin.host.ctx(), &desc, std::ptr::null(), 0);
+    assert_eq!(status, CAD_ERR_INVALID_INPUT);
+}
+
+#[test]
+fn a_stale_compute_handle_is_refused_rather_than_dangling() {
+    let plugin = Plugin::register("com.vcad.test.Cube");
+    plugin.add_object("com.vcad.test.Cube", 20.0);
+    plugin.recompute();
+
+    // A handle from a compute that has returned. This is why CadComputeCtx is an index into a
+    // host map rather than a pointer to a ComputeContext: a plugin that stores one and uses it
+    // later gets a clean rejection instead of a dangling reference into a frame that is gone.
+    let mut count = 0u32;
+    let status = (plugin.host.h().compute_input_count.unwrap())(plugin.host.ctx(), 1, &mut count);
     assert_eq!(status, CAD_ERR_BAD_HANDLE);
 }
