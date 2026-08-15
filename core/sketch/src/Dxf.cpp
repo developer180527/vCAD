@@ -224,10 +224,24 @@ std::string DxfImportReport::summary() const {
 ///
 /// Counts lines rather than parsing them: this is a structural precondition, not a validation
 /// pass, and anything cleverer would be a second DXF parser sitting in front of the first.
-/// dime's own `DXF_MAXLINELEN`. Duplicated rather than included because dime is linked PRIVATE and
-/// its headers are deliberately not part of this file's interface — and because the number is a
-/// property of the bug being guarded against, which must not silently change if dime does.
+/// dime's own `DXF_MAXLINELEN`, checked against it rather than merely described.
+///
+/// Named locally because the guard below is about a property of the BUG — the length at which
+/// readString writes one past its buffer — and a bare `DXF_MAXLINELEN` at the call site would read
+/// as a formatting preference rather than as a memory-safety bound.
+///
+/// But the static_assert is the point. A comment saying "this must match dime" is a comment; if
+/// dime's constant ever moves, the number here becomes silently wrong in whichever direction
+/// hurts. Smaller in dime and our guard admits records that overflow it again; larger and we
+/// reject files that are perfectly valid. Neither shows up as a test failure, because both look
+/// like correct behaviour from outside. Compile-time is the only place this can be caught, and
+/// dime's header is already included here — the same argument as the golden ABI snapshot: turn the
+/// promise into something that breaks the build when it stops being true.
 constexpr std::size_t kDimeLineLimit = 4096;
+static_assert(kDimeLineLimit == DXF_MAXLINELEN,
+              "dime's DXF_MAXLINELEN changed. The length guard in this file exists because "
+              "dimeInput::readString writes lineBuf[idx] with idx == DXF_MAXLINELEN, one past the "
+              "end. Update kDimeLineLimit to match, and re-run the boundary test in dxf_fuzz.rs.");
 
 kernel::Result<void> dxfLinesArePaired(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);

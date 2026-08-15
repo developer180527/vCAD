@@ -309,3 +309,70 @@ fn hostile_inputs_are_refused_legibly() {
         import_and_check(&bytes, name);
     }
 }
+
+// ── the boundary the guard is built on ──────────────────────────────────────────────────
+
+/// A DXF whose LINE has a layer name of exactly `len` bytes.
+///
+/// Group 8 is the layer, which is a free-text value — so it is the natural place to put a record
+/// of a chosen length without the file being malformed in any other way. A long layer name is
+/// unusual but not invalid, which is exactly what the accepted side of the boundary needs.
+fn dxf_with_record_of_length(len: usize) -> Vec<u8> {
+    let mut v = b"0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n".to_vec();
+    v.extend(std::iter::repeat(b'A').take(len));
+    v.extend_from_slice(b"\n10\n0\n20\n0\n11\n10\n21\n10\n0\nENDSEC\n0\nEOF\n");
+    v
+}
+
+/// The length guard fires exactly at dime's buffer size, and not before.
+///
+/// `kDimeLineLimit` in Dxf.cpp duplicates dime's `DXF_MAXLINELEN`. A static_assert now catches the
+/// two constants drifting apart at compile time, but that only proves the NUMBERS agree — it says
+/// nothing about whether the guard is placed correctly around it. This walks the boundary and
+/// asserts the behaviour changes on the right byte:
+///
+///   * 4095 characters — dime fills lineBuf[0..4094] and terminates at [4095], in bounds. Must be
+///     accepted, or the guard is over-strict and rejects valid files.
+///   * 4096 characters — dime fills [0..4095] and terminates at [4096], one past the end. Must be
+///     refused, or the overflow is reachable again.
+///
+/// The 4095 case is the one that catches the dangerous direction of drift. If dime's limit ever
+/// SHRANK, that record would overflow and this test would crash the process rather than fail
+/// politely — which is the correct outcome, and is why it is worth running a case that is expected
+/// to succeed rather than only cases expected to fail.
+#[test]
+fn the_record_length_guard_fires_exactly_at_dimes_buffer_size() {
+    const LIMIT: usize = 4096;
+
+    // Just inside. Must import; anything else means the guard rejects valid files.
+    let inside = dxf_with_record_of_length(LIMIT - 1);
+    let mut s = Session::new().expect("session");
+    let path = std::env::temp_dir().join(format!("cad-bound-in-{}.dxf", std::process::id()));
+    std::fs::write(&path, &inside).expect("write");
+    let ok = s.import_dxf(path.to_str().expect("utf-8"), Plane::Xy, 1.0);
+    assert!(
+        ok.is_ok(),
+        "a {}-byte record is within dime's buffer and must be accepted; the guard is \
+         over-strict and would reject valid files: {:?}",
+        LIMIT - 1,
+        ok.err().map(|e| e.message)
+    );
+    let _ = std::fs::remove_file(&path);
+
+    // Exactly at the limit, and past it. Both must be refused, and say why.
+    for len in [LIMIT, LIMIT + 1] {
+        let outside = dxf_with_record_of_length(len);
+        let mut s = Session::new().expect("session");
+        let path = std::env::temp_dir().join(format!("cad-bound-{len}-{}.dxf", std::process::id()));
+        std::fs::write(&path, &outside).expect("write");
+        let result = s.import_dxf(path.to_str().expect("utf-8"), Plane::Xy, 1.0);
+        let err = result.err().unwrap_or_else(|| {
+            panic!("a {len}-byte record reaches dime's one-past-the-end write and must be refused")
+        });
+        assert!(
+            !err.message.trim().is_empty(),
+            "the refusal at {len} bytes must say something"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
