@@ -161,6 +161,11 @@ jobs:
 
       # OCCT needs X11/GL headers to configure even though we never link its visualisation
       # toolkits: its CMake probes for them unconditionally.
+      #
+      # glfw3 needs MORE than OCCT does -- RandR, Xinerama and Xcursor -- and it fails at
+      # configure rather than at link, with "RandR headers not found". That was invisible until
+      # now: this job has never once reached a vcpkg install, because the lint gate in front of it
+      # was failing. Three of the four jobs died on it the first time the matrix actually ran.
       - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -169,6 +174,7 @@ jobs:
             ninja-build \
             libgl1-mesa-dev libglu1-mesa-dev \
             libx11-dev libxext-dev libxmu-dev libxi-dev libxt-dev \
+            libxrandr-dev libxinerama-dev libxcursor-dev \
             libfontconfig1-dev libfreetype-dev \
             autoconf autoconf-archive automake libtool pkg-config \
             gperf bison flex \
@@ -375,6 +381,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxext-dev \
             libxmu-dev libxi-dev libxt-dev libfontconfig1-dev libfreetype-dev \
+            libxrandr-dev libxinerama-dev libxcursor-dev \
             autoconf autoconf-archive automake libtool pkg-config gperf bison flex
       - uses: lukka/run-vcpkg@v11
         with:

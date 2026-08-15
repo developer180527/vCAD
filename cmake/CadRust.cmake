@@ -62,10 +62,28 @@ function(cad_add_rust_library)
     OUTPUT_QUIET
     RESULT_VARIABLE _probe_result)
   set(_native_libs "")
+  set(_native_link_options "")
   if(_probe_result EQUAL 0 AND _probe_output MATCHES "native-static-libs: ([^\n]*)")
     string(STRIP "${CMAKE_MATCH_1}" _native_libs_raw)
-    separate_arguments(_native_libs UNIX_COMMAND "${_native_libs_raw}")
+    separate_arguments(_native_tokens UNIX_COMMAND "${_native_libs_raw}")
     message(STATUS "Rust std needs: ${_native_libs_raw}")
+
+    # rustc's answer mixes LIBRARIES with LINKER FLAGS, and CMake cannot be handed both in the
+    # same property. On MSVC the list ends with `/defaultlib:msvcrt`, and a token starting with
+    # `/` is an absolute path as far as target_link_libraries is concerned -- so ninja looks for
+    # a rule to produce a file literally named `/defaultlib:msvcrt`, and the build dies at the
+    # first link with a message that names no source file and no target of ours.
+    #
+    # Found by CI on its first Windows run, which is exactly what that platform coverage was for:
+    # macOS and Linux print only `-l` tokens, which target_link_libraries passes through happily,
+    # so nothing here could have surfaced it locally.
+    foreach(_token IN LISTS _native_tokens)
+      if(_token MATCHES "^/")
+        list(APPEND _native_link_options "${_token}")
+      else()
+        list(APPEND _native_libs "${_token}")
+      endif()
+    endforeach()
   else()
     message(WARNING "could not query rustc for native-static-libs; link errors may follow")
   endif()
@@ -108,6 +126,14 @@ function(cad_add_rust_library)
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/rust/include")
   if(_native_libs)
     set_target_properties(cad_parse PROPERTIES INTERFACE_LINK_LIBRARIES "${_native_libs}")
+  endif()
+  if(_native_link_options)
+    # NOTE for Windows: `/defaultlib:msvcrt` names the RELEASE dynamic CRT, and rustc emits it
+    # whichever cargo profile was built -- the msvc target links that CRT regardless. A C++ Debug
+    # build selects msvcrtd, and the two together give LNK4098 and a program with two CRTs in it.
+    # RelWithDebInfo, which is what CI and releases use, matches and is fine. If a Windows Debug
+    # build starts misbehaving in ways that make no sense, this is the first place to look.
+    set_target_properties(cad_parse PROPERTIES INTERFACE_LINK_OPTIONS "${_native_link_options}")
   endif()
   # An IMPORTED target carries no build rule of its own, so anything linking it must be ordered
   # after the cargo command explicitly. Without this the first build races: the linker looks for

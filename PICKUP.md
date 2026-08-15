@@ -124,9 +124,22 @@ exercise dime, and the differential skips rather than failing on a build with no
   and asserts that `rust_boundary`, `dxf_differential` and `proshell_boundary` are actually
   registered before running the suite.
 
-  **None of that is verified until CI runs.** The three most likely to break are still
-  `rustc --print native-static-libs`, the MSVC `.lib` naming, and — new — whether `vcad` and
-  `proshell` compile under MSVC at all, which no one has ever tried.
+  **CI has now run.** macOS went green with everything working — Qt installed, `proshell_boundary`
+  ran offscreen, the Rust parser was required and used, `dxf_differential` executed. The other
+  three jobs failed, on two causes, both now fixed and both worth knowing about:
+
+  * **Linux and ASan: `glfw3` needs `libxrandr`/`libxinerama`/`libxcursor` dev headers** and fails
+    at *configure* with "RandR headers not found". Nothing to do with any recent work — those jobs
+    had simply never reached a vcpkg install, because the lint gate in front of them was failing.
+  * **Windows: `rustc --print native-static-libs` mixes libraries with linker FLAGS.** On MSVC it
+    ends `/defaultlib:msvcrt`, and CMake reads a leading `/` as an absolute path, so ninja hunted
+    for a rule to build a file by that name and the link died naming no target of ours. macOS and
+    Linux print only `-l` tokens, which pass through fine — so this could not have surfaced
+    anywhere but Windows. Flags now go to `INTERFACE_LINK_OPTIONS`.
+
+  Windows *configured* successfully, which means the MSVC `.lib` naming, the cargo invocation and
+  `--offline --locked` all work there. Still unproven on Windows and Linux: whether `vcad` and
+  `proshell` compile at all, since neither job reached a full build.
 - **The fuzz corpus is thin** — two seeds, both ours. See the fixture notes below; a fuzzer
   starting from thin material stays thin.
 - ~~No differential fuzzing.~~ **Done** — `tests/acceptance/dxf_differential.cpp`, ctest
