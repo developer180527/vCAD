@@ -603,7 +603,36 @@ extern "C" {
     fn cad_object_is_valid_shape(session: u64, object: u64, out: *mut i32) -> CadStatus;
     fn cad_object_face_count(session: u64, object: u64, out: *mut u64) -> CadStatus;
     fn cad_object_error(session: u64, object: u64) -> *const c_char;
-    fn cad_mesh_element_name(session: u64, object: u64, slot: u32) -> CadStr;
+    // `*const c_char`, NOT CadStr. It was declared as CadStr here, which is undefined behaviour:
+    // the callee returns a single pointer in the first return register, and a two-word struct is
+    // returned in the first TWO. So `.data` picked up the real pointer and `.len` picked up
+    // whatever happened to be in the second register.
+    //
+    // That garbage was non-zero on x86-64 and on macOS arm64, so `len > 0` passed on four
+    // platforms for four years' worth of runs; it was zero on Linux arm64 with gcc, which is the
+    // only reason anybody found out. cad-sys declares this correctly -- this block is a SECOND,
+    // hand-written set of externs, which is how the two drifted.
+    fn cad_mesh_element_name(session: u64, object: u64, slot: u32) -> *const c_char;
+
+    fn cad_object_tessellate(
+        session: u64,
+        object: u64,
+        deflection: f64,
+        angular: f64,
+        out: *mut CadMeshInfo,
+    ) -> CadStatus;
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct CadMeshInfo {
+    triangles: u64,
+    vertices: u64,
+    edge_polylines: u64,
+    edge_points: u64,
+    elements: u64,
+    bounds_min: [f32; 3],
+    bounds_max: [f32; 3],
 }
 
 #[repr(C)]
@@ -800,9 +829,33 @@ fn a_plugin_feature_computes_into_the_document_with_names() {
     // The part that matters. Geometry that arrives unnamed cannot be built on: a fillet on one of
     // these faces would have nothing to reference and would break on the next edit. §4.2 requires
     // plugins to name what they create, and this is the assertion that it actually happened.
+    //
+    // TESSELLATE FIRST. cad_mesh_element_name reads the mesh left by the last tessellate call on
+    // this session and returns an empty string if there is none -- so without this the assertion
+    // below was reading an empty scratch buffer, and only passed because the length it compared
+    // came from an uninitialised register. See the extern block above.
+    let mut info = CadMeshInfo::default();
+    let status = unsafe { cad_object_tessellate(plugin.host.session, object, 0.0, 0.0, &mut info) };
+    assert_eq!(
+        status,
+        CAD_OK,
+        "tessellate failed: {}",
+        plugin.host.last_error()
+    );
+    assert!(info.triangles > 0, "a cube must tessellate to something");
+    assert!(
+        info.elements > 0,
+        "a named cube must have named mesh element slots"
+    );
+
     let name = unsafe { cad_mesh_element_name(plugin.host.session, object, 0) };
     assert!(
-        !name.data.is_null() && name.len > 0,
+        !name.is_null(),
+        "element name query returned a null pointer"
+    );
+    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    assert!(
+        !name.is_empty(),
         "the plugin's output reached the document with NO element names"
     );
 }
