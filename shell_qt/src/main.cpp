@@ -128,7 +128,7 @@ std::string startLogging(const char* argv0) {
 /// layout that follows only lands on the second. Grabbing after one turn catches the window
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
-               bool home) {
+               bool home, bool plugins) {
     window.show();
 
     // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
@@ -136,14 +136,17 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
     // do that on the main thread before app.exec() and the run loop is not being serviced, so the
     // two wait on each other forever. No output, no error, no window -- which is what this mode
     // did when the viewport started rendering for real.
-    QTimer::singleShot(0, &app, [&app, &window, path, tab, home] {
+    QTimer::singleShot(0, &app, [&app, &window, path, tab, home, plugins] {
         // A populated document, because an empty Home page says nothing about the ribbon and the
         // docks, which is the part being reviewed. `--home` skips it to shoot Home itself.
         if (!home) window.openDemoDocument();
         if (tab >= 0) window.selectRibbonTab(tab);
+        // `--plugins` shoots the plugin manager rather than the main window. A dialog is a UI
+        // surface like any other, and one that is only ever described is one nobody has checked.
+        if (plugins) window.openPluginManagerForShot();
 
-        QTimer::singleShot(0, &app, [&app, &window, path] {
-            const QPixmap shot = window.grab();
+        QTimer::singleShot(0, &app, [&app, &window, path, plugins] {
+            const QPixmap shot = plugins ? window.grabPluginManager() : window.grab();
             if (!shot.save(path)) {
                 std::fprintf(stderr, "could not write %s\n", qPrintable(path));
                 app.exit(1);
@@ -186,6 +189,7 @@ int main(int argc, char** argv) {
     QString shotPath;
     int shotTab = -1;
     bool shotHome = false;
+    bool shotPlugins = false;
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
         if (arg == QStringLiteral("--shot") && i + 1 < argc) {
@@ -194,6 +198,8 @@ int main(int argc, char** argv) {
             shotTab = QString::fromUtf8(argv[++i]).toInt();
         } else if (arg == QStringLiteral("--home")) {
             shotHome = true;
+        } else if (arg == QStringLiteral("--plugins")) {
+            shotPlugins = true;
         }
     }
 
@@ -207,7 +213,9 @@ int main(int argc, char** argv) {
     cadqt::registerCadIcons();
 
     cadqt::MainWindow window;
-    if (!shotPath.isEmpty()) return screenshot(app, window, shotPath, shotTab, shotHome);
+    if (!shotPath.isEmpty()) {
+        return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins);
+    }
 
     window.show();
     return app.exec();

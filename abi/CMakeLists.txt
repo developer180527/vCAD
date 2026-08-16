@@ -10,6 +10,7 @@ add_library(cad_abi SHARED
   src/Session.cpp
   src/Manifest.cpp
   src/Loader.cpp
+  src/PluginCatalog.cpp
 )
 add_library(cad::abi ALIAS cad_abi)
 

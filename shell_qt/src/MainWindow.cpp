@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "PluginManager.h"
 #include "proshell/HomePage.h"
 #include "Icons.h"
 #include "proshell/Ribbon.h"
@@ -409,6 +410,19 @@ void MainWindow::rebuildRibbon() {
         auto* cachePanel = tools->addPanel(tr("Cache"));
         cachePanel->addLarge(planned(tr("Cache\nStatus"), QStringLiteral("cache")));
         cachePanel->addSmall(planned(tr("Purge Local"), QStringLiteral("purge")));
+
+        // Plugins, and a real command rather than a `planned()` stand-in -- the loader exists and
+        // the manager reads actual installed manifests. On Home rather than in a document's
+        // ribbon because plugins are application-level: what is installed does not depend on what
+        // is open, and a plugin registers its types at startup for every document at once.
+        auto* pluginPanel = tools->addPanel(tr("Plugins"));
+        {
+            auto* manage = new QAction(icon(QStringLiteral("parameters")),
+                                       tr("Manage\nPlugins"), this);
+            manage->setToolTip(tr("See which plugins are installed and whether vCAD can use them"));
+            connect(manage, &QAction::triggered, this, [this] { showPluginManager(); });
+            pluginPanel->addLarge(manage);
+        }
 
         auto* collaborate = ribbon()->addTab(tr("Collaborate"));
         auto* project = collaborate->addPanel(tr("Project"));
@@ -1041,6 +1055,24 @@ void MainWindow::buildStatusFields() {
 }
 
 // ── refresh ─────────────────────────────────────────────────────────────────────────────
+
+void MainWindow::showPluginManager() {
+    // One window, reused. Reopening from the ribbon raises the existing one rather than stacking
+    // copies -- and it is modeless, because reading a plugin list is something you do WHILE
+    // deciding what to do next, not a question you must answer before continuing.
+    if (pluginManager_ == nullptr) {
+        pluginManager_ = new PluginManager(this);
+    }
+    pluginManager_->show();
+    pluginManager_->raise();
+    pluginManager_->activateWindow();
+}
+
+void MainWindow::openPluginManagerForShot() { showPluginManager(); }
+
+QPixmap MainWindow::grabPluginManager() {
+    return pluginManager_ != nullptr ? pluginManager_->grab() : grab();
+}
 
 void MainWindow::showOptions() {
     auto* c = controller();

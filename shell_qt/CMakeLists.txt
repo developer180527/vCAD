@@ -31,8 +31,12 @@ qt_add_executable(vcad
   src/Viewport.cpp
   src/SketchCanvas.cpp
   src/CadHomeModel.cpp
+  src/PluginManager.cpp
 )
-target_link_libraries(vcad PRIVATE cad::app proshell::proshell Qt6::Widgets)
+# cad::abi for the plugin manager. The plugin system IS the ABI, so a UI over it talks to the
+# ABI directly rather than through cad::app -- which also means the manager describes plugins with
+# exactly the same code the loader uses to decide about them, and the two cannot disagree.
+target_link_libraries(vcad PRIVATE cad::app cad::abi proshell::proshell Qt6::Widgets)
 cad_set_warnings(vcad)
 
 # The shader binaries have to sit beside the binary, because that is where main.cpp now tells

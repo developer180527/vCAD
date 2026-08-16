@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CadHomeModel.h"
+
+#include <QPixmap>
 #include "cad/app/Session.h"
 #include "proshell/ShellWindow.h"
 
@@ -24,6 +26,7 @@ class HomePage;
 
 namespace cadqt {
 
+class PluginManager;
 class SketchCanvas;
 class Viewport;
 
@@ -48,6 +51,9 @@ public:
     /// are the two things a UI screenshot needs and a fresh window does not do on its own.
     void selectRibbonTab(int index);
     void openDemoDocument();
+    /// Screenshot support for the plugin manager, which is a window of its own.
+    void openPluginManagerForShot();
+    [[nodiscard]] QPixmap grabPluginManager();
 
 protected:
     /// Prompts for unsaved work in EVERY open document before letting the window go.
@@ -102,6 +108,7 @@ private:
 
     void refreshTree();
     void showBrowserMenu(const QPoint&);
+    void showPluginManager();
     void showOptions();
     void refreshProperties();
     void refreshCommandStates();
@@ -118,6 +125,7 @@ private:
     /// holds a reference.
     CadHomeModel homeModel_{session_};
 
+    PluginManager* pluginManager_ = nullptr;
     QTreeWidget* browser_ = nullptr;
     QTableWidget* properties_ = nullptr;
     proshell::HomePage* home_ = nullptr;
