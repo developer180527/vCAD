@@ -55,11 +55,20 @@ jobs:
         # makes "hand-written" safe: if the C header's version moves and cad-sys does not,
         # the two have drifted and someone forgot to update the other half.
         run: |
-          header=$(grep -oP 'CAD_ABI_VERSION_MINOR\s+\K\d+' \
-            abi/include/cad/abi/cad_plugin_abi.h)
-          rust=$(grep -oP 'CAD_ABI_VERSION_MINOR: u32 = \K\d+' \
-            tests-rs/cad-sys/src/lib.rs)
-          echo "C header: $header, cad-sys: $rust"
+          # -m1 and `|| true`, both deliberate. Without -m1 a second occurrence of the macro
+          # makes the variable multi-line and the comparison fails while the versions agree.
+          # Without `|| true` a grep matching NOTHING -- which is what a rename looks like --
+          # exits non-zero, and GitHub's default `bash -e` shell aborts the step there, so the
+          # diagnostic below never prints and the failure says only "exit code 1".
+          header=$(grep -oPm1 'CAD_ABI_VERSION_MINOR\s+\K\d+' \
+            abi/include/cad/abi/cad_plugin_abi.h || true)
+          rust=$(grep -oPm1 'CAD_ABI_VERSION_MINOR: u32 = \K\d+' \
+            tests-rs/cad-sys/src/lib.rs || true)
+          echo "C header: '$header', cad-sys: '$rust'"
+          if [ -z "$header" ] || [ -z "$rust" ]; then
+            echo "::error::could not read CAD_ABI_VERSION_MINOR from one or both files — renamed?"
+            exit 1
+          fi
           if [ "$header" != "$rust" ]; then
             echo "::error::ABI minor version mismatch — the C header and cad-sys must change together"
             exit 1
@@ -368,6 +377,14 @@ jobs:
       - name: C++ tests
         # vcpkg's toolchain copies dependency DLLs next to built executables on Windows, so
         # ctest needs no extra path setup. The Rust step below does — see its comment.
+        #
+        # CTEST_PARALLEL_LEVEL rather than -j, because it is one env var that behaves identically
+        # on all three operating systems, where the flag would need a per-platform core count.
+        # Measured locally: 9.8s to 2.3s, same 35 passing. NOT applied to the sanitizer job --
+        # ASan multiplies every test's memory, and four OCCT tests at once under it is a different
+        # risk for a job that is not slow.
+        env:
+          CTEST_PARALLEL_LEVEL: 4
         run: ctest --test-dir build --output-on-failure --timeout 300
 
       # The C ABI is a shared library, and only macOS finds it without help: we bake an
@@ -470,6 +487,18 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      # This job configures with CAD_REQUIRE_RUST=ON, which makes a missing cargo a hard configure
+      # error. It has been passing only because the ubuntu-24.04 image happens to ship a Rust
+      # toolchain -- an undeclared dependency on the runner image, which is the kind of thing that
+      # breaks on an image update rather than on a commit.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tests-rs
+            rust/cad-parse
+
       - name: Configure
         run: >
           cmake -S . -B build-asan -G Ninja
