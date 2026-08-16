@@ -30,6 +30,12 @@ endif()
 # reader, rather than vanishing from the suite. A test that disappears when a dependency is absent
 # reports the same green as one that ran.
 target_sources(cad_tests PRIVATE acceptance/dxf_differential.cpp)
+
+# The manifest parser, reached by relative path into abi/src rather than through a public header.
+# Deliberate: this is an internal detail of the loader, not part of the C ABI, and giving it a
+# public header would invite a plugin to depend on the host's own parsing of its manifest.
+target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp)
+target_link_libraries(cad_tests PRIVATE cad::abi)
 target_link_libraries(cad_tests PRIVATE cad::sketch)
 # catch_discover_tests runs the suite from the build tree, so a relative path to a fixture finds
 # nothing. Baked in rather than copied beside the binary: the fixture is also the Rust fuzzer's

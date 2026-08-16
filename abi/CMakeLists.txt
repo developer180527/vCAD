@@ -8,6 +8,7 @@
 # none of them can consume a C++ static archive.
 add_library(cad_abi SHARED
   src/Session.cpp
+  src/Manifest.cpp
 )
 add_library(cad::abi ALIAS cad_abi)
 
