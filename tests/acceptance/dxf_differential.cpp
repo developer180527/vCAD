@@ -50,6 +50,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <random>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -151,7 +152,7 @@ class TempDxf {
 public:
     explicit TempDxf(const std::vector<std::uint8_t>& bytes) {
         path_ = std::filesystem::temp_directory_path() /
-                ("cad-diff-" + std::to_string(counter_++) + ".dxf");
+                ("cad-diff-" + processToken() + "-" + std::to_string(counter_++) + ".dxf");
         std::ofstream out(path_, std::ios::binary);
         out.write(reinterpret_cast<const char*>(bytes.data()),
                   static_cast<std::streamsize>(bytes.size()));
@@ -166,6 +167,30 @@ public:
     [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
 
 private:
+    /// A token unique to this PROCESS, mixed into every temp filename.
+    ///
+    /// Catch2 registers this case through `catch_discover_tests` AND it has its own named ctest
+    /// entry, so two processes run it -- and under `CTEST_PARALLEL_LEVEL` they run at the same
+    /// time. With a bare per-process counter both wrote `cad-diff-0.dxf`, `cad-diff-1.dxf` and so
+    /// on into one shared temp directory, each clobbering the other's file between the write and
+    /// the two reads.
+    ///
+    /// The symptom was worth the diagnosis: the same deterministic corpus produced different
+    /// counts in the two runs, and a "value disagreement" of 4.0 against 10.0 -- not a precision
+    /// difference but two readers looking at different FILES. It appeared the day parallel ctest
+    /// was switched on and would have been blamed on the parser. The Rust fuzzer next door already
+    /// puts `std::process::id()` in its names for the same reason.
+    ///
+    /// `std::random_device` rather than a process id because there is no portable one in standard
+    /// C++, and this needs no platform headers to be right on all five targets.
+    static const std::string& processToken() {
+        static const std::string token = [] {
+            std::random_device rd;
+            return std::to_string((static_cast<std::uint64_t>(rd()) << 32) | rd());
+        }();
+        return token;
+    }
+
     std::filesystem::path path_;
     static inline int counter_ = 0;
 };
