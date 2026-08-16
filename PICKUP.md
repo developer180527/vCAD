@@ -1,10 +1,38 @@
 # Pick up here
 
-Written 15 Aug 2026, at the end of the session that ported the DXF reader to Rust. Everything below
-was verified on that commit, not remembered.
+Written 15 Aug 2026, at the end of a long session. Everything below was verified on that commit,
+not remembered.
 
 **The tree is green and every promise currently marked (RESOLVED) is genuinely tested.** Nothing is
 half-wired. You can start clean.
+
+---
+
+## What that session actually did
+
+Recorded because the sections below are organised by subject rather than by order, and the arc is
+hard to reconstruct from them.
+
+1. **Ported the DXF reader to Rust** behind an unchanged `importDxf`, with a neutral `RawEntity`
+   seam so both readers feed one sketch-building pass. Then **differentially fuzzed the two against
+   each other**, which found a real bug in the new parser and a worse one in CMake.
+2. **Extracted the reusable application shell** into `modules/proshell` — ribbon, theme, icons,
+   marking menu, `ShellWindow`, `HomePage` — with `proshell_probe` linking Qt and nothing else to
+   prove the boundary. `proshell` contains no occurrence of the string "cad".
+3. **Cut two of the three edges** tying the recompute engine to the B-rep kernel, so the engine is
+   now reusable by an application with no geometry.
+4. **Enforced two plugin-contract rules** that had only ever been prose: re-entrancy and
+   determinism (ABI 1.17).
+5. **Took CI from three platforms to five** and made it able to fail honestly. It then found ten
+   real bugs across MSVC, gcc, and arm64 — see the CI section.
+6. **Consolidated the FFI declarations**, which surfaced an 8-byte stack overflow that had been
+   present on every platform since ABI 1.15.
+7. Wrote two review documents: `docs/design/COMPETITIVE_REVIEW.md` (how far from
+   SolidWorks/Inventor, with the numbers counted) and `docs/design/PDF_EDITOR.md` (a concept note,
+   committed to nothing).
+
+**Next is features, not architecture.** The plugin loader (step 6), then the boring important
+tools. See "Then".
 
 ---
 
@@ -13,15 +41,17 @@ half-wired. You can start clean.
 | Check | Result |
 |---|---|
 | C++ tests (`ctest --test-dir build`) | green |
-| Rust tests (`cd tests-rs && cargo test --workspace`) | green; `plugin_host.rs` 29, plus `sequences.rs`, `concurrency.rs`, `dxf_fuzz.rs` |
+| Rust tests (`cd tests-rs && cargo test --workspace`) | green; `plugin_host.rs` 37, plus `sequences.rs`, `concurrency.rs`, `dxf_fuzz.rs`, `abi_declarations.rs` |
 | Parser tests (`cd rust/cad-parse && cargo test`) | green |
 | DXF differential (`ctest -R dxf_differential`) | green; 0 value disagreements in 600 mutations |
 | DXF fallback (`-DCAD_USE_RUST_DXF=OFF`, rebuild, rerun) | green; differential skips |
 | Layering (`cmake --build build`) | Layering OK |
 | Qt shell (`cmake --build build-qt --target vcad`) | builds clean |
-| ABI golden snapshot | no drift, regenerated for 1.16 |
+| ABI golden snapshot | no drift, regenerated for **1.17** |
+| Qt shell boundary (`ctest -R proshell_boundary`) | green; `proshell` links Qt and nothing else |
+| CI matrix | 5 platforms — Windows x64/arm64, Linux x64/arm64, macOS arm64 |
 
-**153 tests in `tests-rs`, 26 in `rust/cad-parse`, 35 C++ tests, zero failures** at the time of
+**158 tests in `tests-rs`, 26 in `rust/cad-parse`, 35 C++ tests, zero failures** at the time of
 writing.
 
 Two build directories, on purpose: `build` (core, tests, spikes) and `build-qt` (renderer + Qt
@@ -207,6 +237,78 @@ Still prose, and unenforceable until the calls exist: the rest of §4.6 (`txn_be
 `register_command` are declared and NULL), §4.4 capabilities (advisory until sandboxing, and the
 contract says so), §4.7 dependency isolation (needs the loader).
 
+## The reusable shell: `modules/proshell`
+
+A linkable Qt library holding the ribbon, theme, icon machinery, marking menu, `ShellWindow` frame
+and `HomePage`. **It contains no occurrence of the string "cad".** vCAD supplies its command
+catalogue, its glyph vocabulary, its browser and property table, and an ~80-line `CadHomeModel`.
+
+The barrier was never coupling — `Ribbon`, `Theme` and `MarkingMenu` moved with no edit beyond the
+namespace. It was that `shell_qt` was a single `qt_add_executable`, so there was no artifact to
+link.
+
+**`proshell_probe` is the part that matters.** It links `proshell` and Qt and nothing else, builds a
+whole application in an architecture vocabulary, and runs headless as ctest `proshell_boundary`.
+Without it, "this library is reusable" is a claim with one consumer. It bites: adding
+`#include "cad/sketch/Sketch.h"` to `Theme.cpp` fails with *file not found*, because proshell's
+include path has no `core/`. Compile time, not link time.
+
+Two design decisions worth not relitigating:
+
+- **`ShellWindow` has no document model.** No `IDocumentHost`, no virtual `documentCount()`. The
+  subclass gets the tab bar and the page stack and wires them in a dozen lines. An interface written
+  now would be shaped entirely by vCAD, and sessions, environments and "Home is not a document" are
+  vCAD's ideas *about* documents rather than facts about applications.
+- **`HomePage` DOES get an interface**, and the inconsistency is deliberate. A home page is a
+  finished screen rather than a container, and what varies is four enumerable pieces of data:
+  product name, document kinds, recent list, workspace summary. The test is not "is an interface
+  good" but "do I know the whole surface".
+
+Icons split along the same line: the library owns the machinery (device pixel ratio, pen width, the
+`QIcon`) plus the glyphs every professional application shares; the application registers its own
+vocabulary through a provider. A library shipping `extrude` would be a CAD library wearing a
+generic name.
+
+**Still vCAD's, correctly**: `Viewport` and `SketchCanvas`. What does not exist in either place is a
+generic *viewport container* — the widget hosting a renderer surface with a ViewCube and navigation
+bar. That is the next piece of shell worth extracting, and it does not exist yet at all.
+
+---
+
+## CI: five platforms, and the ten bugs they found
+
+The matrix runs Windows x64 and arm64, Linux x64 and arm64, and macOS arm64, plus a lint job and an
+ASan/UBSan job. Windows arm64 is there for Surface tablets.
+
+**Read this before adding a platform**, because the pattern repeated: nearly every failure was a
+real bug that macOS could not have shown, and two were bugs in things that had never run at all.
+
+| Found by | Bug |
+|---|---|
+| Lint | `cargo fmt` had been failing for several commits, and `test: needs: lint` meant **no platform had built at all**. That was the actual reason the Rust integration had never run off this machine. |
+| Linux gcc | `std::max({...})` without `<algorithm>` — libc++ pulls it in through `<string>`, libstdc++ does not. In the DXF spike *and* in a differential test written the same week. |
+| Linux | bgfx wants `-lwayland-egl`; `libxrandr`/`libxinerama`/`libxcursor` missing too. Neither job had ever reached a link. |
+| MSVC | An anonymous namespace nested inside `extern "C"` still gives its functions C linkage, so a helper returning `std::pair` was a warning on clang and four errors on MSVC. That warning had been visible on macOS for weeks and read as pedantry. |
+| MSVC | `rustc --print native-static-libs` mixes libraries with linker FLAGS; `/defaultlib:msvcrt` is a path as far as CMake is concerned. macOS and Linux print only `-l` tokens. |
+| MSVC | `planegcs.dll` had no import library — vendored sources carry no `__declspec(dllexport)`. Fixed with `WINDOWS_EXPORT_ALL_SYMBOLS`; making it STATIC also "works" and quietly changes our LGPL position. |
+| Windows | No rpath: `cad_tests.exe` could not find `planegcs.dll`. Fixed in the build (`CMAKE_RUNTIME_OUTPUT_DIRECTORY` on WIN32 only), not in the workflow — it was equally broken for anyone running ctest on Windows. |
+| Windows | Python extension could not load its DLLs. **Since Python 3.8 an extension does not resolve dependent DLLs through `PATH`**, so no workflow environment fix could have helped. |
+| Linux arm64 | vcpkg downloads its own CMake/Ninja **for x64 only**; needs `VCPKG_FORCE_SYSTEM_BINARIES=1` and a system CMake new enough for its scripts. |
+| Linux arm64 | An FFI declaration mismatch that had been passing on garbage in a return register — see the FFI section. |
+| Linux arm64 | `glfw3` was in `vcpkg.json`, used by nothing, and pulled the X11/xcb chain from source; one tarball 504'd reliably enough to stop that job ever completing. Removed. |
+
+Two structural notes:
+
+- The vcpkg cache key is per-triplet (`format('cmake/triplets/{0}.cmake', matrix.triplet)`).
+  Globbing the directory means adding a platform invalidates every existing platform's hour-long
+  cache.
+- **Linux arm64 does not build the Qt shell** (`expect_shell: false`). Qt ships no desktop
+  linux/arm64 installer binaries and Ubuntu 24.04's own Qt is 6.4.2 against the 6.5 `shell_qt`
+  requires. Stated in the matrix rather than discovered, because otherwise the
+  "tests that matter are registered" guard fails that job for a non-bug.
+
+---
+
 ## The platform tier: two of three edges cut
 
 The reusable thing in this codebase is not the shell, it is **a parametric document with a cached
@@ -321,14 +423,34 @@ losing work would care about.
    absent. For a tool someone keeps a day's work in, this is a larger reliability risk than
    anything above — and native plugins being able to take the process down makes it worse.
 
-## Then
+## Then — and the priority has changed
+
+**The next work is features, not architecture.** That is a deliberate decision taken at the end of
+the session, and `docs/design/COMPETITIVE_REVIEW.md` is the argument for it: 46 of ~73 ribbon
+entries are disabled stand-ins, there are 11 feature types against SolidWorks' hundred or so, and
+one of four document kinds is implemented. The expensive-to-retrofit work is done. The
+characteristic risk of that ordering is architecture that never meets features, in a codebase whose
+culture makes the remaining work the least attractive kind.
+
+So: the loader first, because it is the one architectural item that unblocks a whole category, and
+then the boring important tools.
 
 6. **The loader** — discovery, manifest, `dlopen` with `RTLD_LOCAL`, lifecycle. Plus the
    compatibility museum and the hostile-plugin test. Built last, deliberately: the loader is the
-   first client and a client freezes the design it is built against.
+   first client and a client freezes the design it is built against. **It is also the thing that
+   turns the plugin ABI from a well-designed contract with zero clients into something real** — no
+   third-party plugin has ever been loaded, and every plugin test to date runs an in-process fake.
 7. **WASM sandbox ADR** — decided in principle (`PLUGIN_CONTRACT.md` §9). Needs: memory ownership
    across the linear-memory boundary, what a handle means when the guest cannot hold a host
    pointer, and the per-recompute performance cost.
+
+**And after the loader, the features.** `COMPETITIVE_REVIEW.md` names **assemblies** as the single
+objective that would move vCAD from impressive architecture to a usable tool: it is the last gap
+that is architectural rather than merely long (it needs references BETWEEN documents, which the
+document model does not have), it is what these products fundamentally are, and it exercises the
+document model, the naming layer and the cache together at a scale a single part never reaches —
+which is exactly where the two performance ceilings below stop being footnotes. Drawings are second
+and are more laborious than architectural; hidden-line removal is already linked through `TKHLR`.
 
 Also open, from the performance work and not on the plugin thread at all:
 
@@ -418,6 +540,19 @@ main thread in an ordinary Qt repaint, not in the grab.
   says so. This is the one real boundary on the decade promise and it is deliberate.
 
 ---
+
+## Documents worth reading before starting
+
+- `docs/design/COMPETITIVE_REVIEW.md` — how far from SolidWorks and Inventor, with every vCAD
+  number counted from the tree rather than remembered. Read it before deciding what to build next;
+  it is the argument for the priority change above.
+- `docs/design/PLUGIN_CONTRACT.md` — the contract, the incumbents' mistakes it was designed
+  against, and §8's implementation order. Steps 1–4 are RESOLVED; 5 and 6 are not.
+- `docs/design/PDF_EDITOR.md` — a concept note for a second product on these primitives.
+  **Committed to nothing**, and deliberately parked: the decision at the end of the session was to
+  finish this one first. It also happens to answer the open question about the third platform edge.
+- `docs/design/SHELL_INVENTORY.md` — corrected 15 Aug; the 3D viewport row had said "Placeholder"
+  long after bgfx started presenting directly. Other rows may have drifted the same way.
 
 `docs/STATUS.md` was last audited 13 Aug and is now well behind, missing the renderer and plugin
 threads entirely. Its own header warns that reading it without re-auditing is how it starts lying.
