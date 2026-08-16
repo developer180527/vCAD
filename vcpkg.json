@@ -13,7 +13,6 @@
         "tools"
       ]
     },
-    "glfw3",
     "sqlite3",
     "boost-graph",
     "boost-math",
@@ -41,5 +40,5 @@
   "$comment-dime": "DXF read and write (Coin3D dime), BSD-3-Clause. Chosen over libdxfrw and dxflib specifically because those are GPL-2.0: linking either would raise vCAD floor to GPL and make proprietary plugins impossible. See COPYRIGHT.md. Entity coverage includes Line/Arc/Circle/Ellipse/Spline/LWPolyline/Polyline/Point/Insert, and UnknownEntity round-trips what it does not parse.",
   "$comment-boost": "planegcs needs Boost.Graph (connected_components, to partition a sketch into independent subsystems) and Boost.Math (constants). Header-only, so vcpkg copies headers rather than compiling. Requested instead of patching the vendored solver: reimplementing connected_components would be reinventing, and every edit to vendored code makes the next upstream sync a merge.",
   "$comment-sqlite3": "The native document format (ADR 0003). Requested explicitly rather than relying on the platform's copy: macOS and most Linux ship libsqlite3, Windows ships nothing, and assetlib's find_package(SQLite3 QUIET) was silently picking up the system one. A single C file -- seconds to build, and it does not touch OCCT.",
-  "$comment-bgfx": "bgfx 1.129 with [tools] for shaderc. The tools feature pulls glslang and spirv-tools -- a real but one-time build. Compiling shaders from source beats checking in per-platform binary blobs nobody can regenerate. glfw3 is for the dev viewer only."
+  "$comment-bgfx": "bgfx 1.129 with [tools] for shaderc. The tools feature pulls glslang and spirv-tools -- a real but one-time build. Compiling shaders from source beats checking in per-platform binary blobs nobody can regenerate. glfw3 was removed on 15 Aug 2026: nothing linked it. The only two mentions left in the tree are comments, one of which records that the hidden GLFW window it existed for had already been deleted. It pulled vcpkg's whole X11/xcb chain from source on Linux, and one of those tarballs (xcb-util-m4, from gitlab.freedesktop.org) served 504s reliably enough to keep the arm64 job from ever completing a cold build."
 }
