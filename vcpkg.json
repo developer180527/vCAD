@@ -5,7 +5,11 @@
   "description": "Cross-platform parametric CAD",
   "$comment-opencascade": "OCCT 8.0.1 (2026-07-30). C++17 minimum. DataExchange toolkits are TKDE*-prefixed since 7.8. VTK deliberately not requested; it is off by default in OCCT 8 anyway. The freetype default feature is kept: dropping it would shed fontconfig/gperf/brotli/libpng, but that is minutes against OCCT's own 30-60, and a USE_FREETYPE=OFF build is unverified \u2014 it would fail deep into the OCCT compile, costing a full CI cycle per attempt.",
   "dependencies": [
-    "opencascade",
+    {
+      "name": "opencascade",
+      "$comment": "default-features OFF drops opencascade's `freetype` feature, which pulls freetype AND fontconfig. Both are hosted on gitlab.freedesktop.org, which serves 504s reliably enough from the GitHub arm64 runners that the Linux arm64 job could never finish a cold build -- three separate runs, three different packages from that one host. We never use OCCT's text rendering: nothing links TKV3d or TKService, and the renderer is bgfx. USE_FREETYPE only feeds OCCT's own visualisation.",
+      "default-features": false
+    },
     "eigen3",
     {
       "name": "bgfx",
