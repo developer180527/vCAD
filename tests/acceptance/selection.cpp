@@ -358,3 +358,43 @@ TEST_CASE("edges from two bodies are refused rather than half-used", "[selection
     CHECK(lastStatus.find("one body") != std::string::npos);
     CHECK(app.tree().size() == before);   // nothing was added
 }
+
+TEST_CASE("a selection marks the scene's highlight table", "[selection][render]") {
+    // The step between "selected" and "visible". The highlight table is what the renderer reads, and
+    // for a long time the backend ignored it entirely -- so a selection that never reaches this table
+    // and a table the shader never samples look identical from the outside: nothing turns blue.
+    Controller app;
+    const auto id = create(app, "feature.box");
+
+    const auto marked = [&app] {
+        std::size_t n = 0;
+        for (const auto h : app.frame().highlights) {
+            if (h != cad::render::Highlight::None) ++n;
+        }
+        return n;
+    };
+
+    app.clearSelection();
+    REQUIRE(app.frame().elementCount > 0);
+    CHECK(marked() == 0);
+
+    // A whole body marks every element it owns -- 18 for a box, 6 faces and 12 edges.
+    app.setSelection({id});
+    CHECK(marked() == 18);
+
+    app.clearSelection();
+    CHECK(marked() == 0);
+
+    // One face marks exactly one.
+    const auto faces = slotsAcceptedAt(app, id, Level::Face);
+    REQUIRE_FALSE(faces.empty());
+    app.setSelectionLevel(Level::Face);
+    app.scriptNextPick(faces.front());
+    app.clickAt(10, 10, false);
+    CHECK(marked() == 1);
+
+    // Hover adds a second mark without replacing the selection.
+    app.scriptNextPick(faces.back());
+    app.hoverAt(20, 20);
+    CHECK(marked() == 2);
+}

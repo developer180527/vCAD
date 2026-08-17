@@ -760,6 +760,16 @@ void MainWindow::openDemoDocument() {
     refreshStatus();
 }
 
+void MainWindow::selectBrowserRowForShot(int row) {
+    // The Nth FEATURE, which is a child of the document root -- not the Nth top-level row. Row 0 at
+    // top level is "Part1", whose id is 0 because it is the document rather than a feature, so
+    // selecting it correctly selects nothing and looks exactly like selection being broken.
+    if (browser_ == nullptr || browser_->topLevelItemCount() == 0) return;
+    auto* root = browser_->topLevelItem(0);
+    if (root == nullptr || row < 0 || row >= root->childCount()) return;
+    browser_->setCurrentItem(root->child(row));
+}
+
 void MainWindow::createDocument(DocumentKind kind) {
     if (!cad::app::implemented(kind)) {
         setStatusMessage(
@@ -1015,11 +1025,19 @@ void MainWindow::buildBrowserAndProperties() {
         if (updatingUi_) return;
         auto* c = controller();
         if (c == nullptr) return;
-        c->clearSelection();
+
+        // Read the rows BEFORE touching the controller. This is why selecting in the browser never
+        // worked: clearSelection() notifies, the notification runs refreshTree() synchronously, and
+        // refreshTree() begins with browser_->clear() -- which destroys the very items the loop was
+        // about to read. The loop then found an empty list and selected nothing, so a click in the
+        // Model panel left the selection empty and the viewport unmarked.
+        std::vector<cad::document::ObjectId> ids;
         for (auto* item : browser_->selectedItems()) {
             const auto id = item->data(0, Qt::UserRole).toULongLong();
-            if (id != 0) c->select(cad::document::ObjectId{id}, true);
+            if (id != 0) ids.push_back(cad::document::ObjectId{id});
         }
+        // One call, so one notification and one tree rebuild -- rather than N+1 of each.
+        c->setSelection(std::move(ids));
     });
 
     auto* propertiesDock = rightDock();

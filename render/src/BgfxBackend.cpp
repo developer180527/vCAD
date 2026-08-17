@@ -13,9 +13,21 @@
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
+#include <span>
 #include <vector>
 
 namespace cad::render {
+namespace {
+
+/// Width of the per-element highlight lookup, in texels.
+///
+/// Rows rather than one long texture because the maximum 2D texture dimension is 16384 on plenty of
+/// hardware and a large assembly has more elements than that. 4096 keeps the row count small while
+/// staying far inside every limit.
+constexpr std::uint16_t kHighlightLutWidth = 4096;
+
+}  // namespace
+
 namespace {
 
 using kernel::Error;
@@ -351,6 +363,25 @@ struct BgfxBackend::Impl {
 
     bgfx::UniformHandle uShading = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle uHighlight = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle sHighlight = BGFX_INVALID_HANDLE;
+
+    /// Per-element highlight state, as a texture the shader looks up by element slot.
+    ///
+    /// A texture rather than a uniform because `u_highlight` was a uniform and that is exactly why
+    /// nothing was ever highlighted: a uniform is per DRAW CALL, and a draw call covers a whole mesh
+    /// across every placement of it. Selection is per element. There was no value to put in the
+    /// uniform that could mean "this face and not the other five", so it was set to zero strength
+    /// permanently and the highlight table the scene had been maintaining went nowhere.
+    ///
+    /// R8, one byte per element slot, laid out in rows of `kHighlightLutWidth`. The shaded vertex
+    /// shader already carries the absolute slot in `v_ids.x` for picking; this reuses it.
+    bgfx::TextureHandle highlightLut = BGFX_INVALID_HANDLE;
+    std::uint16_t highlightLutHeight = 0;
+    /// The last bytes uploaded, so an idle redraw uploads nothing. Hover fires on every mouse-move.
+    std::vector<std::uint8_t> highlightUploaded;
+
+    /// Uploads `highlights` if they changed, and binds the lookup. Returns the LUT dimensions.
+    void syncHighlights(std::span<const Highlight> highlights);
     bgfx::UniformHandle uEdgeParams = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle uEdgeColor = BGFX_INVALID_HANDLE;
 
@@ -446,9 +477,53 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readTarget(
 
 void BgfxBackend::Impl::applyShadingUniforms() {
     const float shading[4]{config.ambient, 0, 0, 0};
-    const float noHighlight[4]{0, 0, 0, 0};
     if (bgfx::isValid(uShading)) bgfx::setUniform(uShading, shading);
-    if (bgfx::isValid(uHighlight)) bgfx::setUniform(uHighlight, noHighlight);
+    // u_highlight now carries the LOOKUP GEOMETRY, not a colour: xy are the texture dimensions the
+    // shader needs to turn an element slot into a texel, z is whether a lookup is available at all.
+    // The tint per highlight kind lives in the shader, because it has to vary per fragment and a
+    // uniform cannot do that -- which was the original mistake.
+    const float lut[4]{static_cast<float>(kHighlightLutWidth),
+                       static_cast<float>(highlightLutHeight),
+                       bgfx::isValid(highlightLut) ? 1.0f : 0.0f, 0.0f};
+    if (bgfx::isValid(uHighlight)) bgfx::setUniform(uHighlight, lut);
+    if (bgfx::isValid(sHighlight) && bgfx::isValid(highlightLut)) {
+        bgfx::setTexture(0, sHighlight, highlightLut);
+    }
+}
+
+void BgfxBackend::Impl::syncHighlights(std::span<const Highlight> highlights) {
+    if (highlights.empty()) {
+        highlightLutHeight = 0;
+        return;
+    }
+
+    const std::uint16_t rows = static_cast<std::uint16_t>(
+        (highlights.size() + kHighlightLutWidth - 1) / kHighlightLutWidth);
+
+    // Recreated only when it must GROW, and never shrunk: a texture destroyed and recreated while
+    // the previous frame is still in flight is a use-after-free bgfx cannot warn about, and the
+    // rows are a few kilobytes each.
+    if (!bgfx::isValid(highlightLut) || rows > highlightLutHeight) {
+        if (bgfx::isValid(highlightLut)) bgfx::destroy(highlightLut);
+        highlightLutHeight = rows;
+        highlightLut = bgfx::createTexture2D(kHighlightLutWidth, highlightLutHeight, false, 1,
+                                             bgfx::TextureFormat::R8,
+                                             BGFX_SAMPLER_POINT | BGFX_SAMPLER_UVW_CLAMP);
+        highlightUploaded.clear();   // a new texture has no contents to compare against
+    }
+
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(kHighlightLutWidth) * highlightLutHeight,
+                                    0);
+    for (std::size_t i = 0; i < highlights.size(); ++i) {
+        bytes[i] = static_cast<std::uint8_t>(highlights[i]);
+    }
+    // Skipped when nothing changed. Hover fires on every mouse-move, and re-uploading an unchanged
+    // table each frame would spend bandwidth to deliver no pixels.
+    if (bytes == highlightUploaded) return;
+
+    bgfx::updateTexture2D(highlightLut, 0, 0, 0, 0, kHighlightLutWidth, highlightLutHeight,
+                          bgfx::copy(bytes.data(), static_cast<std::uint32_t>(bytes.size())));
+    highlightUploaded = std::move(bytes);
 }
 
 std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::ViewId view,
@@ -546,6 +621,10 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
     bgfx::touch(kViewShaded);
     bgfx::setViewTransform(kViewShaded, frame.camera.view.m, frame.camera.projection.m);
     if (bgfx::isValid(impl_.colourFb)) bgfx::setViewFrameBuffer(kViewShaded, impl_.colourFb);
+
+    // Before any pass that reads it, and once per frame rather than per batch: the table covers
+    // every element in the scene, not one mesh.
+    impl_.syncHighlights(frame.highlights);
 
     if (frame.showShaded && bgfx::isValid(impl_.shaded)) {
         impl_.stats.drawCalls += impl_.submitBatches(
@@ -777,6 +856,7 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     impl_->uHighlight = bgfx::createUniform("u_highlight", bgfx::UniformType::Vec4);
     impl_->uEdgeParams = bgfx::createUniform("u_edgeParams", bgfx::UniformType::Vec4);
     impl_->uEdgeColor = bgfx::createUniform("u_edgeColor", bgfx::UniformType::Vec4);
+    impl_->sHighlight = bgfx::createUniform("s_highlight", bgfx::UniformType::Sampler);
 
     const auto program = [](const char* vs, const char* fs) -> bgfx::ProgramHandle {
         bgfx::ShaderHandle v = loadShader(vs);

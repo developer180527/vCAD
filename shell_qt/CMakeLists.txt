@@ -42,12 +42,24 @@ cad_set_warnings(vcad)
 # The shader binaries have to sit beside the binary, because that is where main.cpp now tells
 # the renderer to look. cad_shaders writes them to ${CMAKE_BINARY_DIR}/shaders, which is beside
 # the SPIKES, not beside the shell.
+#
+# Driven by the shader FILES rather than by a POST_BUILD step on vcad. POST_BUILD only runs when vcad
+# relinks, so a shader-only edit compiled into ${CMAKE_BINARY_DIR}/shaders and never arrived here --
+# the app kept loading the previous binary, and the symptom was a shader change having no effect at
+# all, which reads as the change being wrong rather than absent.
 if(TARGET cad_shaders)
-  add_dependencies(vcad cad_shaders)
-  add_custom_command(TARGET vcad POST_BUILD
+  get_target_property(_shader_outputs cad_shaders CAD_SHADER_OUTPUTS)
+  set(_shader_stamp "${CMAKE_CURRENT_BINARY_DIR}/shaders.stamp")
+  add_custom_command(
+    OUTPUT "${_shader_stamp}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:vcad>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_shader_stamp}"
+    DEPENDS ${_shader_outputs}
     COMMENT "Copying shader binaries beside vcad")
+  add_custom_target(vcad_shaders ALL DEPENDS "${_shader_stamp}")
+  add_dependencies(vcad_shaders cad_shaders)
+  add_dependencies(vcad vcad_shaders)
 endif()
 
 set_target_properties(vcad PROPERTIES

@@ -115,6 +115,18 @@ void Controller::select(ObjectId id, bool additive) {
     notifyDocument();
 }
 
+void Controller::setSelection(std::vector<ObjectId> ids) {
+    // Nulls dropped rather than stored: a null id selects nothing, and keeping one would make
+    // selection().size() disagree with what is actually selected.
+    ids.erase(std::remove_if(ids.begin(), ids.end(),
+                             [](ObjectId id) { return id.isNull(); }),
+              ids.end());
+    selection_ = std::move(ids);
+    elementSelection_.clear();
+    refreshHighlights();
+    notifyDocument();
+}
+
 void Controller::clearSelection() {
     selection_.clear();
     elementSelection_.clear();
@@ -683,6 +695,12 @@ void Controller::refreshHighlights() {
     }
 
     if (hoveredSlot_) scene_->setHighlight(*hoveredSlot_, render::Highlight::Hovered);
+
+    // A view change, not a document change: nothing about the model moved, but the pixels differ.
+    // Without this, selecting in the model tree updated the highlight table and never asked anyone
+    // to repaint, so the viewport kept showing the previous frame -- which looks exactly like
+    // selection not working.
+    notifyView();
 }
 
 Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bool additive) {

@@ -53,6 +53,13 @@ public:
     void openDemoDocument();
     /// Screenshot support for the plugin manager, which is a window of its own.
     void openPluginManagerForShot();
+
+    /// Selects a row of the model browser, for `--shot --select N`.
+    ///
+    /// Through the browser rather than through Controller::select, so what the screenshot proves is
+    /// the whole path a user takes: click a row, the controller marks the geometry, the viewport
+    /// repaints. Calling the controller directly would skip exactly the part that was broken.
+    void selectBrowserRowForShot(int row);
     [[nodiscard]] QPixmap grabPluginManager();
 
 protected:

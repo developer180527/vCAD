@@ -103,4 +103,9 @@ function(cad_compile_shaders target)
   endforeach()
 
   add_custom_target(${target} ALL DEPENDS ${_all_outputs})
+  # Published so a consumer can depend on the FILES, not just on the target. A POST_BUILD copy on an
+  # executable only runs when that executable relinks, so editing a shader alone left the old binary
+  # sitting beside the app -- the edit compiled, was never copied, and the app ran the previous
+  # shader with nothing to indicate why the change had no effect.
+  set_property(TARGET ${target} PROPERTY CAD_SHADER_OUTPUTS "${_all_outputs}")
 endfunction()

@@ -117,7 +117,7 @@ std::string startLogging(const char* argv0) {
     return path;
 }
 
-/// Renders the window to a PNG and exits: `vcad --shot out.png [--tab N]`.
+/// Renders the window to a PNG and exits: `vcad --shot out.png [--tab N] [--select N]`.
 ///
 /// Here for the same reason the renderer now needs pixel assertions. A UI that is only ever
 /// described is a UI nobody has checked, and "the ribbon has an Inspect tab" is a claim about
@@ -128,7 +128,7 @@ std::string startLogging(const char* argv0) {
 /// layout that follows only lands on the second. Grabbing after one turn catches the window
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
-               bool home, bool plugins) {
+               bool home, bool plugins, int select) {
     window.show();
 
     // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
@@ -136,7 +136,7 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
     // do that on the main thread before app.exec() and the run loop is not being serviced, so the
     // two wait on each other forever. No output, no error, no window -- which is what this mode
     // did when the viewport started rendering for real.
-    QTimer::singleShot(0, &app, [&app, &window, path, tab, home, plugins] {
+    QTimer::singleShot(0, &app, [&app, &window, path, tab, home, plugins, select] {
         // A populated document, because an empty Home page says nothing about the ribbon and the
         // docks, which is the part being reviewed. `--home` skips it to shoot Home itself.
         if (!home) window.openDemoDocument();
@@ -144,6 +144,8 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
         // `--plugins` shoots the plugin manager rather than the main window. A dialog is a UI
         // surface like any other, and one that is only ever described is one nobody has checked.
         if (plugins) window.openPluginManagerForShot();
+        // After the document exists, so there is something to select.
+        if (select >= 0) window.selectBrowserRowForShot(select);
 
         QTimer::singleShot(0, &app, [&app, &window, path, plugins] {
             const QPixmap shot = plugins ? window.grabPluginManager() : window.grab();
@@ -190,6 +192,7 @@ int main(int argc, char** argv) {
     int shotTab = -1;
     bool shotHome = false;
     bool shotPlugins = false;
+    int shotSelect = -1;
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
         if (arg == QStringLiteral("--shot") && i + 1 < argc) {
@@ -200,6 +203,8 @@ int main(int argc, char** argv) {
             shotHome = true;
         } else if (arg == QStringLiteral("--plugins")) {
             shotPlugins = true;
+        } else if (arg == QStringLiteral("--select") && i + 1 < argc) {
+            shotSelect = QString::fromUtf8(argv[++i]).toInt();
         }
     }
 
@@ -214,7 +219,7 @@ int main(int argc, char** argv) {
 
     cadqt::MainWindow window;
     if (!shotPath.isEmpty()) {
-        return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins);
+        return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins, shotSelect);
     }
 
     window.show();

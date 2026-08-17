@@ -136,6 +136,14 @@ public:
     [[nodiscard]] CommandContext context() const;
 
     void select(document::ObjectId, bool additive);
+
+    /// Replaces the whole selection in ONE step.
+    ///
+    /// Exists because the incremental form is a trap for a shell whose tree rebuilds on notification:
+    /// clear-then-select-each fires N+1 notifications, each rebuilding the widget the caller is
+    /// iterating. One call, one notification, one rebuild.
+    void setSelection(std::vector<document::ObjectId>);
+
     void clearSelection();
     [[nodiscard]] const std::vector<document::ObjectId>& selection() const noexcept {
         return selection_;
