@@ -1223,6 +1223,143 @@ bool Controller::applySketchRadius(double millimetres) {
     return true;
 }
 
+void Controller::setSketchTool(SketchTool tool) {
+    if (sketchTool_ == tool) return;
+    sketchTool_ = tool;
+    // Abandoned, not carried across. A line waiting for its second point means nothing to the
+    // circle tool, and keeping it is how a stray segment appears from a click made a minute ago.
+    sketchPending_.reset();
+    notifyView();
+}
+
+bool Controller::sketchClickAt(float x, float y) {
+    if (environment_ != Environment::Sketch || !editing_.has_value()) return false;
+    if (sketchTool_ == SketchTool::Select) return false;
+
+    const auto point = sketchPointAt(x, y);
+    // Refused rather than snapped to something arbitrary. A click that missed the plane -- edge-on,
+    // or a grazing angle -- has no sketch coordinate, and inventing one puts geometry where the
+    // user cannot see it.
+    if (!point) {
+        status("That click did not land on the sketch plane.");
+        return false;
+    }
+
+    if (!sketchPending_) {
+        sketchPending_ = *point;
+        status(sketchTool_ == SketchTool::Line ? "Line: click the end point"
+                                               : "Circle: click to set the radius");
+        notifyView();
+        return true;
+    }
+
+    const std::array<double, 2> first = *sketchPending_;
+    sketchPending_.reset();
+
+    if (sketchTool_ == SketchTool::Line) {
+        const double dx = (*point)[0] - first[0];
+        const double dy = (*point)[1] - first[1];
+        // A zero-length line is a double-click, not a request. It would be refused by addLine
+        // anyway on the next solve, but silently: better to say nothing was drawn.
+        if (std::abs(dx) < 1e-9 && std::abs(dy) < 1e-9) {
+            status("A line needs two different points.");
+            return false;
+        }
+        editing_->addLine(first[0], first[1], (*point)[0], (*point)[1]);
+    } else {
+        const double dx = (*point)[0] - first[0];
+        const double dy = (*point)[1] - first[1];
+        const double radius = std::sqrt(dx * dx + dy * dy);
+        if (radius < 1e-9) {
+            status("A circle needs a radius.");
+            return false;
+        }
+        editing_->addCircle(first[0], first[1], radius);
+    }
+
+    // Every mutation is followed by a solve, because a sketch that does not follow its constraints
+    // while you draw is not a sketch -- it is a drawing that will jump when you finally solve it.
+    lastSketchSolve_ = editing_->solve();
+    status(lastSketchSolve_.message);
+    notifyDocument();
+    notifyView();
+    return true;
+}
+
+std::vector<float> Controller::sketchOverlayVertices() const {
+    std::vector<float> out;
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) return out;
+
+    // The sketch's own frame, so the lines land exactly where sketchPointAt says the user clicked.
+    // Reusing that mapping rather than repeating it: two copies would drift, and the symptom would
+    // be geometry drawn one place and stored another.
+    const auto place = [&](double u, double v, std::array<float, 3>& xyz) {
+        const auto world = active->to3d(u, v);
+        xyz = {static_cast<float>(world[0]), static_cast<float>(world[1]),
+               static_cast<float>(world[2])};
+    };
+    const auto segment = [&](double u1, double v1, double u2, double v2) {
+        std::array<float, 3> a{};
+        std::array<float, 3> b{};
+        place(u1, v1, a);
+        place(u2, v2, b);
+        out.insert(out.end(), a.begin(), a.end());
+        out.insert(out.end(), b.begin(), b.end());
+    };
+
+    for (const auto& g : active->geometry()) {
+        switch (g.kind) {
+            case sketch::GeoKind::Line:
+                segment(g.p[0], g.p[1], g.p[2], g.p[3]);
+                break;
+            case sketch::GeoKind::Circle: {
+                // Fixed segment count rather than sag-based: this is an editing overlay redrawn on
+                // every stroke, and a circle that changes its own facet count as it is resized
+                // shimmers distractingly while you drag.
+                constexpr int kSegments = 64;
+                for (int i = 0; i < kSegments; ++i) {
+                    const double a0 = 2.0 * std::numbers::pi * i / kSegments;
+                    const double a1 = 2.0 * std::numbers::pi * (i + 1) / kSegments;
+                    segment(g.p[0] + g.p[2] * std::cos(a0), g.p[1] + g.p[2] * std::sin(a0),
+                            g.p[0] + g.p[2] * std::cos(a1), g.p[1] + g.p[2] * std::sin(a1));
+                }
+                break;
+            }
+            case sketch::GeoKind::Arc: {
+                constexpr int kSegments = 32;
+                const double span = g.p[4] - g.p[3];
+                for (int i = 0; i < kSegments; ++i) {
+                    const double a0 = g.p[3] + span * i / kSegments;
+                    const double a1 = g.p[3] + span * (i + 1) / kSegments;
+                    segment(g.p[0] + g.p[2] * std::cos(a0), g.p[1] + g.p[2] * std::sin(a0),
+                            g.p[0] + g.p[2] * std::cos(a1), g.p[1] + g.p[2] * std::sin(a1));
+                }
+                break;
+            }
+            case sketch::GeoKind::Point:
+                break;   // nothing to draw as a line
+        }
+    }
+    return out;
+}
+
+std::uint64_t Controller::sketchOverlayRevision() const {
+    // FNV-1a over the vertices. A digest rather than a counter, for the same reason the instance
+    // buffers use one: an edit that does not change the geometry must not re-upload it, and a
+    // counter cannot tell the difference.
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const float f : sketchOverlayVertices()) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        for (int i = 0; i < 4; ++i) {
+            hash ^= (bits >> (i * 8)) & 0xffu;
+            hash *= 1099511628211ull;
+        }
+    }
+    return hash;
+}
+
 void Controller::alignCameraToSketch() {
     if (!editing_.has_value()) return;
 

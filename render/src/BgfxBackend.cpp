@@ -249,6 +249,35 @@ public:
         return slot.id;
     }
 
+    BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
+                                       std::span<const float> f) override {
+        if (f.empty()) return BufferId::None;
+        auto& slot = dynamicEdgeBuffers_[key];
+        if (slot.id != BufferId::None && slot.revision == revision) return slot.id;
+
+        const bgfx::Memory* mem = bgfx::copy(f.data(), static_cast<std::uint32_t>(f.size_bytes()));
+        if (slot.id == BufferId::None) {
+            // ALLOW_RESIZE for the same reason the instance buffer has it: a sketch grows as it is
+            // drawn, and without it bgfx TRIMS the update to the first allocation's size, so the
+            // lines drawn after some threshold would silently stop appearing.
+            const auto h = bgfx::createDynamicVertexBuffer(mem, edgeVertexLayout(),
+                                                          BGFX_BUFFER_ALLOW_RESIZE);
+            if (!bgfx::isValid(h)) return BufferId::None;
+            slot.id = BufferId{next_++};
+            entries_.emplace(static_cast<std::uint64_t>(slot.id),
+                             Entry{h.idx, Kind::DynamicEdge, f.size_bytes()});
+            resident_ += f.size_bytes();
+        } else {
+            Entry& entry = entries_.at(static_cast<std::uint64_t>(slot.id));
+            bgfx::update(bgfx::DynamicVertexBufferHandle{entry.idx}, 0, mem);
+            resident_ -= entry.bytes;
+            entry.bytes = f.size_bytes();
+            resident_ += entry.bytes;
+        }
+        slot.revision = revision;
+        return slot.id;
+    }
+
     void release(BufferId id) override {
         const auto it = entries_.find(static_cast<std::uint64_t>(id));
         if (it == entries_.end()) return;
@@ -261,6 +290,7 @@ public:
                 bgfx::destroy(bgfx::IndexBufferHandle{it->second.idx});
                 break;
             case Kind::Instance:
+            case Kind::DynamicEdge:
                 bgfx::destroy(bgfx::DynamicVertexBufferHandle{it->second.idx});
                 break;
         }
@@ -271,12 +301,15 @@ public:
         for (auto k = instanceBuffers_.begin(); k != instanceBuffers_.end(); ++k) {
             if (k->second.id == id) { instanceBuffers_.erase(k); break; }
         }
+        for (auto k = dynamicEdgeBuffers_.begin(); k != dynamicEdgeBuffers_.end(); ++k) {
+            if (k->second.id == id) { dynamicEdgeBuffers_.erase(k); break; }
+        }
         entries_.erase(it);
     }
 
     [[nodiscard]] std::uint64_t residentBytes() const override { return resident_; }
 
-    enum class Kind : std::uint8_t { Vertex, Index, Edge, Instance };
+    enum class Kind : std::uint8_t { Vertex, Index, Edge, Instance, DynamicEdge };
     struct Entry {
         std::uint16_t idx = bgfx::kInvalidHandle;
         Kind kind = Kind::Vertex;
@@ -301,6 +334,7 @@ public:
                     bgfx::destroy(bgfx::IndexBufferHandle{entry.idx});
                     break;
                 case Kind::Instance:
+                case Kind::DynamicEdge:
                     bgfx::destroy(bgfx::DynamicVertexBufferHandle{entry.idx});
                     break;
             }
@@ -340,6 +374,9 @@ private:
     std::unordered_map<std::string, BufferId> byContent_;
     std::unordered_map<std::uint64_t, Entry> entries_;
     std::unordered_map<std::uint64_t, InstanceSlot> instanceBuffers_;
+    /// Same slot shape as the instance buffers, and keyed the same way: one buffer per owner for
+    /// the life of an editing session rather than one per edit.
+    std::unordered_map<std::uint64_t, InstanceSlot> dynamicEdgeBuffers_;
     std::uint64_t next_ = 1;
     std::uint64_t resident_ = 0;
 };

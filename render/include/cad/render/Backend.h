@@ -208,6 +208,17 @@ public:
     virtual BufferId uploadInstances(std::uint64_t key, std::uint64_t revision,
                                     std::span<const Instance>) = 0;
 
+    /// Edge vertices that CHANGE, keyed and revisioned like instance data rather than content
+    /// hashed like a mesh.
+    ///
+    /// For geometry being edited: a sketch gains a line on every other click, and content hashing
+    /// it would mint a new buffer per stroke and keep every one of them, because a content-addressed
+    /// cache has no way to know the old contents will never be asked for again. Keyed by owner and
+    /// versioned by a digest of the data, so an editing session occupies one buffer no matter how
+    /// long it runs, and a frame where nothing changed re-uploads nothing.
+    virtual BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
+                                               std::span<const float>) = 0;
+
     virtual void release(BufferId) = 0;
 
     /// Bytes currently resident. Not diagnostics: the iPad build must shed buffers under

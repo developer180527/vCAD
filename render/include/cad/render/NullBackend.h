@@ -23,6 +23,8 @@ public:
     BufferId uploadVertices(const kernel::ShapeHash&, std::span<const CadVertex>) override;
     BufferId uploadIndices(const kernel::ShapeHash&, std::span<const std::uint32_t>) override;
     BufferId uploadEdgeVertices(const kernel::ShapeHash&, std::span<const float>) override;
+    BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
+                                       std::span<const float>) override;
     BufferId uploadInstances(std::uint64_t key, std::uint64_t revision,
                              std::span<const Instance>) override;
     void release(BufferId) override;
@@ -39,8 +41,11 @@ public:
     /// per EDITED batch rather than per batch in the document.
     [[nodiscard]] std::size_t instanceUploadCount() const noexcept { return instanceUploads_; }
     [[nodiscard]] std::size_t instanceSkipCount() const noexcept { return instanceSkips_; }
+    /// Uploads skipped because the sketch had not changed. The only way a test can tell a working
+    /// revision check from one that re-sends the whole sketch on every frame.
+    [[nodiscard]] std::size_t dynamicEdgeSkipCount() const noexcept { return dynamicEdgeSkips_; }
     void resetStats() noexcept {
-        uploads_ = deduped_ = instanceUploads_ = instanceSkips_ = 0;
+        uploads_ = deduped_ = instanceUploads_ = instanceSkips_ = dynamicEdgeSkips_ = 0;
     }
 
 private:
@@ -56,6 +61,7 @@ private:
 
     std::unordered_map<std::string, BufferId> byContent_;
     std::unordered_map<std::uint64_t, InstanceBuffer> instanceBuffers_;   ///< keyed by batch key
+    std::unordered_map<std::uint64_t, InstanceBuffer> dynamicEdgeBuffers_;  ///< keyed by owner
     std::unordered_map<std::uint64_t, std::uint64_t> sizes_;
     std::uint64_t next_ = 1;
     std::uint64_t residentBytes_ = 0;
@@ -63,6 +69,7 @@ private:
     std::size_t deduped_ = 0;
     std::size_t instanceUploads_ = 0;
     std::size_t instanceSkips_ = 0;
+    std::size_t dynamicEdgeSkips_ = 0;
 };
 
 class NullFrameSink final : public IFrameSink {

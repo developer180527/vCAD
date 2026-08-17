@@ -497,6 +497,50 @@ public:
     /// Device pixels, origin top-left — the same convention as `pickAt` and `clickAt`.
     [[nodiscard]] std::optional<std::array<double, 2>> sketchPointAt(float x, float y) const;
 
+    /// Which drawing tool the next click in the sketch means.
+    ///
+    /// Model state rather than shell state, for the same reason the pick is: two shells must agree
+    /// on what a click does, and a tool that lived in one shell's canvas would have to be
+    /// reimplemented — and re-debugged — in the next one.
+    enum class SketchTool { Select, Line, Circle };
+
+    [[nodiscard]] SketchTool sketchTool() const noexcept { return sketchTool_; }
+
+    /// Switching tools ABANDONS a half-drawn shape. A line waiting for its second point is not
+    /// something to carry into the circle tool, and silently keeping it is how a stray segment
+    /// appears from a click the user made a minute ago.
+    void setSketchTool(SketchTool);
+
+    /// What a click at these device pixels does, given the current tool.
+    ///
+    /// Two-click tools keep their first point here rather than in the shell, so both shells behave
+    /// identically and neither can forget to clear it. Returns whether the click was used: a click
+    /// that missed the plane (edge-on, or outside the sketch environment) is refused rather than
+    /// snapped to something arbitrary.
+    bool sketchClickAt(float x, float y);
+
+    /// The pending first point of a two-click tool, for drawing a rubber band. Empty when the next
+    /// click starts a shape rather than finishing one.
+    [[nodiscard]] const std::optional<std::array<double, 2>>& sketchPending() const noexcept {
+        return sketchPending_;
+    }
+
+    /// The sketch being edited, as world-space line segments: x,y,z per endpoint, two endpoints
+    /// per segment. Empty outside the sketch environment.
+    ///
+    /// Here rather than in the renderer because it needs the sketch's frame and the sketch's
+    /// geometry, and `render/` must depend on neither — it receives floats. Here rather than in the
+    /// shell because both shells need the same lines, and because a sketch being DRAWN is not in
+    /// the document yet: nothing else renders it, so without this the user draws blind.
+    ///
+    /// Curves are flattened here too. A circle mid-edit does not need the kernel's tessellator and
+    /// should not wait for a recompute to appear.
+    [[nodiscard]] std::vector<float> sketchOverlayVertices() const;
+
+    /// A digest of those vertices, for the renderer's revision check. Changes when the sketch
+    /// changes and not when the camera moves, which is what keeps an orbit from re-uploading it.
+    [[nodiscard]] std::uint64_t sketchOverlayRevision() const;
+
     /// Points the camera squarely at the sketch being edited, with the sketch's own v axis up.
     ///
     /// Called on entering the sketch environment. This is what "sketching happens in the same world
@@ -658,6 +702,10 @@ private:
     double viewportScale_ = 1.0;   ///< device pixel ratio, kept for layer resizes
 
     std::unique_ptr<render::SceneBuilder> scene_;
+    SketchTool sketchTool_ = SketchTool::Select;
+    /// First point of a two-click tool, in sketch coordinates.
+    std::optional<std::array<double, 2>> sketchPending_;
+
     render::CameraController camera_;
     render::Viewport viewport_;
 

@@ -205,3 +205,117 @@ TEST_CASE("editing a face-placed sketch aligns the camera and accepts clicks", "
     // which is the whole point, and was impossible before the frame was resolved on edit.
     CHECK(controller.sketchPointAt(600.0f, 400.0f).has_value());
 }
+
+TEST_CASE("clicks in the viewport draw into the sketch", "[sketch][viewport]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+
+    // Face-on, so every click lands and the pixels below are unambiguous.
+    controller.alignCameraToSketch();
+    const std::size_t before = controller.activeSketch()->geometry().size();
+
+    SECTION("a line takes two clicks and appears only on the second") {
+        controller.setSketchTool(app::Controller::SketchTool::Line);
+
+        REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+        // Nothing yet: a line with one point is not a line, and adding a degenerate one now would
+        // leave it in the sketch if the user changed their mind.
+        CHECK(controller.activeSketch()->geometry().size() == before);
+        CHECK(controller.sketchPending().has_value());
+
+        REQUIRE(controller.sketchClickAt(700.0f, 500.0f));
+        CHECK(controller.activeSketch()->geometry().size() == before + 1);
+        CHECK_FALSE(controller.sketchPending().has_value());
+    }
+
+    SECTION("switching tools abandons a half-drawn shape") {
+        controller.setSketchTool(app::Controller::SketchTool::Line);
+        REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+        REQUIRE(controller.sketchPending().has_value());
+
+        controller.setSketchTool(app::Controller::SketchTool::Circle);
+        CHECK_FALSE(controller.sketchPending().has_value());
+
+        // And the next two clicks make a CIRCLE, not a line finished with the stale point.
+        REQUIRE(controller.sketchClickAt(400.0f, 400.0f));
+        REQUIRE(controller.sketchClickAt(500.0f, 400.0f));
+        REQUIRE(controller.activeSketch()->geometry().size() == before + 1);
+        CHECK(controller.activeSketch()->geometry().back().kind == sketch::GeoKind::Circle);
+    }
+
+    SECTION("the select tool draws nothing") {
+        controller.setSketchTool(app::Controller::SketchTool::Select);
+        CHECK_FALSE(controller.sketchClickAt(300.0f, 300.0f));
+        CHECK(controller.activeSketch()->geometry().size() == before);
+    }
+
+    SECTION("a line drawn at known pixels lands at the matching sketch coordinates") {
+        // The check that ties input to the mapping: the geometry must arrive where sketchPointAt
+        // says those pixels are, not merely exist. A tool that dropped the mapping and used raw
+        // pixels would pass every count-based assertion above.
+        controller.setSketchTool(app::Controller::SketchTool::Line);
+        const auto start = controller.sketchPointAt(320.0f, 280.0f);
+        const auto end = controller.sketchPointAt(640.0f, 560.0f);
+        REQUIRE(start);
+        REQUIRE(end);
+
+        REQUIRE(controller.sketchClickAt(320.0f, 280.0f));
+        REQUIRE(controller.sketchClickAt(640.0f, 560.0f));
+
+        const auto& drawn = controller.activeSketch()->geometry().back();
+        REQUIRE(drawn.kind == sketch::GeoKind::Line);
+        CHECK_THAT(drawn.p[0], Catch::Matchers::WithinAbs((*start)[0], 1e-6));
+        CHECK_THAT(drawn.p[1], Catch::Matchers::WithinAbs((*start)[1], 1e-6));
+        CHECK_THAT(drawn.p[2], Catch::Matchers::WithinAbs((*end)[0], 1e-6));
+        CHECK_THAT(drawn.p[3], Catch::Matchers::WithinAbs((*end)[1], 1e-6));
+    }
+}
+
+TEST_CASE("the in-progress sketch converts to world lines for drawing", "[sketch][viewport]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+
+    sketch::Sketch* active = controller.activeSketch();
+    REQUIRE(active != nullptr);
+
+    // A tilted frame again: on XY the sketch's (u, v) and the world's (x, y) coincide, so a
+    // conversion that ignored the frame entirely would produce the right numbers by accident.
+    const double k = 1.0 / std::sqrt(2.0);
+    sketch::SketchFrame frame;
+    frame.origin[0] = 5.0;  frame.origin[1] = 2.0;  frame.origin[2] = -3.0;
+    frame.u[0] = k;         frame.u[1] = 0.0;       frame.u[2] = k;
+    frame.v[0] = 0.0;       frame.v[1] = 1.0;       frame.v[2] = 0.0;
+    active->setResolvedFrame(frame);
+
+    const std::size_t existing = controller.sketchOverlayVertices().size();
+    const std::uint64_t before = controller.sketchOverlayRevision();
+
+    active->addLine(2.0, 3.0, 8.0, 11.0);
+
+    const auto lines = controller.sketchOverlayVertices();
+    // One segment: two endpoints, three floats each.
+    REQUIRE(lines.size() == existing + 6);
+
+    // Where the sketch itself says those coordinates are. Asserted against to3d rather than against
+    // numbers written here, because to3d is what the SOLID will be built from — if the overlay and
+    // the profile disagree, the user draws one shape and gets another.
+    const auto start = active->to3d(2.0, 3.0);
+    const auto end = active->to3d(8.0, 11.0);
+    for (int i = 0; i < 3; ++i) {
+        CHECK_THAT(static_cast<double>(lines[existing + i]),
+                   Catch::Matchers::WithinAbs(start[i], 1e-4));
+        CHECK_THAT(static_cast<double>(lines[existing + 3 + i]),
+                   Catch::Matchers::WithinAbs(end[i], 1e-4));
+    }
+
+    // The revision tracks the geometry.
+    const std::uint64_t after = controller.sketchOverlayRevision();
+    CHECK(after != before);
+
+    // …and NOT the camera. This is the whole point of a digest over a counter: an orbit must not
+    // re-upload the sketch, and nothing but this check can tell the difference.
+    controller.camera().orbit(30.0f, 15.0f);
+    CHECK(controller.sketchOverlayRevision() == after);
+}
