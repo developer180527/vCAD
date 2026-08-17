@@ -134,4 +134,27 @@ enum class SubShape : std::uint8_t { Face, Edge, Vertex };
 /// OCCT headers — the same reason every other topology question is answered by the kernel.
 [[nodiscard]] std::vector<Shape> subShapes(const Shape&, SubShape);
 
+/// A planar face measured into an origin and two in-plane axes.
+///
+/// The bridge between "a sketch is drawn on this face" and "the sketch's 2D coordinates mean these
+/// 3D points". Lives in `core/kernel` because measuring a face needs OCCT, and nothing above the
+/// kernel is allowed to touch it — `core/sketch` in particular holds only the face's NAME.
+struct PlaneFrame {
+    double origin[3]{0, 0, 0};
+    double u[3]{1, 0, 0};
+    double v[3]{0, 1, 0};
+    double normal[3]{0, 0, 1};
+};
+
+/// Measures a planar face.
+///
+/// Fails, rather than approximating, when the face is not planar. A cylindrical or spline face has
+/// no single plane, and picking one would place a sketch somewhere the user did not choose — the
+/// same class of silent misplacement the sketch's own `isPlaced()` check exists to prevent.
+///
+/// The axes come from OCCT's own parameterisation of the plane, so they are stable for a given
+/// face rather than derived from an arbitrary choice here: two calls on the same face agree, which
+/// is what stops a sketch rotating on its own face between rebuilds.
+[[nodiscard]] Result<PlaneFrame> planeOf(const Shape& face);
+
 }  // namespace cad::kernel

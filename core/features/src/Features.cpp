@@ -1,6 +1,8 @@
 #include "cad/features/Builtins.h"
 
 #include "cad/kernel/Booleans.h"
+#include "cad/kernel/Shape.h"
+#include "cad/naming/ElementName.h"
 #include "cad/kernel/Fillet.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/kernel/Transform.h"
@@ -181,6 +183,54 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
 
     auto sketch = sketch::Sketch::deserialize(*serialized);
     if (!sketch) return sketch.error();
+
+    // A sketch placed on a face has to be LOCATED before it means anything. Until this runs, its
+    // 2D coordinates have no 3D interpretation, and Sketch::toWire refuses rather than falling
+    // back to a global plane — a fallback would build the profile somewhere the user never drew
+    // it, silently, with every downstream feature agreeing.
+    //
+    // This is also where the face reference becomes a real dependency. The face's owning feature
+    // is an INPUT, so its output arrives in ctx.inputs with its element map, AND Engine::cacheKeyOf
+    // folds that feature's cache key into this one. Naming the face in text alone would leave the
+    // sketch cached against the face's old position after an edit moved it — the Import bug in its
+    // third costume.
+    if (sketch.value().needsResolution()) {
+        if (ctx.inputs.empty() || ctx.inputs.front() == nullptr) {
+            return Error{ErrorCode::InvalidInput,
+                         "This sketch is placed on a face, but nothing tells it which body.",
+                         "SketchPlane::Kind::Face with no input feature to resolve against"};
+        }
+
+        const std::string& text = sketch.value().placement().face;
+        if (text.empty()) {
+            return Error{ErrorCode::InvalidInput,
+                         "This sketch is placed on a face it does not name."};
+        }
+
+        const auto found = ctx.inputs.front()->map.resolve(naming::ElementName::parse(text));
+        if (!found) {
+            // NamingLost, not a fallback. The face was deleted or an edit changed it beyond
+            // recognition, and the naming layer exists precisely so this is detectable rather
+            // than being papered over by moving the user's sketch somewhere else.
+            return Error{ErrorCode::NamingLost,
+                         "The face this sketch is drawn on no longer exists.",
+                         "could not resolve element '" + text + "'"};
+        }
+
+        const auto measured = kernel::planeOf(*found);
+        if (!measured) return measured.error();
+
+        // kernel::PlaneFrame and sketch::SketchFrame are separate types with the same shape,
+        // because core/sketch must not depend on core/kernel. This is the one layer that
+        // legitimately sees both, so the copy belongs here.
+        sketch::SketchFrame frame;
+        for (int i = 0; i < 3; ++i) {
+            frame.origin[i] = measured.value().origin[i];
+            frame.u[i] = measured.value().u[i];
+            frame.v[i] = measured.value().v[i];
+        }
+        sketch.value().setResolvedFrame(frame);
+    }
 
     // Solved on every recompute rather than trusting the stored coordinates. The stored positions
     // are a starting point; the CONSTRAINTS are the definition. If a dimension was edited, this is

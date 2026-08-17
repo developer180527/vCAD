@@ -121,6 +121,32 @@ and validation gates mitigate the symptoms and do not equalise the capability.
 This should shape ambition honestly: vCAD can be excellent at everything *around* the kernel, and
 will lose specific hard-geometry cases to both incumbents for the foreseeable future.
 
+### Sketches cannot be placed on model geometry — the largest practical gap
+
+Not in the feature count, and worth more than several of the missing features combined.
+
+```cpp
+enum class Plane : std::uint8_t { XY, XZ, YZ };
+```
+
+A sketch lives on one of three GLOBAL planes and has no relationship to the model. There is no
+sketch-on-face, no datum plane, no offset or angled plane, no reference to any geometry at all.
+
+That is the difference between parametric modelling and drawing on three fixed planes. In
+SolidWorks or Inventor, the ordinary act is: click a face, sketch on it, extrude. Here the ordinary
+act is impossible — you can only sketch on XY, XZ or YZ, so every feature after the first must be
+positioned by arithmetic rather than by reference to what is already there.
+
+It is also why the shell switches to a separate 2D canvas rather than sketching in place. That is
+not a UI shortcut; the UI is faithfully representing a sketch that genuinely is a separate 2D
+thing. **The seamless-sketching problem is a data-model problem wearing a UI costume.**
+
+The fix has a clear shape and its hard prerequisite already exists: the sketch's plane becomes a
+REFERENCE — a global plane, a planar face identified by its `ElementName`, or a datum — rather than
+an enum. Element names already survive rebuilds, which is exactly the property this needs and
+exactly what FreeCAD lacks. Once a sketch has a transform into world space, in-place sketching
+becomes a view change rather than a different world.
+
 ### Measured performance ceilings
 
 - `Document::add` is **quadratic** (n^1.85 measured, profiled with samply).
@@ -129,11 +155,13 @@ will lose specific hard-geometry cases to both incumbents for the foreseeable fu
 Both are known, both are fixable, and until they are, "handles a 10,000-part assembly" is not a
 claim vCAD can make.
 
-### The plugin ABI has no loader
+### ~~The plugin ABI has no loader~~ — closed
 
-No third-party plugin has ever been loaded. Every plugin test to date runs an in-process fake. It
-is a well-designed contract with zero clients, and until step 6 of PLUGIN_CONTRACT lands, "our
-plugin ABI works" means "our plugin ABI compiles".
+Superseded. The loader landed: manifest-first (because `dlopen` runs static initialisers, so
+without one the host must execute a plugin to decide whether to execute it), `RTLD_NOW |
+RTLD_LOCAL`, a real plugin loaded from disk computing real geometry, and a compatibility museum
+that loads a frozen binary from every ABI generation on every run. The remaining plugin gap is
+isolation, below, not clients.
 
 ### No crash or dependency isolation
 

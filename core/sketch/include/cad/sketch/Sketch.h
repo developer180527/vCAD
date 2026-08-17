@@ -4,6 +4,7 @@
 #include "cad/kernel/Shape.h"
 
 #include <array>
+#include <optional>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -28,12 +29,54 @@
 ///     (ADR 0003) with no schema change, and stays readable in the sqlite3 CLI.
 namespace cad::sketch {
 
-/// The plane the sketch is drawn on.
-///
-/// Only the three origin planes for now. Sketching on a face needs a face reference, and a
-/// reference into geometry means an ElementName — which works, but ties sketches to the naming
-/// layer and is a bigger change than this module needs to earn its place.
+/// One of the three origin planes.
 enum class Plane : std::uint8_t { XY, XZ, YZ };
+
+/// WHERE a sketch is drawn — the reference, not the geometry.
+///
+/// A sketch on one of three global planes cannot be positioned against the model, so every feature
+/// after the first has to be placed by arithmetic rather than by pointing at what is already
+/// there. That is the difference between parametric modelling and drawing on three fixed planes,
+/// and it is why the shell has to switch to a separate 2D canvas: the UI is faithfully
+/// representing a sketch that genuinely is a separate 2D thing.
+///
+/// The face is held as its element name's TEXT, not as a `naming::ElementName`. `core/sketch` does
+/// not depend on `core/naming` and this keeps it that way — the text form is what round-trips
+/// through the saved file anyway, and resolving it to an origin and axes belongs to
+/// `core/recompute`, which already has naming AND has the referenced feature's output. A sketch
+/// that resolved its own face would need the document, which it must not have.
+/// A sketch plane resolved into actual 3D: where its origin sits and which way its u and v axes
+/// point. Produced by `core/recompute` after looking the face reference up in the element map, and
+/// handed back to the sketch so `to3d` can place geometry where the user actually drew it.
+///
+/// Plain doubles rather than a kernel type, for the same reason the face is a string: `core/sketch`
+/// does not depend on the layers that can compute this.
+struct SketchFrame {
+    double origin[3]{0, 0, 0};
+    double u[3]{1, 0, 0};
+    double v[3]{0, 1, 0};
+
+    /// The sketch normal, u x v. Circles and arcs are swept about it.
+    [[nodiscard]] std::array<double, 3> normal() const noexcept {
+        return {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    }
+};
+
+struct SketchPlane {
+    enum class Kind : std::uint8_t { Global = 0, Face = 1, Datum = 2 };
+
+    Kind kind = Kind::Global;
+
+    /// Meaningful for Global, and kept current for the others as the fallback a viewer without
+    /// face resolution can still draw on. Always serialised, which is what lets a file written by
+    /// a newer build open in an older one as a plain global sketch instead of failing.
+    Plane global = Plane::XY;
+
+    /// `naming::ElementName::toString()` of the planar face. Empty unless `kind == Face`.
+    std::string face;
+
+    [[nodiscard]] friend bool operator==(const SketchPlane&, const SketchPlane&) = default;
+};
 
 enum class GeoKind : std::uint8_t { Point, Line, Circle, Arc };
 
@@ -129,10 +172,38 @@ struct SolveReport {
 class Sketch {
 public:
     Sketch() = default;
-    explicit Sketch(Plane plane) : plane_(plane) {}
+    explicit Sketch(Plane plane) { placement_.global = plane; }
+    explicit Sketch(SketchPlane placement) : placement_(std::move(placement)) {}
 
-    [[nodiscard]] Plane plane() const noexcept { return plane_; }
-    void setPlane(Plane p) noexcept { plane_ = p; }
+    /// The global plane. Still the answer every existing caller wants: for `Kind::Global` it is
+    /// exact, and for a face sketch it is the fallback until the placement is resolved (step 1b).
+    [[nodiscard]] Plane plane() const noexcept { return placement_.global; }
+    void setPlane(Plane p) noexcept { placement_.global = p; }
+
+    [[nodiscard]] const SketchPlane& placement() const noexcept { return placement_; }
+    void setPlacement(SketchPlane p) { placement_ = std::move(p); }
+
+    /// True when this sketch is placed against model geometry rather than a global plane, and so
+    /// cannot be turned into 3D without resolving that reference first.
+    [[nodiscard]] bool needsResolution() const noexcept {
+        return placement_.kind != SketchPlane::Kind::Global;
+    }
+
+    /// The placement resolved into 3D. Set by `core/recompute`, which is the layer that can look a
+    /// face name up and measure it. Empty for a global-plane sketch, where the plane IS the answer.
+    [[nodiscard]] const std::optional<SketchFrame>& resolvedFrame() const noexcept {
+        return resolved_;
+    }
+    void setResolvedFrame(SketchFrame f) noexcept { resolved_ = f; }
+    void clearResolvedFrame() noexcept { resolved_.reset(); }
+
+    /// Whether this sketch can be turned into 3D geometry at all.
+    ///
+    /// False for a face-placed sketch whose reference has not been resolved yet. `toWire` and
+    /// `toFace` REFUSE in that state rather than falling back to the global plane, because a
+    /// fallback would put the profile somewhere the user never drew it and nothing downstream
+    /// would know.
+    [[nodiscard]] bool isPlaced() const noexcept { return !needsResolution() || resolved_.has_value(); }
 
     // ── geometry ──────────────────────────────────────────────────────────────────────────
     GeoId addPoint(double x, double y, bool construction = false);
@@ -205,7 +276,8 @@ public:
     [[nodiscard]] std::array<double, 3> to3d(double u, double v) const;
 
 private:
-    Plane plane_ = Plane::XY;
+    SketchPlane placement_;
+    std::optional<SketchFrame> resolved_;
     std::vector<Geometry> geometry_;
     std::vector<Constraint> constraints_;
     /// Parallel to `geometry_`, holding each entry's id. Ids are handed out monotonically and never

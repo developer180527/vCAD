@@ -547,7 +547,15 @@ SolveReport Sketch::solve() {
 // ── geometry out ────────────────────────────────────────────────────────────────────────
 
 std::array<double, 3> Sketch::to3d(double u, double v) const {
-    switch (plane_) {
+    // A resolved frame wins: it is where the user actually drew, and for a face sketch the global
+    // plane is only a fallback for viewers that cannot resolve references.
+    if (resolved_) {
+        const SketchFrame& f = *resolved_;
+        return {f.origin[0] + f.u[0] * u + f.v[0] * v,
+                f.origin[1] + f.u[1] * u + f.v[1] * v,
+                f.origin[2] + f.u[2] * u + f.v[2] * v};
+    }
+    switch (placement_.global) {
         case Plane::XY: return {u, v, 0.0};
         case Plane::XZ: return {u, 0.0, v};
         case Plane::YZ: return {0.0, u, v};
@@ -556,6 +564,17 @@ std::array<double, 3> Sketch::to3d(double u, double v) const {
 }
 
 kernel::Result<kernel::Shape> Sketch::toWire() const {
+    // REFUSED, not approximated. A face-placed sketch whose reference has not been resolved has no
+    // idea where it is, and falling back to the global plane would build the profile somewhere the
+    // user never drew it -- silently, with every downstream feature agreeing. This is the check
+    // that stops `SketchPlane` being a decoration on a sketch that still behaves as if it were on
+    // XY.
+    if (!isPlaced()) {
+        return kernel::Error{kernel::ErrorCode::InvalidInput,
+                             "This sketch is placed on a face that has not been located yet.",
+                             "SketchPlane::Kind::Face with no resolved frame; core/recompute must "
+                             "resolve the reference before the profile can be built"};
+    }
     // guard() wraps whatever the lambda returns, so a lambda returning Result<Shape> gives back a
     // Result<Result<Shape>>. Flattened here rather than by having the lambda return a bare Shape,
     // because the failure cases below are ours (open profile, disconnected curves) and deserve
@@ -567,9 +586,17 @@ kernel::Result<kernel::Shape> Sketch::toWire() const {
             return gp_Pnt(p[0], p[1], p[2]);
         };
         // Plane normal, for circles and arcs: the axis they are swept about.
-        const gp_Dir normal = plane_ == Plane::XY ? gp_Dir(0, 0, 1)
-                              : plane_ == Plane::XZ ? gp_Dir(0, -1, 0)
+        // From the resolved frame when there is one, so circles and arcs are swept about the
+        // face's own normal rather than a global axis.
+        const gp_Dir normal = [&] {
+            if (resolved_) {
+                const auto n = resolved_->normal();
+                return gp_Dir(n[0], n[1], n[2]);
+            }
+            return placement_.global == Plane::XY   ? gp_Dir(0, 0, 1)
+                   : placement_.global == Plane::XZ ? gp_Dir(0, -1, 0)
                                                     : gp_Dir(1, 0, 0);
+        }();
 
         BRepBuilderAPI_MakeWire wire;
         int used = 0;
@@ -659,7 +686,18 @@ std::string Sketch::serialize() const {
     std::ostringstream out;
     out.precision(17);   // exact round-trip for IEEE-754 doubles
     out << "sketch 1\n";
-    out << "plane " << toString(plane_) << '\n';
+    // `plane` is written ALWAYS, including for a face sketch, and that is deliberate: a file from
+    // a newer build then opens in an older one as a plain global sketch rather than failing, since
+    // the reader below ignores tags it does not know.
+    out << "plane " << toString(placement_.global) << '\n';
+    if (placement_.kind != SketchPlane::Kind::Global) {
+        out << "plane_kind " << static_cast<int>(placement_.kind) << '\n';
+    }
+    if (placement_.kind == SketchPlane::Kind::Face && !placement_.face.empty()) {
+        // Last field on its line, so an element name containing spaces survives. Read with getline
+        // rather than >> for the same reason.
+        out << "plane_face " << placement_.face << '\n';
+    }
     for (std::size_t i = 0; i < geometry_.size(); ++i) {
         const Geometry& g = geometry_[i];
         out << "g " << ids_[i] << ' ' << toString(g.kind) << ' ' << (g.construction ? 1 : 0);
@@ -710,7 +748,20 @@ kernel::Result<Sketch> Sketch::deserialize(std::string_view text) {
         if (tag == "plane") {
             std::string name;
             row >> name;
-            sketch.plane_ = name == "XZ" ? Plane::XZ : name == "YZ" ? Plane::YZ : Plane::XY;
+            sketch.placement_.global =
+                name == "XZ" ? Plane::XZ : name == "YZ" ? Plane::YZ : Plane::XY;
+        } else if (tag == "plane_kind") {
+            // Absent means Global, which is what every file written before this existed meant.
+            int kind = 0;
+            row >> kind;
+            sketch.placement_.kind = kind == 1   ? SketchPlane::Kind::Face
+                                     : kind == 2 ? SketchPlane::Kind::Datum
+                                                 : SketchPlane::Kind::Global;
+        } else if (tag == "plane_face") {
+            std::string rest;
+            std::getline(row, rest);
+            if (!rest.empty() && rest.front() == ' ') rest.erase(0, 1);
+            sketch.placement_.face = rest;
         } else if (tag == "g") {
             GeoId id = 0;
             std::string kindName;

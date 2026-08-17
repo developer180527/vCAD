@@ -4,11 +4,14 @@
 
 #include "cad/kernel/Guard.h"
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <TopoDS.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
@@ -180,6 +183,54 @@ std::vector<Shape> subShapes(const Shape& shape, SubShape kind) {
         if (seen.Add(it.Current())) out.push_back(wrap(it.Current()));
     }
     return out;
+}
+
+}  // namespace cad::kernel
+
+namespace cad::kernel {
+
+Result<PlaneFrame> planeOf(const Shape& face) {
+    if (face.isNull()) {
+        return Error{ErrorCode::InvalidInput, "There is no face to measure."};
+    }
+    // guard() wraps whatever the lambda returns, so a lambda returning Result<PlaneFrame> yields
+    // Result<Result<PlaneFrame>>. Flattened explicitly, because the failures below are OURS -- not
+    // flat, not a face -- and deserve their own messages rather than an OCCT exception translated
+    // into something generic.
+    auto guarded = guard("measure a face's plane", [&]() -> Result<PlaneFrame> {
+        const TopoDS_Shape& shape = occt(face);
+        if (shape.ShapeType() != TopAbs_FACE) {
+            return Error{ErrorCode::InvalidInput,
+                         "A sketch can only be placed on a face.",
+                         "shape is not a TopoDS_FACE"};
+        }
+
+        BRepAdaptor_Surface surface(TopoDS::Face(shape));
+        if (surface.GetType() != GeomAbs_Plane) {
+            // Refused rather than approximated. A cylinder or a spline has no single plane, and
+            // choosing one would place the sketch somewhere the user did not pick.
+            return Error{ErrorCode::Unsupported,
+                         "This face is not flat, so a sketch cannot be placed on it."};
+        }
+
+        const gp_Pln plane = surface.Plane();
+        const gp_Ax3 axis = plane.Position();
+        const gp_Pnt origin = axis.Location();
+        const gp_Dir u = axis.XDirection();
+        const gp_Dir v = axis.YDirection();
+        const gp_Dir n = axis.Direction();
+
+        PlaneFrame frame;
+        frame.origin[0] = origin.X();
+        frame.origin[1] = origin.Y();
+        frame.origin[2] = origin.Z();
+        frame.u[0] = u.X();  frame.u[1] = u.Y();  frame.u[2] = u.Z();
+        frame.v[0] = v.X();  frame.v[1] = v.Y();  frame.v[2] = v.Z();
+        frame.normal[0] = n.X();  frame.normal[1] = n.Y();  frame.normal[2] = n.Z();
+        return frame;
+    });
+    if (!guarded) return guarded.error();
+    return guarded.value();
 }
 
 }  // namespace cad::kernel

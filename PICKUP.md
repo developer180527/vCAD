@@ -66,6 +66,68 @@ moment the full suite ran — see the note at the bottom.
 
 ---
 
+## Start here: step 1 — the sketch plane becomes a REFERENCE
+
+**The largest practical gap in the product**, recorded in `docs/design/COMPETITIVE_REVIEW.md` §4.
+Today:
+
+```cpp
+enum class Plane : std::uint8_t { XY, XZ, YZ };   // core/sketch/include/cad/sketch/Sketch.h:36
+```
+
+A sketch lives on one of three GLOBAL planes with no relationship to the model. No sketch-on-face,
+no datum, no reference to any geometry. Every feature after the first must be positioned by
+arithmetic rather than by reference to what is already there.
+
+It is also why the shell switches to a separate 2D canvas: the UI is faithfully representing a
+sketch that genuinely IS a separate 2D thing. **Do not attempt in-place sketching before this
+lands** — it would be an in-place experience over a model that cannot say where the sketch is.
+
+### The shape
+
+```cpp
+struct SketchPlane {
+    enum class Kind : std::uint8_t { Global = 0, Face = 1, Datum = 2 };
+    Kind kind = Kind::Global;
+    Plane global = Plane::XY;        // Kind::Global
+    naming::ElementName face;        // Kind::Face — survives rebuilds, which is the whole point
+    // Datum: an offset/angle from another plane or face. Design when reached; do NOT stub it.
+};
+```
+
+The prerequisite is already built: element names survive rebuilds, which is exactly the property
+sketch-on-face needs and exactly what FreeCAD lacks. Resolving a face reference to an origin and
+axes happens at recompute time, where the referenced feature's output is available.
+
+### The three traps, in the order they will bite
+
+1. **Serialisation is a saved-file format.** `Sketch::toText`/`fromText` round-trips through
+   `.vpart`, and `sketch_sequences.rs` asserts it coordinate-for-coordinate. An existing file has a
+   bare plane enum and MUST keep loading — write the new form additively (a `plane_kind` line that
+   defaults to Global when absent) rather than changing the existing line's meaning. Extend the
+   round-trip test to cover BOTH forms before touching the writer.
+2. **The C ABI takes an int32.** `cad_sketch_create(session, plane, out)` cannot change signature —
+   ADR 0011, additive only, and the golden snapshot will catch it. Add
+   `cad_sketch_create_on_face(session, const CadElementId*, out)` beside it and leave the original
+   meaning exactly what it is today.
+3. **A face reference can go missing.** The referenced face may be deleted or renamed away by an
+   upstream edit. That is the `NamingLost` path and it already exists for fillets — a sketch whose
+   plane cannot be resolved must go Blocked with a reason naming the feature, NOT silently fall
+   back to XY. Falling back would move a user's geometry without telling them.
+
+### Suggested order
+
+1. `SketchPlane` type + serialisation, both forms, round-trip tested. No behaviour change yet.
+2. Resolve `Kind::Face` at recompute time to an origin and axes; the sketch gains a world transform.
+3. The new ABI entry point, then the Rust wrapper, then a test that sketches on a box face and
+   extrudes from it.
+4. Only then the shell: pick a face, camera aligns, sketch draws in place.
+
+Steps 1–3 are headless and testable. Step 4 is where the "seamless" experience actually appears,
+and it is cheap once 1–3 exist.
+
+---
+
 ## Done: the DXF parser in Rust
 
 **All three steps are finished and the Rust reader is the default.** Importers parse untrusted
