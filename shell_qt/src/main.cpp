@@ -128,7 +128,8 @@ std::string startLogging(const char* argv0) {
 /// layout that follows only lands on the second. Grabbing after one turn catches the window
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
-               bool home, bool plugins, int select) {
+               bool home, bool plugins, int select, const QString& settingsPage,
+               bool settings) {
     window.show();
 
     // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
@@ -136,7 +137,8 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
     // do that on the main thread before app.exec() and the run loop is not being serviced, so the
     // two wait on each other forever. No output, no error, no window -- which is what this mode
     // did when the viewport started rendering for real.
-    QTimer::singleShot(0, &app, [&app, &window, path, tab, home, plugins, select] {
+    QTimer::singleShot(0, &app, [&app, &window, path, tab, home, plugins, select, settingsPage,
+                                 settings] {
         // A populated document, because an empty Home page says nothing about the ribbon and the
         // docks, which is the part being reviewed. `--home` skips it to shoot Home itself.
         if (!home) window.openDemoDocument();
@@ -147,8 +149,10 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
         // After the document exists, so there is something to select.
         if (select >= 0) window.selectBrowserRowForShot(select);
 
-        QTimer::singleShot(0, &app, [&app, &window, path, plugins] {
-            const QPixmap shot = plugins ? window.grabPluginManager() : window.grab();
+        QTimer::singleShot(0, &app, [&app, &window, path, plugins, settingsPage, settings] {
+            const QPixmap shot = settings   ? window.grabSettingsForShot(settingsPage)
+                                 : plugins  ? window.grabPluginManager()
+                                            : window.grab();
             if (!shot.save(path)) {
                 std::fprintf(stderr, "could not write %s\n", qPrintable(path));
                 app.exit(1);
@@ -193,6 +197,8 @@ int main(int argc, char** argv) {
     int shotTab = -1;
     bool shotHome = false;
     bool shotPlugins = false;
+    bool shotSettings = false;
+    QString shotSettingsPage;
     int shotSelect = -1;
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
@@ -209,6 +215,11 @@ int main(int argc, char** argv) {
             shotHome = true;
         } else if (arg == QStringLiteral("--plugins")) {
             shotPlugins = true;
+        } else if (arg == QStringLiteral("--settings")) {
+            shotSettings = true;
+            // An optional page id, so a plugin's own page can be shot rather than whichever the
+            // window opens on.
+            if (i + 1 < argc && argv[i + 1][0] != '-') shotSettingsPage = QString::fromUtf8(argv[++i]);
         } else if (arg == QStringLiteral("--select") && i + 1 < argc) {
             shotSelect = QString::fromUtf8(argv[++i]).toInt();
         }
@@ -233,7 +244,8 @@ int main(int argc, char** argv) {
         window.restoreTheme();
     }
     if (!shotPath.isEmpty()) {
-        return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins, shotSelect);
+        return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins, shotSelect,
+                          shotSettingsPage, shotSettings);
     }
 
     window.show();

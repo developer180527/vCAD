@@ -4,6 +4,7 @@
 // type may appear in a signature, and every handle is validated before use. The callers are
 // other languages and other processes' idea of "undefined behaviour" is our crash report.
 
+#include "Loader.h"
 #include "cad/abi/cad_plugin_abi.h"
 
 #include <bit>
@@ -193,6 +194,14 @@ struct Session {
     std::vector<std::unique_ptr<RegisteredFeature>> features;
 
     /// The vtable handed to plugins. Built once per session, on demand.
+    /// Every plugin this session loaded, held for the life of the session.
+    ///
+    /// Held, not discarded, because a loaded plugin owns the memory its descriptors point at --
+    /// its feature names, its ribbon labels, its settings. Dropping the LoadedPlugin would not
+    /// unload the library (nothing ever does, see Loader.h) but it would drop the manifest, and
+    /// the manager window needs it to say what is running.
+    std::vector<cad::abi::LoadedPlugin> loadedPlugins;
+
     std::unique_ptr<CadHost> host;
     std::string hostError;
     cad::io::FormatRegistry formats = cad::io::FormatRegistry::builtins();
@@ -1541,6 +1550,71 @@ const CadHost* cad_plugin_host(CadSession handle) {
         return CAD_OK;
     });
     return result;
+}
+
+CadStatus cad_plugins_load(CadSession handle, const char* directory, std::uint32_t* outLoaded,
+                           std::uint32_t* outFailed) {
+    if (outLoaded != nullptr) *outLoaded = 0;
+    if (outFailed != nullptr) *outFailed = 0;
+
+    // Outside withSession, because cad_plugin_host takes the same session lock this would hold.
+    const CadHost* host = cad_plugin_host(handle);
+    if (host == nullptr) return CAD_ERR_INVALID_INPUT;
+
+    std::vector<std::filesystem::path> directories;
+    std::uint32_t loaded = 0;
+    std::uint32_t failed = 0;
+    std::string lastFailure;
+
+    const CadStatus scanned = withSession(handle, [&](Session& s) {
+        if (directory == nullptr || *directory == '\0') {
+            return fail(s, CAD_ERR_INVALID_INPUT, "No plugin directory given.");
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_directory(directory, ec)) {
+            // Not an error. A machine with no plugins installed is the common case, and a host
+            // that reported failure for it would make "no plugins" indistinguishable from "the
+            // plugin system is broken".
+            return CAD_OK;
+        }
+        directories = cad::abi::discoverPluginDirectories(directory);
+        return CAD_OK;
+    });
+    if (scanned != CAD_OK) return scanned;
+
+    for (const auto& dir : directories) {
+        // The plugin's initialize() runs inside this call and calls BACK into the host through the
+        // vtable -- so the session must not be locked here. Loading under the lock deadlocks on the
+        // plugin's first registration, which is every plugin's first action.
+        auto result = cad::abi::loadPluginFrom(dir, host);
+        if (result) {
+            withSession(handle, [&](Session& s) {
+                s.loadedPlugins.push_back(std::move(result).value());
+                return CAD_OK;
+            });
+            ++loaded;
+        } else {
+            // Counted and remembered, never fatal: one bad plugin must not stop the others, and a
+            // silent skip would leave a user wondering why their plugin does nothing.
+            lastFailure = result.error().message;
+            ++failed;
+        }
+    }
+
+    // Written LAST, and only here. withSession clears lastError on entry, so a message stored as
+    // each failure happened would be wiped by the next plugin that loaded successfully -- leaving
+    // the shell a failure count with no reason, which is the state this whole channel exists to
+    // avoid. Recorded once, after the loop, where nothing follows to clear it.
+    if (!lastFailure.empty()) {
+        withSession(handle, [&](Session& s) {
+            s.lastError = lastFailure;
+            return CAD_OK;
+        });
+    }
+
+    if (outLoaded != nullptr) *outLoaded = loaded;
+    if (outFailed != nullptr) *outFailed = failed;
+    return CAD_OK;
 }
 
 CadStatus cad_settings_page_count(CadSession handle, std::uint32_t* out) {

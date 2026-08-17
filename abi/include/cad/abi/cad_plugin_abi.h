@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 20
+#define CAD_ABI_VERSION_MINOR 21
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -1003,6 +1003,21 @@ CAD_API CadStatus cad_scene_pick_owner(CadSession, uint32_t x, uint32_t y, CadOb
  * which is what a test needs. */
 CAD_API CadStatus cad_ribbon_counts(CadSession, uint32_t* out_tabs, uint32_t* out_sections,
                                     uint32_t* out_commands);
+
+/* Loads every plugin in a directory into this session.
+ *
+ * The shell calls this rather than reaching into abi/src/Loader.h, so the loader stays private and
+ * the ONE way a plugin enters a process is a function with a contract.
+ *
+ * Failures are counted, not thrown and not fatal: one bad plugin must not stop the others, and the
+ * user needs to be told which one and why. `cad_session_last_error` carries the last failure's message,
+ * which is the honest amount of detail for a count -- a shell that wants per-plugin reasons should
+ * use the manager window, which reads manifests without loading anything.
+ *
+ * Idempotent per directory: loading the same directory twice does not load a plugin twice, because
+ * a second registration of the same feature type or ribbon id is refused anyway. */
+CAD_API CadStatus cad_plugins_load(CadSession, const char* directory, uint32_t* out_loaded,
+                                   uint32_t* out_failed);
 
 /* Reading back what plugins declared, so a shell can render it.
  *

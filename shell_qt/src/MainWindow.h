@@ -1,5 +1,8 @@
 #pragma once
 
+// For CadSession: the plugin host session is a member, so the handle type must be complete here.
+#include "cad/abi/cad_plugin_abi.h"
+
 #include "CadHomeModel.h"
 
 #include <QPixmap>
@@ -73,6 +76,12 @@ public:
     void selectBrowserRowForShot(int row);
     [[nodiscard]] QPixmap grabPluginManager();
 
+    /// Renders the settings window for `--shot --settings [pageId]`.
+    ///
+    /// Here for the same reason the ribbon has a shot mode: a settings page contributed by a plugin
+    /// is a claim about pixels, and one that is only ever described is one nobody has checked.
+    [[nodiscard]] QPixmap grabSettingsForShot(const QString& pageId = {});
+
 protected:
     /// Prompts for unsaved work in EVERY open document before letting the window go.
     [[nodiscard]] bool confirmClose() override;
@@ -136,6 +145,17 @@ private:
     /// its own and shares none of them.
     void declareSettings();
 
+    /// Loads installed plugins, once, before any UI reads what they contribute.
+    ///
+    /// Failures are reported and never fatal: a stale plugin after an update must leave the
+    /// application usable, which is the whole reason the loader counts failures rather than
+    /// returning on the first one.
+    void loadPlugins();
+
+    /// Adds pages plugins declared to the settings store. Called from declareSettings, after the
+    /// built-in pages, so a plugin cannot displace a built-in setting.
+    void addPluginSettings();
+
 
     /// Pushes a changed setting into the running controllers.
     ///
@@ -153,6 +173,16 @@ private:
     [[nodiscard]] cad::app::Controller* controller() noexcept { return session_.active(); }
 
     cad::app::Session session_;
+    /// The session plugins are loaded into, held for the life of the window.
+    ///
+    /// Separate from any document's session and never released early: a plugin's descriptors point
+    /// into memory this session owns, so releasing it while the settings window is open would leave
+    /// that window rendering freed strings.
+    CadSession pluginSession_ = 0;
+
+    /// Non-empty when a plugin failed to load, shown once the status bar exists.
+    QString pluginLoadWarning_;
+
     proshell::Settings* settings_ = nullptr;
     /// Answers proshell's home-page questions from the session. Declared after it, since it
     /// holds a reference.

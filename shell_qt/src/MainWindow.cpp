@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 
 #include "PluginManager.h"
+#include "cad/abi/cad_plugin_abi.h"
+#include "cad/log/Log.h"
 #include "proshell/HomePage.h"
 #include "Icons.h"
 #include "proshell/Ribbon.h"
@@ -12,6 +14,10 @@
 #include "Viewport.h"
 
 #include <QApplication>
+#include <QTimer>
+#include <cstdlib>
+#include <filesystem>
+#include <QCoreApplication>
 #include <QCloseEvent>
 #include <QFileInfo>
 #include <QButtonGroup>
@@ -120,7 +126,13 @@ MainWindow::MainWindow() {
     refreshStatus();
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // LAST, and only here. Plugin descriptors -- every settings label and ribbon caption a plugin
+    // contributed -- point into memory this session owns, so releasing it any earlier would leave
+    // whatever is still showing them rendering freed strings. Nothing unloads the libraries
+    // themselves; see Loader.h for why that is deliberate.
+    if (pluginSession_ != 0) cad_session_release(pluginSession_);
+}
 
 // ── top area ────────────────────────────────────────────────────────────────────────────
 
@@ -1103,8 +1115,57 @@ QPixmap MainWindow::grabPluginManager() {
     return pluginManager_ != nullptr ? pluginManager_->grab() : grab();
 }
 
+void MainWindow::loadPlugins() {
+    if (pluginSession_ != 0) return;
+    pluginSession_ = cad_session_create();
+    if (pluginSession_ == 0) return;
+
+    // Beside the executable, the same reasoning as the shaders and the log: vCAD ships as a bare
+    // binary, so resolving against the working directory would mean plugins load only when the app
+    // is started from the build directory. CAD_PLUGIN_DIR overrides it, which is what developing a
+    // plugin needs and what a support conversation can ask for.
+    std::filesystem::path root;
+    if (const char* fromEnv = std::getenv("CAD_PLUGIN_DIR")) {
+        if (*fromEnv != '\0') root = fromEnv;
+    }
+    if (root.empty()) {
+        root = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString()) /
+               "plugins";
+    }
+
+    std::uint32_t loaded = 0;
+    std::uint32_t failed = 0;
+    cad_plugins_load(pluginSession_, root.string().c_str(), &loaded, &failed);
+
+    if (loaded > 0) {
+        CAD_INFO(::cad::log::Category::Shell)
+            << "loaded " << loaded << " plugin(s) from " << root.string();
+    }
+    if (failed > 0) {
+        // Said out loud, in the window, not only in the log. A plugin that silently did not load is
+        // the complaint every CAD plugin system generates -- the user sees a missing command and has
+        // no way to find out why. One failure gets its reason; several get a count and a pointer at
+        // the manager, which lists every installed plugin without loading any of them.
+        const char* reason = cad_session_last_error(pluginSession_);
+        const QString detail = (failed == 1 && reason != nullptr && *reason != '\0')
+                                   ? tr("Plugin not loaded: %1").arg(QString::fromUtf8(reason))
+                                   : tr("%1 plugins could not be loaded — see Plugins.").arg(failed);
+        CAD_WARN(::cad::log::Category::Shell) << detail.toStdString();
+        pluginLoadWarning_ = detail;
+    }
+}
+
 void MainWindow::declareSettings() {
     if (settings_ != nullptr) return;
+    // Before the pages are built, because addPluginSettings below reads what loading registered.
+    loadPlugins();
+    // Deferred to the event loop: declareSettings can run before the window is shown, and a status
+    // message posted to a status bar nobody is looking at yet is a message the user never sees.
+    if (!pluginLoadWarning_.isEmpty()) {
+        QTimer::singleShot(0, this, [this] {
+            statusBar()->showMessage(pluginLoadWarning_, 15000);
+        });
+    }
     settings_ = new proshell::Settings(QStringLiteral("vCAD"), QStringLiteral("vCAD"), this);
 
     // The ids are PERMANENT — they are what the user's stored preferences are keyed by, so renaming
@@ -1201,8 +1262,96 @@ void MainWindow::declareSettings() {
     appearance.groups.push_back(colours);
     settings_->addPage(appearance);
 
+    // AFTER the built-in pages, so a plugin's page appears below them rather than interleaved, and
+    // so a plugin cannot displace a built-in setting: addPage merges by page id and DROPS a
+    // duplicate setting id, and the first one registered is the one that survives.
+    addPluginSettings();
+
     connect(settings_, &proshell::Settings::changed, this,
             [this](const QString& id, const QVariant&) { applySetting(id); });
+}
+
+void MainWindow::addPluginSettings() {
+    if (settings_ == nullptr || pluginSession_ == 0) return;
+
+    std::uint32_t pageCount = 0;
+    if (cad_settings_page_count(pluginSession_, &pageCount) != CAD_OK) return;
+
+    for (std::uint32_t p = 0; p < pageCount; ++p) {
+        CadSettingsPageDesc desc{};
+        desc.struct_size = sizeof(desc);
+        std::uint32_t settingCount = 0;
+        if (cad_settings_page_at(pluginSession_, p, &desc, &settingCount) != CAD_OK) continue;
+        if (desc.id == nullptr || *desc.id == '\0') continue;
+
+        proshell::SettingsPage page;
+        page.id = QString::fromUtf8(desc.id);
+        page.label = desc.label != nullptr ? QString::fromUtf8(desc.label) : page.id;
+        // An icon the theme does not know resolves to a placeholder rather than nothing, which is
+        // why a plugin naming one we have never heard of is not checked here.
+        page.iconName = desc.icon_name != nullptr ? QString::fromUtf8(desc.icon_name) : QString();
+
+        proshell::SettingsGroup group;
+        group.label = desc.group_label != nullptr ? QString::fromUtf8(desc.group_label) : QString();
+
+        for (std::uint32_t i = 0; i < settingCount; ++i) {
+            CadSettingDesc sd{};
+            sd.struct_size = sizeof(sd);
+            if (cad_settings_at(pluginSession_, p, i, &sd) != CAD_OK) continue;
+            if (sd.id == nullptr || *sd.id == '\0') continue;
+
+            proshell::Setting setting;
+            setting.id = QString::fromUtf8(sd.id);
+            setting.label = sd.label != nullptr ? QString::fromUtf8(sd.label) : setting.id;
+            setting.description =
+                sd.description != nullptr ? QString::fromUtf8(sd.description) : QString();
+            setting.minimum = sd.minimum;
+            setting.maximum = sd.maximum;
+
+            switch (sd.kind) {
+                case CAD_SETTING_INT:
+                    setting.kind = proshell::SettingKind::Int;
+                    setting.fallback = static_cast<int>(sd.default_value);
+                    break;
+                case CAD_SETTING_DOUBLE:
+                    setting.kind = proshell::SettingKind::Double;
+                    setting.fallback = sd.default_value;
+                    break;
+                case CAD_SETTING_TEXT:
+                    setting.kind = proshell::SettingKind::Text;
+                    setting.fallback = sd.default_text != nullptr
+                                           ? QString::fromUtf8(sd.default_text) : QString();
+                    break;
+                case CAD_SETTING_CHOICE: {
+                    setting.kind = proshell::SettingKind::Choice;
+                    for (std::uint32_t c = 0; c < sd.choice_count; ++c) {
+                        if (sd.choices == nullptr || sd.choices[c] == nullptr) continue;
+                        setting.choices << QString::fromUtf8(sd.choices[c]);
+                    }
+                    // The INDEX is stored, so an out-of-range default would select nothing and the
+                    // combo would show blank. Clamped rather than refused: a plugin with one bad
+                    // default should still get a usable page.
+                    const int fallbackIndex = static_cast<int>(sd.default_value);
+                    setting.fallback = (fallbackIndex >= 0 && fallbackIndex < setting.choices.size())
+                                           ? fallbackIndex : 0;
+                    break;
+                }
+                case CAD_SETTING_BOOL:
+                default:
+                    // Unknown kinds fall back to a checkbox rather than being dropped: a plugin
+                    // built against a LATER header than this shell should lose fidelity, not its
+                    // whole page. Same additive rule as the descriptor structs.
+                    setting.kind = proshell::SettingKind::Bool;
+                    setting.fallback = sd.default_value != 0.0;
+                    break;
+            }
+            group.settings.push_back(std::move(setting));
+        }
+
+        if (group.settings.empty()) continue;   // an empty page is a dead entry in the list
+        page.groups.push_back(std::move(group));
+        settings_->addPage(std::move(page));
+    }
 }
 
 void MainWindow::applySetting(const QString& id) {
@@ -1248,6 +1397,20 @@ void MainWindow::restoreTheme() {
         proshell::applyTheme(*app, static_cast<proshell::Theme>(
                                        settings_->integer(QStringLiteral("appearance.theme"))));
     }
+}
+
+QPixmap MainWindow::grabSettingsForShot(const QString& pageId) {
+    // Shown rather than exec'd: exec blocks in its own event loop, so a screenshot driver would
+    // never get control back. Same reason the document is created inside a singleShot.
+    declareSettings();
+    auto* window = new proshell::SettingsWindow(*settings_, this);
+    if (!pageId.isEmpty()) window->showPage(pageId);
+    window->show();
+    QApplication::processEvents();
+    QApplication::processEvents();   // the second turn is where layout lands, as with the main grab
+    const QPixmap shot = window->grab();
+    window->deleteLater();
+    return shot;
 }
 
 void MainWindow::showOptions() {

@@ -63,7 +63,58 @@ CadStatus initialize(const CadHost* host) {
     feature.plugin_ctx = nullptr;
     feature.compute = &computeCube;
 
-    return host->register_feature(host->host_ctx, &feature, nullptr, 0);
+    const CadStatus registered = host->register_feature(host->host_ctx, &feature, nullptr, 0);
+    if (registered != CAD_OK) return registered;
+
+    // A settings page, so the fixture exercises the path a real plugin uses to put its own options
+    // in the host's settings window. Declared as DATA -- no widgets cross the boundary -- which is
+    // what lets the same declaration render in this shell, in a future touch front end, and in a
+    // support bundle as text.
+    if (host->register_settings_page == nullptr) return CAD_OK;
+
+    CadSettingsPageDesc page;
+    std::memset(&page, 0, sizeof(page));
+    page.struct_size = sizeof(page);
+    page.struct_version = 1;
+    page.id = "com.vcad.demo";
+    page.label = "Demo Plugin";
+    page.icon_name = "parameters";
+    page.group_label = "Cube";
+
+    static const char* const kQualities[] = {"Draft", "Normal", "Fine"};
+
+    CadSettingDesc settings[3];
+    std::memset(settings, 0, sizeof(settings));
+
+    settings[0].struct_size = sizeof(settings[0]);
+    settings[0].struct_version = 1;
+    settings[0].id = "com.vcad.demo.size";
+    settings[0].label = "Default size";
+    settings[0].description = "Edge length a new demo cube starts at, in millimetres.";
+    settings[0].kind = CAD_SETTING_DOUBLE;
+    settings[0].default_value = 10.0;
+    settings[0].minimum = 0.1;
+    settings[0].maximum = 1000.0;
+
+    settings[1].struct_size = sizeof(settings[1]);
+    settings[1].struct_version = 1;
+    settings[1].id = "com.vcad.demo.quality";
+    settings[1].label = "Tessellation";
+    settings[1].description = "How finely the demo cube is tessellated for display.";
+    settings[1].kind = CAD_SETTING_CHOICE;
+    settings[1].choices = kQualities;
+    settings[1].choice_count = 3;
+    settings[1].default_value = 1;   /* the INDEX, so a label can be translated */
+
+    settings[2].struct_size = sizeof(settings[2]);
+    settings[2].struct_version = 1;
+    settings[2].id = "com.vcad.demo.announce";
+    settings[2].label = "Log each cube";
+    settings[2].description = "Writes a line to the log every time a demo cube is computed.";
+    settings[2].kind = CAD_SETTING_BOOL;
+    settings[2].default_value = 0;
+
+    return host->register_settings_page(host->host_ctx, &page, settings, 3);
 }
 
 void shutdown(void) { g_host = nullptr; }
