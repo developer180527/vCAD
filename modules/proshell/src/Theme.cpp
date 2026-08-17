@@ -136,6 +136,26 @@ void applyTheme(QApplication& app, Theme theme) {
            viewport are the same paper: without them the window is one undivided sheet and the
            eye cannot find the edge of the model tree. One device pixel of the theme's own line
            colour, matching the rule under the ribbon. */
+        /* Checkboxes. Styled explicitly because they are otherwise INVISIBLE on the light
+           themes: once an application stylesheet exists, Qt draws the indicator through the
+           stylesheet style, and with no rule for it the box comes out the same paper colour as
+           the form behind it. It looked fine while the app was being reviewed in a dark theme,
+           which is exactly why it survived -- the two themes disagreed and only one was looked at.
+
+           Filled with the accent when checked rather than carrying a tick glyph: a tick would need
+           an image, and proshell paints its icons programmatically with no resource file to point
+           `image: url()` at. A filled box is unambiguous; a tick is nicer, and is worth doing when
+           there is a resource system to hang it on. */
+        QCheckBox::indicator, QGroupBox::indicator {
+            width: 13px; height: 13px;
+            border: 1px solid #9a9892; border-radius: 2px; background: #ffffff;
+        }
+        QCheckBox::indicator:hover { border-color: #0a70c8; }
+        QCheckBox::indicator:checked {
+            background: #0a70c8; border-color: #0a70c8;
+        }
+        QCheckBox::indicator:disabled { border-color: #c3c1bd; background: #eceae7; }
+        QCheckBox::indicator:checked:disabled { background: #b3b1ad; border-color: #b3b1ad; }
         QMainWindow::separator { background: #cfcdc9; width: 1px; height: 1px; }
         QMainWindow::separator:hover { background: #0a6cc4; }
         QWidget { font-size: 12px; color: #1f2124; }
