@@ -29,6 +29,44 @@ public:
     /// Recomputes view and projection for the given viewport.
     [[nodiscard]] Camera matrices(const Viewport&) const;
 
+    /// Where the camera looks and which way is up on screen. Unit vectors, mutually perpendicular.
+    ///
+    /// Exists because yaw/pitch cannot express every view. See `alignTo`.
+    struct Basis {
+        float forward[3]{0, 0, -1};   ///< eye toward target
+        float up[3]{0, 0, 1};         ///< screen up
+        float right[3]{1, 0, 0};      ///< screen right, forward x up
+    };
+
+    /// The current orientation, however it was arrived at.
+    [[nodiscard]] Basis basis() const noexcept;
+
+    /// Points the camera straight at a plane: face-on, with `up` upright on screen.
+    ///
+    /// This cannot be done by setting yaw and pitch, which is the whole reason it exists. A
+    /// turntable with world Z up has two problems with a sketch plane. The common case -- a sketch
+    /// on XY, looked at from above -- is pitch = 90 degrees exactly, which is the pole the orbit
+    /// clamp deliberately keeps the camera away from because `up` degenerates there. And even off
+    /// the pole, yaw/pitch has no roll, so it cannot put the sketch's u axis along the screen's x:
+    /// the sketch would appear face-on but rotated, and every dimension the user reads would be
+    /// tilted.
+    ///
+    /// So an aligned camera carries an EXPLICIT basis, used in place of yaw/pitch until something
+    /// orbits. `up` need not be perpendicular to the normal or even normalised; it is projected and
+    /// orthonormalised here, so a caller can hand over a sketch frame's v axis as-is.
+    void alignTo(const float origin[3], const float normal[3], const float up[3]);
+
+    /// Whether the camera is holding an explicit alignment rather than a turntable pose.
+    [[nodiscard]] bool aligned() const noexcept { return aligned_; }
+
+    /// Returns to the turntable, keeping the direction currently being looked along.
+    ///
+    /// Seeds yaw and pitch from the aligned basis rather than snapping back to whatever they were,
+    /// because a view that jumps somewhere else the moment you touch the mouse is disorienting in a
+    /// way that reads as a bug. Roll is lost -- a turntable has none -- and at the pole the pitch
+    /// clamp moves the view by about a degree. Both are unavoidable and neither is a jump.
+    void releaseAlignment() noexcept;
+
     void orbit(float dxPixels, float dyPixels);
     void pan(float dxPixels, float dyPixels, const Viewport&);
     void zoom(float ticks);
@@ -58,6 +96,13 @@ public:
     [[nodiscard]] const float* target() const noexcept { return target_; }
 
 private:
+    /// Turntable pose, and the aligned basis that overrides it. Two representations rather than one
+    /// general orientation: orbit, pan and fit are all natural in yaw/pitch/distance and the
+    /// turntable's "up is up" invariant is what stops a CAD view rolling into confusion. Alignment
+    /// is the exception that needs roll, not the new normal.
+    bool aligned_ = false;
+    Basis alignedBasis_;
+
     float target_[3]{0, 0, 0};
     float distance_ = 500.0f;
     float yaw_ = 0.6f;        ///< radians

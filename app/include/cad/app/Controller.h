@@ -260,6 +260,14 @@ public:
     };
     [[nodiscard]] kernel::Result<FacePick> pickSketchFace(std::uint32_t x, std::uint32_t y);
 
+    /// Points the camera face-on at a sketch plane, and repaints.
+    ///
+    /// Takes the resolved frame rather than a face name, because the same call has to serve a datum
+    /// and a global plane later, and all three arrive here as a frame. The camera keeps its distance
+    /// and its projection: aligning is a rotation, and changing the zoom at the same time makes the
+    /// transition impossible to follow.
+    void alignViewTo(const sketch::SketchFrame&);
+
     /// Scripts the next pick, for tests and headless tools.
     ///
     /// The null backend's picker has no rasteriser on purpose (see NullBackend.h): what this layer

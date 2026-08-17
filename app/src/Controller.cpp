@@ -574,6 +574,21 @@ kernel::Result<Controller::FacePick> Controller::pickSketchFace(std::uint32_t x,
     return out;
 }
 
+void Controller::alignViewTo(const sketch::SketchFrame& frame) {
+    // Narrowed to float here rather than anywhere lower: the document and the kernel work in
+    // doubles, the GPU pipeline in floats, and this is the boundary between them.
+    const float origin[3]{static_cast<float>(frame.origin[0]), static_cast<float>(frame.origin[1]),
+                          static_cast<float>(frame.origin[2])};
+    const auto n = frame.normal();
+    const float normal[3]{static_cast<float>(n[0]), static_cast<float>(n[1]),
+                          static_cast<float>(n[2])};
+    const float up[3]{static_cast<float>(frame.v[0]), static_cast<float>(frame.v[1]),
+                      static_cast<float>(frame.v[2])};
+
+    camera_.alignTo(origin, normal, up);
+    cameraChanged();
+}
+
 void Controller::scriptNextPick(std::uint32_t elementSlot, bool valid) {
     if (gpu_ != nullptr) return;
     render::IPicker::Hit hit;
