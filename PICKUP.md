@@ -128,6 +128,57 @@ and it is cheap once 1–3 exist.
 
 ---
 
+## 1d: in-place sketching, which is the point of the whole exercise
+
+Steps 1a–1c are done: a sketch can be placed on a named face, the recompute locates it, and a shell
+can ask for one (ABI 1.18). **1d is the part the user actually asked for** — "sketching should be in
+the same world where the model is, user selects a face or a plane and starts sketching."
+
+### What is wrong today, seen rather than described
+
+Two screenshots taken on 15 Aug show it exactly:
+
+1. **The sketch canvas is a separate world.** Entering a sketch swaps `QStackedWidget` from the
+   viewport to `SketchCanvas`: grid, no model, no context. The cylinder simply vanishes.
+2. **Properties shows `plane 0`.** The sketch is on XY, unrelated to the body — the shell has no way
+   to say "on that face" even though the core now supports it.
+3. **Status bar reads `1 failed`** and the tree shows `Sketch ERR`, because the sketch and the body
+   are not connected at all.
+
+### The pieces already exist; 1d is wiring
+
+- The pick pass is in the bgfx backend (`pickReadback`, `IPicker`) and has **never been driven from
+  the shell**. That is the one genuinely new piece.
+- `Controller` already has `Environment{Model,Sketch}`.
+- The sketch now has a world transform: `SketchFrame` + `to3d`.
+- `cad_sketch_create_on_face` exists, and `Session::new_sketch_on_face` wraps it.
+- The viewport renders natively, confirmed — so drawing sketch geometry in 3D is a real option
+  rather than a hope.
+
+The flow: **pick a face → `cad_sketch_create_on_face` → set the body as an input → align the camera
+to the frame → draw the sketch's curves through `to3d` in the 3D viewport**, instead of swapping to
+a 2D widget.
+
+### Do NOT delete SketchCanvas
+
+In-place sketching is the right default, but a face-on 2D view is still the right thing for a dense
+sketch, and both Inventor and SolidWorks offer it. The change is that it becomes a **view option**
+rather than the only way. Deleting it would trade one missing mode for another.
+
+### The order that keeps it verifiable
+
+1. **Face picking through `Controller`**, headless-testable: a pick returns an `ElementName`, and a
+   name that resolves to a non-planar face is refused with a reason (`kernel::planeOf` already
+   does this — the shell must surface it, not swallow it).
+2. **Camera alignment** to a `SketchFrame`. Pure maths, testable without a screen.
+3. **Draw sketch curves in the 3D viewport.** This is the part that needs eyes, and it is the only
+   part that does.
+4. **Make the 2D canvas a view toggle** rather than an environment switch.
+
+Steps 1–2 can be proven headlessly. Step 3 is a claim about pixels, and this project's history is
+unambiguous about those: instancing, the empty-scene clear and the 100k pixel check all looked
+right and were not. Get a human to look, or assert on a pixel.
+
 ## Done: the DXF parser in Rust
 
 **All three steps are finished and the Rust reader is the default.** Importers parse untrusted
@@ -572,9 +623,11 @@ Also open, from the performance work and not on the plugin thread at all:
 
 ## Open, and unconfirmed by a human
 
-**Does the native Metal surface actually render on screen?** The code landed, the status bar should
-read `readback 0.0`, and nobody has looked. If it does not, the offscreen fallback is automatic, so
-the shell is not broken either way.
+**~~Does the native Metal surface actually render on screen?~~ CONFIRMED, 15 Aug.** A human ran it:
+the status bar reads `0.0 ms/frame (submit 0.0, readback 0.0)` with a shaded cylinder in the
+viewport. The native path works, there is no readback, and the 27 fps ceiling is gone. This had
+been open for a week and is now closed — it was the last thing blocking in-place sketching from
+being verifiable.
 
 **`--shot` hangs, but only with a document open.** Measured on `f2e5447`: `--shot --home` exits 0
 and writes the PNG; `--shot` with a document times out. So the cause is in the viewport render
