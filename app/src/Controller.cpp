@@ -875,7 +875,22 @@ bool Controller::editSketch(ObjectId id) {
 
     editing_ = std::move(parsed.value());
     editingId_ = id;
+
+    // A face-placed sketch arrives from the file knowing WHICH face it is on and not WHERE that is.
+    // The frame only ever existed inside computeSketch, so editing one without resolving it here
+    // would leave the shell unable to turn a click into a sketch coordinate -- on exactly the
+    // sketches in-place editing exists for.
+    if (!features::resolveSketchFrame(history_.current(), id, *editing_)) {
+        // Refused, not fallen back to a global plane. The face is gone or unrecognisable, and
+        // moving the user's geometry somewhere else to make the edit "work" is the failure the
+        // naming layer exists to prevent.
+        editing_.reset();
+        status("This sketch is placed on a face that no longer exists.");
+        return false;
+    }
+
     environment_ = Environment::Sketch;
+    alignCameraToSketch();
     lastSketchSolve_ = editing_->solve();
     notifyDocument();
     notifyView();
@@ -1208,6 +1223,38 @@ bool Controller::applySketchRadius(double millimetres) {
     return true;
 }
 
+void Controller::alignCameraToSketch() {
+    if (!editing_.has_value()) return;
+
+    // Face-on, which is how every CAD application opens a sketch and is most of what "the sketch
+    // is in the same world as the model" has to mean: the geometry stays where it is, the camera
+    // moves to look at it squarely. Nothing is swapped and nothing is reprojected.
+    std::array<float, 3> origin{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> normal{0.0f, 0.0f, 1.0f};
+    std::array<float, 3> up{0.0f, 1.0f, 0.0f};
+
+    if (const auto& frame = editing_->resolvedFrame()) {
+        for (int i = 0; i < 3; ++i) {
+            origin[i] = static_cast<float>(frame->origin[i]);
+            up[i] = static_cast<float>(frame->v[i]);
+        }
+        const auto n = frame->normal();
+        for (int i = 0; i < 3; ++i) normal[i] = static_cast<float>(n[i]);
+    } else {
+        switch (editing_->plane()) {
+            case sketch::Plane::XY: normal = {0, 0, 1}; up = {0, 1, 0}; break;
+            case sketch::Plane::XZ: normal = {0, -1, 0}; up = {0, 0, 1}; break;
+            case sketch::Plane::YZ: normal = {1, 0, 0}; up = {0, 0, 1}; break;
+        }
+    }
+
+    // `up` is the sketch's own v axis, so the sketch's +v points up the screen and what the user
+    // draws is oriented the way the sketch's coordinates say it is -- not the way the world's
+    // happen to fall.
+    camera_.alignTo(origin.data(), normal.data(), up.data());
+    notifyView();
+}
+
 std::optional<std::array<double, 2>> Controller::sketchPointAt(float x, float y) const {
     const sketch::Sketch* active = activeSketch();
     if (active == nullptr) return std::nullopt;
@@ -1297,6 +1344,41 @@ bool Controller::isRolledBack(ObjectId id) const {
 
 std::optional<ObjectId> Controller::rollback() const {
     return history_.current().rollbackAfter();
+}
+
+ObjectId Controller::addSketchOnFace(ObjectId body, const std::string& face) {
+    const auto owner = history_.current().find(body);
+    if (!owner) {
+        status("That body is not in this document.");
+        return {};
+    }
+    if (face.empty()) {
+        status("A sketch on a face needs a face.");
+        return {};
+    }
+
+    // Empty. Unlike addSketch's seeded rectangle, a sketch the user placed deliberately on a face
+    // is one they are about to draw in -- handing them a 40 x 25 rectangle to delete first is the
+    // kind of "helpful" default that only ever costs a step.
+    sketch::Sketch sk;
+    sketch::SketchPlane placement;
+    placement.kind = sketch::SketchPlane::Kind::Face;
+    placement.face = face;
+    sk.setPlacement(placement);
+
+    auto [next, id] = history_.current().add("Sketch");
+    const auto object = next.find(id);
+    // No "plane" property: this sketch has no global plane, and an extrude built from it takes its
+    // direction by measuring the profile instead.
+    auto updated = object->withProperty("sketch", sk.serialize()).withProperty("body", body);
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Sketch");
+
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+    status("Added Sketch on a face");
+    return id;
 }
 
 ObjectId Controller::addSketch() {

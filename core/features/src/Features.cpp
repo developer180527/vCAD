@@ -171,6 +171,20 @@ kernel::Result<Output> computeBoolean(const ComputeContext& ctx) {
 /// The output is the profile FACE, not the wire, because that is what an extrude consumes. A sketch
 /// whose curves do not close therefore fails HERE, with a message about the profile, rather than
 /// inside a modelling operation two features later.
+/// kernel::PlaneFrame and sketch::SketchFrame are separate types with the same shape, because
+/// core/sketch must not depend on core/kernel. This is the one layer that legitimately sees both,
+/// so the conversion lives here and exactly once -- two copies would eventually differ by an axis
+/// convention, and the symptom would be geometry landing somewhere the user did not draw it.
+sketch::SketchFrame frameOf(const kernel::PlaneFrame& measured) {
+    sketch::SketchFrame frame;
+    for (int i = 0; i < 3; ++i) {
+        frame.origin[i] = measured.origin[i];
+        frame.u[i] = measured.u[i];
+        frame.v[i] = measured.v[i];
+    }
+    return frame;
+}
+
 kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
     const auto* text = ctx.object.find("sketch");
     if (text == nullptr) {
@@ -223,17 +237,7 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
 
         const auto measured = kernel::planeOf(*found);
         if (!measured) return measured.error();
-
-        // kernel::PlaneFrame and sketch::SketchFrame are separate types with the same shape,
-        // because core/sketch must not depend on core/kernel. This is the one layer that
-        // legitimately sees both, so the copy belongs here.
-        sketch::SketchFrame frame;
-        for (int i = 0; i < 3; ++i) {
-            frame.origin[i] = measured.value().origin[i];
-            frame.u[i] = measured.value().u[i];
-            frame.v[i] = measured.value().v[i];
-        }
-        sketch.value().setResolvedFrame(frame);
+        sketch.value().setResolvedFrame(frameOf(measured.value()));
     }
 
     // Solved on every recompute rather than trusting the stored coordinates. The stored positions
@@ -377,6 +381,34 @@ kernel::Result<Output> computeImport(const ComputeContext& ctx) {
 }  // namespace cad::recompute
 
 namespace cad::features {
+
+bool resolveSketchFrame(const document::Document& doc, document::ObjectId sketchId,
+                        sketch::Sketch& sketch) {
+    if (!sketch.needsResolution()) return true;   // a global-plane sketch already knows where it is
+
+    const auto object = doc.find(sketchId);
+    if (!object) return false;
+
+    const std::string& text = sketch.placement().face;
+    if (text.empty()) return false;
+
+    // The body the face belongs to, found through the sketch's own inputs rather than by searching
+    // the document: the input IS the record of which body this sketch was placed against, and
+    // guessing would pick a different one after a copy-paste.
+    for (const document::ObjectId input : object->inputs()) {
+        const auto body = doc.find(input);
+        if (!body || body->output() == nullptr) continue;
+        const auto found = body->output()->map.resolve(naming::ElementName::parse(text));
+        if (!found) continue;
+        const auto measured = kernel::planeOf(*found);
+        if (!measured) continue;
+        // Qualified: the converter lives beside the feature that first needed it, in
+        // cad::recompute, and this is the same translation unit.
+        sketch.setResolvedFrame(recompute::frameOf(measured.value()));
+        return true;
+    }
+    return false;
+}
 
 recompute::FeatureRegistry builtins() {
     using namespace cad::recompute;

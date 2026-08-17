@@ -7,5 +7,6 @@ cad_core_library(cad_features
   src/Features.cpp
 )
 target_include_directories(cad_features PUBLIC include)
-target_link_libraries(cad_features PUBLIC cad::recompute)
-target_link_libraries(cad_features PRIVATE cad::kernel cad::sketch cad::io)
+# cad::sketch is PUBLIC because Builtins.h declares resolveSketchFrame over a Sketch.
+target_link_libraries(cad_features PUBLIC cad::recompute cad::sketch)
+target_link_libraries(cad_features PRIVATE cad::kernel cad::io)

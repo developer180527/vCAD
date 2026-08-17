@@ -133,6 +133,15 @@ public:
     // ── document ──────────────────────────────────────────────────────────────────────────
 
     [[nodiscard]] std::vector<TreeItem> tree() const;
+
+    /// The document as it stands. Read-only: every edit goes through a command so that undo,
+    /// dirty tracking and recompute cannot be bypassed.
+    ///
+    /// Exposed because callers outside this class legitimately need to READ geometry — a shell
+    /// resolving a picked face to its element name, a test checking where a solid ended up. The
+    /// alternative was a growing set of one-off accessors, each of which is this one with a
+    /// narrower view and another name to learn.
+    [[nodiscard]] const document::Document& document() const noexcept { return history_.current(); }
     [[nodiscard]] const std::vector<Command>& commands() const noexcept { return commands_; }
     [[nodiscard]] CommandContext context() const;
 
@@ -450,6 +459,14 @@ public:
     /// Creates a Sketch feature and immediately edits it — what Start Sketch does.
     document::ObjectId beginSketch();
 
+    /// Creates a sketch placed on a named face of `body`, and selects it.
+    ///
+    /// The `body` is stored as an ObjectId property, which is what makes the face a real dependency
+    /// rather than a string: the engine folds that feature's cache key into this one, so editing
+    /// the face's own feature re-resolves the sketch instead of leaving it cached against where the
+    /// face used to be.
+    document::ObjectId addSketchOnFace(document::ObjectId body, const std::string& face);
+
     /// Writes the edited sketch back into its feature and returns to the model environment.
     ///
     /// One commit for the whole editing session, not per stroke. A user drawing twelve lines wants
@@ -479,6 +496,13 @@ public:
     ///
     /// Device pixels, origin top-left — the same convention as `pickAt` and `clickAt`.
     [[nodiscard]] std::optional<std::array<double, 2>> sketchPointAt(float x, float y) const;
+
+    /// Points the camera squarely at the sketch being edited, with the sketch's own v axis up.
+    ///
+    /// Called on entering the sketch environment. This is what "sketching happens in the same world
+    /// as the model" means in practice: the camera moves to the plane, rather than the model being
+    /// replaced by a 2D surface that shares none of its coordinates.
+    void alignCameraToSketch();
 
     /// Re-solves the edited sketch and notifies observers. Called after every edit, because a
     /// sketch that does not follow its constraints while you draw is not a sketch.
@@ -577,6 +601,8 @@ private:
     /// A constrained rectangle is something you can immediately extrude and edit through the
     /// properties grid, which exercises the whole parametric path.
     document::ObjectId addSketch();
+
+
 
     /// Extrudes the selected Sketch feature into a solid.
     void addExtrude(double millimetres);

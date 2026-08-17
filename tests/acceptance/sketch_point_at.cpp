@@ -15,7 +15,10 @@
 /// against hand-computed pixel numbers would only agree with whichever side I derived them from.
 
 #include "cad/app/Controller.h"
+#include "cad/kernel/Shape.h"
 #include "cad/sketch/Sketch.h"
+
+#include <string>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -144,4 +147,61 @@ TEST_CASE("outside the sketch environment there is no point to give", "[sketch][
     // Not editing anything. The shell asks this on every mouse move, so the answer has to be a
     // refusal rather than a crash or a coordinate on some assumed plane.
     CHECK_FALSE(controller.sketchPointAt(400.0f, 300.0f).has_value());
+}
+
+TEST_CASE("editing a face-placed sketch aligns the camera and accepts clicks", "[sketch][viewport]") {
+    // The end-to-end shape of in-place sketching, and the case that was impossible before:
+    // editSketch used to deserialise a face sketch without resolving where the face is, so the
+    // sketch had no 3D interpretation of its own coordinates and every click had to be refused.
+    app::Controller controller;
+    controller.setViewportSize(1200, 800);
+
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+    const auto tree = controller.tree();
+    REQUIRE_FALSE(tree.empty());
+    const document::ObjectId boxId = tree.front().id;
+    REQUIRE(boxId != document::ObjectId{});
+
+    // A face of the box, found the way the shell finds one: by picking it. Any planar face will do;
+    // what matters is that the sketch ends up on something that is NOT the default XY plane, so an
+    // alignment that ignored the face would be visible.
+    const auto box = controller.document().find(boxId);
+    REQUIRE(box != nullptr);
+    REQUIRE(box->output() != nullptr);
+
+    std::string faceName;
+    std::array<double, 3> faceNormal{};
+    for (const auto& name : box->output()->map.allNames()) {
+        const auto shape = box->output()->map.resolve(name);
+        if (!shape) continue;
+        const auto plane = kernel::planeOf(*shape);
+        if (!plane) continue;
+        const auto& f = plane.value();
+        const double nx = f.u[1] * f.v[2] - f.u[2] * f.v[1];
+        const double ny = f.u[2] * f.v[0] - f.u[0] * f.v[2];
+        const double nz = f.u[0] * f.v[1] - f.u[1] * f.v[0];
+        if (std::abs(nx) > 0.9) {          // a face looking along X: not the default plane
+            faceName = name.toString();
+            faceNormal = {nx, ny, nz};
+            break;
+        }
+    }
+    REQUIRE_FALSE(faceName.empty());
+
+    const document::ObjectId sketchId = controller.addSketchOnFace(boxId, faceName);
+    REQUIRE(sketchId != document::ObjectId{});
+    REQUIRE(controller.editSketch(sketchId));
+
+    // The camera went to the face, not to XY. Compared against the face's own normal rather than a
+    // hard-coded axis, so this still means something if the box's face naming changes.
+    const auto basis = controller.camera().basis();
+    const double alignment = std::abs(basis.forward[0] * faceNormal[0] +
+                                      basis.forward[1] * faceNormal[1] +
+                                      basis.forward[2] * faceNormal[2]);
+    CHECK_THAT(alignment, Catch::Matchers::WithinAbs(1.0, 1e-3));
+
+    // And a click in the middle of the view now lands on the sketch instead of being refused —
+    // which is the whole point, and was impossible before the frame was resolved on edit.
+    CHECK(controller.sketchPointAt(600.0f, 400.0f).has_value());
 }
