@@ -238,6 +238,33 @@ public:
         float depth = 1.0f;
     };
 
+    /// What a click selects.
+    ///
+    /// Lives here rather than in the shell, which is where the setting started (see MainWindow's
+    /// filter bar): "a click at this level means that face" is a model rule, and a rule that lives
+    /// in MainWindow does not exist on iPad. Named `SelectionLevel` rather than "filter" because it
+    /// does not filter a set -- it decides what a pick RESOLVES TO.
+    enum class SelectionLevel : std::uint8_t { Body, Face, Edge, Vertex };
+
+    [[nodiscard]] SelectionLevel selectionLevel() const noexcept { return selectionLevel_; }
+
+    /// Changes the level, and clears the selection made at the old one.
+    ///
+    /// Kept rather than converted: there is no honest mapping from "this face" to "this edge", and
+    /// silently keeping a face selected while the level says Edge is how a command ends up acting on
+    /// something the user cannot see is selected.
+    void setSelectionLevel(SelectionLevel);
+
+    /// One picked piece of geometry, below the level of a document object.
+    struct ElementSelection {
+        document::ObjectId object{};
+        naming::ElementName element;
+        std::uint32_t slot = 0;        ///< kept so highlighting stays O(1)
+    };
+    [[nodiscard]] const std::vector<ElementSelection>& elementSelection() const noexcept {
+        return elementSelection_;
+    }
+
     /// Nearest element at a point, in DEVICE pixels.
     ///
     /// Device rather than logical, because that is what the id buffer is indexed in. A shell on a
@@ -267,6 +294,33 @@ public:
     /// and its projection: aligning is a rotation, and changing the zoom at the same time makes the
     /// transition impossible to follow.
     void alignViewTo(const sketch::SketchFrame&);
+
+    /// What a click did, so the shell can say so without working it out again.
+    ///
+    /// A message even on success, because at Face or Edge level the useful feedback is WHICH face --
+    /// and an empty message on the failure paths would leave a click that did nothing unexplained,
+    /// which is the complaint this whole seam exists to answer.
+    struct ClickResult {
+        bool hit = false;         ///< something was under the pointer
+        bool changed = false;     ///< the selection changed, so redraw
+        std::string message;
+    };
+
+    /// A click in the viewport, in DEVICE pixels. `additive` is the ctrl/shift-click behaviour.
+    ///
+    /// Clicking empty space with `additive` false clears the selection, which is what every CAD
+    /// application does and what makes the model tree and the viewport agree.
+    ClickResult clickAt(std::uint32_t x, std::uint32_t y, bool additive);
+
+    /// The pointer moved to a point. Marks what is under it as hovered.
+    ///
+    /// Returns whether the highlight actually changed, so a shell can repaint on that instead of on
+    /// every mouse-move event. Hover fires continuously; a redraw per event is the difference
+    /// between a responsive viewport and a warm laptop.
+    bool hoverAt(std::uint32_t x, std::uint32_t y);
+
+    /// Drops the hover highlight -- the pointer left the viewport.
+    bool clearHover();
 
     /// Scripts the next pick, for tests and headless tools.
     ///
@@ -568,6 +622,18 @@ private:
     sketch::SolveReport lastSketchSolve_;
     std::vector<sketch::GeoId> sketchSelection_;
 
+    SelectionLevel selectionLevel_ = SelectionLevel::Body;
+    std::vector<ElementSelection> elementSelection_;
+    /// The slot currently hovered, or none. Held so hoverAt can tell "same element as last time"
+    /// from "moved to a new one" without rebuilding the highlight table.
+    std::optional<std::uint32_t> hoveredSlot_;
+
+    /// Pushes selection and hover into the scene's highlight table.
+    void refreshHighlights();
+
+    /// Every element slot the scene holds for an object. Used to highlight a whole body.
+    [[nodiscard]] std::vector<std::uint32_t> slotsOf(document::ObjectId) const;
+
     Preferences preferences_;
     std::string activeCommand_;
     std::vector<CommandParameter> commandParameters_;
@@ -582,5 +648,8 @@ private:
     std::function<void()> viewChanged_;
     std::function<void(const std::string&)> statusFn_;
 };
+
+/// Free rather than a member, matching toString(Environment) above.
+const char* toString(Controller::SelectionLevel) noexcept;
 
 }  // namespace cad::app

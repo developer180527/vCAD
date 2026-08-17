@@ -89,6 +89,7 @@ std::vector<TreeItem> Controller::tree() const {
 CommandContext Controller::context() const {
     CommandContext ctx;
     ctx.selectedObjects = selection_.size();
+    ctx.selectedElements = elementSelection_.size();
     ctx.documentEmpty = history_.current().size() == 0;
     ctx.canUndo = history_.canUndo();
     ctx.canRedo = history_.canRedo();
@@ -96,18 +97,28 @@ CommandContext Controller::context() const {
 }
 
 void Controller::select(ObjectId id, bool additive) {
-    if (!additive) selection_.clear();
+    // Element selection is part of THE selection, so a click in the tree replaces it rather than
+    // leaving a face selected underneath a newly selected body.
+    if (!additive) {
+        selection_.clear();
+        elementSelection_.clear();
+    }
     const auto it = std::find(selection_.begin(), selection_.end(), id);
     if (it != selection_.end()) {
         selection_.erase(it);           // clicking a selected item again deselects it
     } else if (!id.isNull()) {
         selection_.push_back(id);
     }
+    // So selecting in the TREE marks the geometry in the viewport. The two views showing different
+    // selections is the kind of disagreement that makes a user distrust both.
+    refreshHighlights();
     notifyDocument();
 }
 
 void Controller::clearSelection() {
     selection_.clear();
+    elementSelection_.clear();
+    refreshHighlights();
     notifyDocument();
 }
 
@@ -192,6 +203,17 @@ void Controller::refresh() {
     history_.replaceCurrent(std::move(result.value().first));
     failedCount_ = result.value().second.failed + result.value().second.blocked;
 
+    // Drop element selections whose object no longer exists. An undo or a delete leaves the slot
+    // pointing at whatever now occupies it, so keeping them would highlight unrelated geometry and
+    // hand a command a reference to a feature that is gone.
+    const auto orphaned = [this](const ElementSelection& e) {
+        const auto found = history_.current().find(e.object);
+        return !found || found->output() == nullptr;
+    };
+    elementSelection_.erase(
+        std::remove_if(elementSelection_.begin(), elementSelection_.end(), orphaned),
+        elementSelection_.end());
+
     // Every computed object gets a placement if it does not have one. Real assemblies will place
     // deliberately; for a part document, "everything is visible once" is what a user expects.
     const auto& doc = history_.current();
@@ -211,6 +233,10 @@ void Controller::refresh() {
     if (auto r = scene_->update(doc, placements_); !r) {
         status(r.error().message);
     }
+    // After the rebuild, not before: update() resizes the highlight table to the new element count,
+    // which drops what was marked. Without this a recompute silently unhighlights the selection --
+    // and since every edit ends in a recompute, that is most of the time.
+    refreshHighlights();
     scene_->setCamera(camera_.matrices(viewport_));
 
     if (failedCount_ > 0) {
@@ -587,6 +613,171 @@ void Controller::alignViewTo(const sketch::SketchFrame& frame) {
 
     camera_.alignTo(origin, normal, up);
     cameraChanged();
+}
+
+const char* toString(Controller::SelectionLevel level) noexcept {
+    switch (level) {
+        case Controller::SelectionLevel::Body:   return "Body";
+        case Controller::SelectionLevel::Face:   return "Face";
+        case Controller::SelectionLevel::Edge:   return "Edge";
+        case Controller::SelectionLevel::Vertex: return "Vertex";
+    }
+    return "Body";
+}
+
+namespace {
+
+/// The topology a selection level resolves to. Body has none: it selects a document object, not a
+/// piece of geometry, which is why it is handled separately everywhere below.
+std::optional<kernel::ShapeType> topologyFor(Controller::SelectionLevel level) {
+    switch (level) {
+        case Controller::SelectionLevel::Face:   return kernel::ShapeType::Face;
+        case Controller::SelectionLevel::Edge:   return kernel::ShapeType::Edge;
+        case Controller::SelectionLevel::Vertex: return kernel::ShapeType::Vertex;
+        case Controller::SelectionLevel::Body:   return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+void Controller::setSelectionLevel(SelectionLevel level) {
+    if (level == selectionLevel_) return;
+    selectionLevel_ = level;
+    // Dropped rather than converted. There is no honest mapping from "this face" to "this edge", and
+    // keeping a face selected while the level reads Edge is how a command acts on something the user
+    // cannot see is selected.
+    elementSelection_.clear();
+    refreshHighlights();
+    notifyDocument();
+}
+
+std::vector<std::uint32_t> Controller::slotsOf(ObjectId id) const {
+    std::vector<std::uint32_t> slots;
+    if (id.isNull()) return slots;
+    // Walked rather than looked up: the scene maps slot -> object, not the reverse. Only ever run on
+    // a selection change, which is a human-speed event, so a reverse index would be memory spent to
+    // speed up something nobody is waiting for.
+    for (std::uint32_t slot = 0; slot < scene_->frame().elementCount; ++slot) {
+        const auto owner = scene_->objectOf(slot);
+        if (owner && *owner == id) slots.push_back(slot);
+    }
+    return slots;
+}
+
+void Controller::refreshHighlights() {
+    scene_->clearHighlights();
+
+    // Selection first, hover second, so hovering something already selected reads as hovered. The
+    // opposite order makes the pointer appear to do nothing over a selected face.
+    if (selectionLevel_ == SelectionLevel::Body) {
+        for (const ObjectId id : selection_) {
+            for (const std::uint32_t slot : slotsOf(id)) {
+                scene_->setHighlight(slot, render::Highlight::Selected);
+            }
+        }
+    } else {
+        for (const ElementSelection& picked : elementSelection_) {
+            scene_->setHighlight(picked.slot, render::Highlight::Selected);
+        }
+    }
+
+    if (hoveredSlot_) scene_->setHighlight(*hoveredSlot_, render::Highlight::Hovered);
+}
+
+Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bool additive) {
+    ClickResult out;
+    const Pick pick = pickAt(x, y);
+
+    if (!pick.hit) {
+        // Empty space. Clearing is what every CAD application does, and it is what keeps the tree
+        // and the viewport agreeing about what is selected.
+        if (additive) return out;
+        const bool had = !selection_.empty() || !elementSelection_.empty();
+        selection_.clear();
+        elementSelection_.clear();
+        out.changed = had;
+        if (had) {
+            refreshHighlights();
+            notifyDocument();
+        }
+        return out;
+    }
+
+    out.hit = true;
+
+    if (selectionLevel_ == SelectionLevel::Body) {
+        if (pick.object.isNull()) {
+            out.message = "That geometry does not belong to a feature.";
+            return out;
+        }
+        select(pick.object, additive);       // notifies on its own
+        refreshHighlights();
+        out.changed = true;
+        const auto object = history_.current().find(pick.object);
+        out.message = object ? "Selected " + object->label() : "Selected";
+        return out;
+    }
+
+    // Below Body: resolve the picked element's TOPOLOGY and refuse anything of the wrong kind. By
+    // resolved shape, not by the name -- an edge and the face bounding it can come from the same
+    // feature and the same operation, so the name cannot tell them apart.
+    if (pick.element.isNull()) {
+        out.message = "That geometry cannot be referred to, so it cannot be selected.";
+        return out;
+    }
+    const auto object = history_.current().find(pick.object);
+    if (!object || object->output() == nullptr) {
+        out.message = "That body has not been computed yet.";
+        return out;
+    }
+    const auto shape = object->output()->map.resolve(pick.element);
+    const auto wanted = topologyFor(selectionLevel_);
+    if (!shape || !wanted) {
+        out.message = "That element no longer exists in the model.";
+        return out;
+    }
+    if (shape->type() != *wanted) {
+        // Honest about the common case rather than silent: the mesh carries faces and edges, so at
+        // Vertex level there is nothing to hit at all, and a click that does nothing without saying
+        // why is the exact complaint this seam exists to answer.
+        out.message = std::string("Nothing to select at ") + toString(selectionLevel_) +
+                      " level here.";
+        return out;
+    }
+
+    if (!additive) elementSelection_.clear();
+    const auto same = [&](const ElementSelection& e) { return e.element == pick.element; };
+    const auto it = std::find_if(elementSelection_.begin(), elementSelection_.end(), same);
+    if (it != elementSelection_.end()) {
+        elementSelection_.erase(it);        // clicking a selected element again deselects it
+        out.message = "Deselected";
+    } else {
+        elementSelection_.push_back({pick.object, pick.element, pick.slot});
+        out.message = std::string("Selected ") + toString(selectionLevel_) + " " +
+                      pick.element.toString();
+    }
+    out.changed = true;
+    refreshHighlights();
+    notifyDocument();
+    return out;
+}
+
+bool Controller::hoverAt(std::uint32_t x, std::uint32_t y) {
+    const Pick pick = pickAt(x, y);
+    const std::optional<std::uint32_t> now =
+        pick.hit ? std::optional<std::uint32_t>{pick.slot} : std::nullopt;
+    if (now == hoveredSlot_) return false;   // the shell repaints on the return value, not per event
+    hoveredSlot_ = now;
+    refreshHighlights();
+    return true;
+}
+
+bool Controller::clearHover() {
+    if (!hoveredSlot_) return false;
+    hoveredSlot_.reset();
+    refreshHighlights();
+    return true;
 }
 
 void Controller::scriptNextPick(std::uint32_t elementSlot, bool valid) {
@@ -1106,14 +1297,41 @@ void Controller::addBoolean(const std::string& type, const std::string& label) {
 
 void Controller::addEdgeFeature(const std::string& type, const std::string& label,
                                 const std::string& sizeProperty, double millimetres) {
-    if (selection_.size() != 1) return;
-    const ObjectId target = selection_.front();
+    // Picked edges first. This is what edge selection was for: before it existed the only honest
+    // thing to do was every edge of the body, and the status line said so.
+    ObjectId target;
+    std::vector<naming::ElementName> edges;
+    bool wholeBody = false;
 
-    auto edges = edgesOf(target);
+    if (!elementSelection_.empty() && selectionLevel_ == SelectionLevel::Edge) {
+        // All from one object. A fillet takes a base shape and edges OF it, so edges from two bodies
+        // is not a feature with a strange input -- it is two features, and guessing which one the
+        // user meant would silently drop half the selection.
+        target = elementSelection_.front().object;
+        for (const ElementSelection& picked : elementSelection_) {
+            if (picked.object != target) {
+                status("Select edges on one body at a time.");
+                return;
+            }
+            edges.push_back(picked.element);
+        }
+    } else if (selection_.size() == 1) {
+        target = selection_.front();
+        edges = edgesOf(target);
+        wholeBody = true;
+    } else {
+        status("Select a body, or the edges to " + label + ".");
+        return;
+    }
+
     if (edges.empty()) {
         status("Nothing to " + label + ": that feature has no edges yet.");
         return;
     }
+
+    // Counted BEFORE the std::move below. Reading edges.size() after moving the vector into the
+    // property reports zero -- which is how the status line came to claim "applied to all 0 edges".
+    const std::size_t edgeCount = edges.size();
 
     auto [next, id] = history_.current().add(type);
     const auto object = next.find(id);
@@ -1123,6 +1341,9 @@ void Controller::addEdgeFeature(const std::string& type, const std::string& labe
     next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
     history_.commit(std::move(next), label);
     selection_.clear();
+    // The picked edges belonged to the OLD feature's output, which this feature consumed. Leaving
+    // them selected would mark geometry that no longer exists.
+    elementSelection_.clear();
     selection_.push_back(id);
     refresh();
 
@@ -1132,8 +1353,12 @@ void Controller::addEdgeFeature(const std::string& type, const std::string& labe
     const auto result = history_.current().find(id);
     if (result && result->output() == nullptr) {
         status(label + " failed — see the feature's error in the browser.");
+    } else if (wholeBody) {
+        status(label + " applied to all " + std::to_string(edgeCount) +
+               " edges of the body. Select edges first to " + label + " only those.");
     } else {
-        status(label + " applied to all edges (edge selection is not wired yet).");
+        status(label + " applied to " + std::to_string(edgeCount) +
+               (edgeCount == 1 ? " edge." : " selected edges."));
     }
 }
 
@@ -1289,6 +1514,9 @@ void Controller::registerCommands() {
     // Edge features. Enabled on a single selection that HAS edges — asking for a fillet on a
     // feature with no computed output should not offer itself as available.
     const auto oneWithEdges = [this](const CommandContext& c) {
+        // Either input: picked edges, or a single body whose edges we would take wholesale. A
+        // greyed-out Fillet with three edges selected would read as the selection not counting.
+        if (!elementSelection_.empty() && selectionLevel_ == SelectionLevel::Edge) return true;
         return c.selectedObjects == 1 && !edgesOf(selection_.front()).empty();
     };
     commands_.push_back({"feature.fillet", "Fillet", "Round every edge of the selected body",
