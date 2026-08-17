@@ -121,7 +121,7 @@ not survive a decade of contributors.** What survives is a test that fails.
    green on an addition. Regenerated deliberately with
    `CAD_ABI_GOLDEN_UPDATE=1 cargo test -p cad-tests --test abi_golden`, so a reviewer sees the
    golden file change and knows exactly what the boundary gained.
-2. **A compatibility museum.** Compiled plugin binaries, one per ABI generation, checked into the
+2. **A compatibility museum. (RESOLVED)** Compiled plugin binaries, one per ABI generation, checked into the
    repository and loaded by CI **forever**. Not source — binaries, because recompiling from source
    tests source compatibility, which is not the promise. When ABI 1.8's plugin no longer loads, CI
    goes red and the guarantee is visibly broken rather than quietly.
@@ -131,6 +131,20 @@ not survive a decade of contributors.** What survives is a test that fails.
 4. **The Session API's existing role continues.** It is already the most-tested surface in the
    project; the plugin vtable should be implemented *in terms of it* wherever possible, so the two
    cannot drift.
+
+**(RESOLVED)** — `tests/museum/abi-1.<minor>/<triple>/` holds a frozen, compiled plugin binary with
+its manifest and a `PROVENANCE` file recording the ABI, the commit it was built from, the compiler
+and a sha256. `tests/acceptance/plugin_museum.cpp` loads every exhibit for the current platform
+through the REAL loader and the real host vtable on every run.
+
+Verified against both failure modes it exists to catch: a host that stops serving ABI generation 1
+fails it, and an EMPTY museum fails it too — a silently-empty loop is how a guarantee stops being
+checked without anyone noticing.
+
+The exhibits are never rebuilt. `tests/plugins` builds from source every run and checks something
+different and also useful; this checks the thing nothing else can. When it fails, the host is
+wrong — refreshing an exhibit to make CI green converts the one test that can detect a broken
+promise into a record of having broken it.
 
 Point 2 is the one that actually delivers the goal. Everything else is hygiene.
 

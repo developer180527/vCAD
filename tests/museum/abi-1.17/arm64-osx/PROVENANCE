@@ -1,0 +1,16 @@
+# What this binary is, and why it must never be rebuilt.
+#
+# ADR 0011 promises that a plugin compiled today loads and runs against a vCAD built in ten
+# years. This file is that promise made testable. It is a COMPILED ARTEFACT, frozen: rebuilding
+# it from source would test SOURCE compatibility, which is not what was promised. The author of
+# a real plugin may be gone, their compiler may be gone, their company may be gone -- the binary
+# is all that is left, and the binary has to keep working.
+#
+# If a change to the host makes this fail to load, the change is wrong. Do not update this file
+# to make CI green.
+
+abi = 1.17
+triple = arm64-osx
+built_from = f0aa7d7
+built_by = AppleClang, macOS arm64
+sha256 = 3f2bc14a183e5a6de90ffe1b07bfe24782ef8acc997954e349e058ba2514bb7a

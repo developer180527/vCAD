@@ -1,0 +1,7 @@
+# The demo plugin's manifest. Read in full before its library is opened.
+id = com.vcad.demo
+name = vCAD Demo Plugin
+semver = 1.0.0
+abi_major = 1
+min_host_minor = 0
+library = vcad_demo_plugin
