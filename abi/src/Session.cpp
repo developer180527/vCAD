@@ -96,6 +96,79 @@ struct Session {
         /// order-dependent counter is only a problem for a compute that is already broken.
         std::uint16_t opTag = 0;
     };
+    /// The ribbon a plugin has contributed to, in Fusion's vocabulary: tabs contain sections,
+    /// sections contain commands. Held as data rather than as Qt widgets because `app/` and `abi/`
+    /// must not know what a ribbon looks like — the shell reads this and draws it, and the iPad
+    /// shell will read the same thing and draw something else.
+    struct RibbonTab {
+        std::string id, label;
+        std::uint32_t order = 0;
+        bool builtin = false;
+    };
+    struct RibbonSection {
+        std::string id, label, tab;
+        std::uint32_t order = 0;
+        bool builtin = false;
+    };
+    struct RibbonCommand {
+        std::string id, label, tooltip, icon, tab, section;
+        std::uint32_t order = 0, placement = 0;
+        void* pluginCtx = nullptr;
+        std::int32_t (*enabled)(void*, CadCommandCtx) = nullptr;
+        CadStatus (*invoke)(void*, CadCommandCtx) = nullptr;
+    };
+    std::vector<RibbonTab> tabs;
+    std::vector<RibbonSection> sections;
+    std::vector<RibbonCommand> ribbonCommands;
+
+    /// Settings a plugin declared. Owned as std::string rather than as the plugin's pointers,
+    /// because a plugin may be unloaded while its page is still on screen — and a settings window
+    /// showing freed strings is a crash in the host that a user will blame on the host.
+    struct StoredSetting {
+        std::string id, label, description, defaultText;
+        std::vector<std::string> choices;
+        std::uint32_t kind = 0;
+        double defaultValue = 0.0, minimum = 0.0, maximum = 0.0;
+    };
+    struct StoredSettingsPage {
+        std::string id, label, iconName, groupLabel;
+        std::vector<StoredSetting> settings;
+    };
+    std::vector<StoredSettingsPage> settingsPages;
+
+    /// Scratch for the const char* a read-back hands out, so they stay valid until the next call.
+    std::vector<const char*> choicePointers;
+
+    /// Seeds the built-in ids so a plugin can name CAD_SECTION_CREATE and be validated against
+    /// something. They are part of the ABI (see the header) rather than the shell's private
+    /// business, which is why they are known here at all.
+    void seedBuiltinRibbon() {
+        if (!tabs.empty()) return;
+        tabs.push_back({CAD_TAB_MODEL, "3D Model", 0, true});
+        tabs.push_back({CAD_TAB_SKETCH, "Sketch", 1, true});
+        tabs.push_back({CAD_TAB_INSPECT, "Inspect", 2, true});
+        tabs.push_back({CAD_TAB_ANNOTATE, "Annotate", 3, true});
+        tabs.push_back({CAD_TAB_MANAGE, "Manage", 4, true});
+        tabs.push_back({CAD_TAB_VIEW, "View", 5, true});
+
+        sections.push_back({CAD_SECTION_SKETCH, "Sketch", CAD_TAB_MODEL, 0, true});
+        sections.push_back({CAD_SECTION_CREATE, "Create", CAD_TAB_MODEL, 1, true});
+        sections.push_back({CAD_SECTION_PRIMITIVES, "Primitives", CAD_TAB_MODEL, 2, true});
+        sections.push_back({CAD_SECTION_MODIFY, "Modify", CAD_TAB_MODEL, 3, true});
+        sections.push_back({CAD_SECTION_PATTERN, "Pattern", CAD_TAB_MODEL, 4, true});
+        sections.push_back({CAD_SECTION_EDIT, "Edit", CAD_TAB_MODEL, 5, true});
+        sections.push_back({CAD_SECTION_HISTORY, "History", CAD_TAB_MODEL, 6, true});
+    }
+
+    [[nodiscard]] bool hasTab(const std::string& id) const {
+        return std::any_of(tabs.begin(), tabs.end(),
+                           [&](const RibbonTab& t) { return t.id == id; });
+    }
+    [[nodiscard]] bool hasSection(const std::string& id) const {
+        return std::any_of(sections.begin(), sections.end(),
+                           [&](const RibbonSection& x) { return x.id == id; });
+    }
+
     std::unordered_map<std::uint64_t, ActiveCompute> computes;
     std::uint64_t nextCompute = 1;
 
@@ -870,6 +943,231 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
     return CAD_OK;
 }
 
+// ── ribbon ──────────────────────────────────────────────────────────────────────────────
+//
+// Three levels, all legal for a plugin: a new TAB, a new SECTION in any tab, or a COMMAND in any
+// section. Ordered validation is the whole design — a section must name a tab that exists and a
+// command must name a section that exists, and naming something unknown is REFUSED rather than
+// having it created. Implicit creation means a typo produces an empty tab called "Creat" and the
+// author sees a missing button with no error anywhere.
+
+/// Sets the message the HOST vtable's last_error returns, and hands back the status.
+///
+/// Not `fail()`. That writes the Session API's error channel, which `cad_last_error` reads; the
+/// vtable's `last_error` reads `hostError`. A plugin calling through the vtable got a status code
+/// with no message, and the test that caught it asserted the refusal EXPLAINED itself rather than
+/// only that it happened.
+CadStatus hostFail(Session& s, CadStatus status, std::string message) {
+    s.hostError = std::move(message);
+    return status;
+}
+
+CadStatus hostRegisterSettingsPage(void* ctx, const CadSettingsPageDesc* page,
+                                   const CadSettingDesc* settings, std::uint32_t count) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || page == nullptr) return CAD_ERR_INVALID_INPUT;
+    if (page->struct_size < offsetof(CadSettingsPageDesc, label) + sizeof(page->label)) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "This settings page descriptor is too small.");
+    }
+    if (page->id == nullptr || *page->id == '\0') {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "A settings page needs an id.");
+    }
+    if (count > 0 && settings == nullptr) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT,
+                        "A settings page declaring fields must supply them.");
+    }
+
+    // MERGED into an existing page, unlike a ribbon tab which is refused. Two plugins adding a
+    // group to a shared page is the normal case; two claiming one ribbon tab is not.
+    auto at = std::find_if(s->settingsPages.begin(), s->settingsPages.end(),
+                          [&](const Session::StoredSettingsPage& p) { return p.id == page->id; });
+    if (at == s->settingsPages.end()) {
+        Session::StoredSettingsPage fresh;
+        fresh.id = page->id;
+        fresh.label = page->label != nullptr ? page->label : page->id;
+        if (page->struct_size >= offsetof(CadSettingsPageDesc, icon_name) + sizeof(page->icon_name)
+            && page->icon_name != nullptr) {
+            fresh.iconName = page->icon_name;
+        }
+        if (page->struct_size >= offsetof(CadSettingsPageDesc, group_label)
+                                     + sizeof(page->group_label)
+            && page->group_label != nullptr) {
+            fresh.groupLabel = page->group_label;
+        }
+        s->settingsPages.push_back(std::move(fresh));
+        at = std::prev(s->settingsPages.end());
+    }
+
+    const std::size_t stride = settings != nullptr && settings->struct_size > 0
+                                   ? settings->struct_size
+                                   : sizeof(CadSettingDesc);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        // Walked by the CALLER's stride, not ours. A plugin built against an older header has
+        // shorter descriptors, and stepping by sizeof(CadSettingDesc) would read the second one
+        // from the middle of the first.
+        const auto* raw = reinterpret_cast<const CadSettingDesc*>(
+            reinterpret_cast<const unsigned char*>(settings) + i * stride);
+        if (raw->struct_size < offsetof(CadSettingDesc, id) + sizeof(raw->id)) continue;
+        if (raw->id == nullptr || *raw->id == '\0') continue;
+
+        // A duplicate id is dropped rather than shadowing: which value a user edited must not
+        // depend on load order.
+        bool duplicate = false;
+        for (const auto& existingPage : s->settingsPages) {
+            for (const auto& existing : existingPage.settings) {
+                if (existing.id == raw->id) duplicate = true;
+            }
+        }
+        if (duplicate) continue;
+
+        // EVERY field gated on the caller's own struct_size. Walking by the right stride is only
+        // half of it: reading `description` or `kind` from a descriptor that ends after `label` is
+        // reading past the end of the plugin's memory, and it segfaulted the moment a test passed a
+        // genuinely shorter struct. This is the rule the size prefix exists for, applied to the
+        // INPUT side rather than only to the output.
+        const std::uint32_t room = raw->struct_size;
+        const auto has = [room](std::size_t offset, std::size_t size) {
+            return offset + size <= room;
+        };
+
+        Session::StoredSetting stored;
+        stored.id = raw->id;
+        if (has(offsetof(CadSettingDesc, label), sizeof(raw->label)) && raw->label != nullptr) {
+            stored.label = raw->label;
+        } else {
+            stored.label = raw->id;
+        }
+        if (has(offsetof(CadSettingDesc, description), sizeof(raw->description))
+            && raw->description != nullptr) {
+            stored.description = raw->description;
+        }
+        if (has(offsetof(CadSettingDesc, kind), sizeof(raw->kind))) stored.kind = raw->kind;
+        if (has(offsetof(CadSettingDesc, default_value), sizeof(raw->default_value))) {
+            stored.defaultValue = raw->default_value;
+        }
+        if (has(offsetof(CadSettingDesc, minimum), sizeof(raw->minimum))) {
+            stored.minimum = raw->minimum;
+        }
+        if (has(offsetof(CadSettingDesc, maximum), sizeof(raw->maximum))) {
+            stored.maximum = raw->maximum;
+        }
+        if (has(offsetof(CadSettingDesc, default_text), sizeof(raw->default_text))
+            && raw->default_text != nullptr) {
+            stored.defaultText = raw->default_text;
+        }
+        if (has(offsetof(CadSettingDesc, choice_count), sizeof(raw->choice_count))
+            && raw->choices != nullptr) {
+            for (std::uint32_t c = 0; c < raw->choice_count; ++c) {
+                if (raw->choices[c] != nullptr) stored.choices.emplace_back(raw->choices[c]);
+            }
+        }
+        at->settings.push_back(std::move(stored));
+    }
+    return CAD_OK;
+}
+
+CadStatus hostRegisterTab(void* ctx, const CadTabDesc* desc) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || desc == nullptr) return CAD_ERR_INVALID_INPUT;
+    if (desc->struct_size < offsetof(CadTabDesc, label) + sizeof(desc->label)) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "This tab descriptor is too small to be read.");
+    }
+    if (desc->id == nullptr || *desc->id == '\0') {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "A ribbon tab needs an id.");
+    }
+    s->seedBuiltinRibbon();
+    if (s->hasTab(desc->id)) {
+        // Refused, not merged. Two plugins sharing a tab id would each believe they owned it, and
+        // which one's label a user saw would depend on load order.
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, std::string("A ribbon tab called '") + desc->id + "' already exists.");
+    }
+    Session::RibbonTab tab;
+    tab.id = desc->id;
+    tab.label = desc->label != nullptr ? desc->label : desc->id;
+    tab.order = desc->order;
+    s->tabs.push_back(std::move(tab));
+    return CAD_OK;
+}
+
+CadStatus hostRegisterSection(void* ctx, const CadSectionDesc* desc) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || desc == nullptr) return CAD_ERR_INVALID_INPUT;
+    if (desc->struct_size < offsetof(CadSectionDesc, tab) + sizeof(desc->tab)) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "This section descriptor is too small to be read.");
+    }
+    if (desc->id == nullptr || *desc->id == '\0' || desc->tab == nullptr) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "A ribbon section needs an id and a tab.");
+    }
+    s->seedBuiltinRibbon();
+    if (!s->hasTab(desc->tab)) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, std::string("There is no ribbon tab called '") + desc->tab
+                        + "'. Register the tab before its sections.");
+    }
+    if (s->hasSection(desc->id)) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, std::string("A ribbon section called '") + desc->id + "' already exists.");
+    }
+    Session::RibbonSection section;
+    section.id = desc->id;
+    section.label = desc->label != nullptr ? desc->label : desc->id;
+    section.tab = desc->tab;
+    section.order = desc->order;
+    s->sections.push_back(std::move(section));
+    return CAD_OK;
+}
+
+CadStatus hostRegisterCommand(void* ctx, const CadCommandDesc* desc) {
+    Session* s = hostSession(ctx);
+    if (s == nullptr || desc == nullptr) return CAD_ERR_INVALID_INPUT;
+    if (desc->struct_size < offsetof(CadCommandDesc, invoke) + sizeof(desc->invoke)) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "This command descriptor has no invoke function.");
+    }
+    if (desc->id == nullptr || *desc->id == '\0' || desc->invoke == nullptr) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, "A command needs an id and something to invoke.");
+    }
+    s->seedBuiltinRibbon();
+
+    const bool anyOf = std::any_of(s->ribbonCommands.begin(), s->ribbonCommands.end(),
+                                  [&](const Session::RibbonCommand& c) {
+                                      return c.id == desc->id;
+                                  });
+    if (anyOf) {
+        return hostFail(*s, CAD_ERR_INVALID_INPUT, std::string("A command called '") + desc->id + "' already exists.");
+    }
+
+    Session::RibbonCommand cmd;
+    cmd.id = desc->id;
+    cmd.label = desc->label != nullptr ? desc->label : desc->id;
+    cmd.tooltip = desc->tooltip != nullptr ? desc->tooltip : "";
+    cmd.icon = desc->icon_name != nullptr ? desc->icon_name : "";
+
+    // Placement is only read if the descriptor is long enough to carry it — a plugin built against
+    // 1.18 has no such field, and reading it would be reading past its end.
+    const bool placed = desc->struct_size >= offsetof(CadCommandDesc, order)
+                                                + sizeof(desc->order);
+    if (placed && desc->section != nullptr && *desc->section != '\0') {
+        if (!s->hasSection(desc->section)) {
+            return hostFail(*s, CAD_ERR_INVALID_INPUT, std::string("There is no ribbon section called '") + desc->section
+                            + "'. Register the section before its commands.");
+        }
+        cmd.section = desc->section;
+        cmd.tab = desc->tab != nullptr ? desc->tab : "";
+        cmd.order = desc->order;
+        cmd.placement = desc->placement;
+    } else {
+        // No placement asked for. The host puts it somewhere findable rather than nowhere: a
+        // command that registers successfully and appears in no menu is worse than one refused.
+        cmd.section = CAD_SECTION_CREATE;
+        cmd.tab = CAD_TAB_MODEL;
+        cmd.placement = CAD_UI_RIBBON;
+    }
+
+    cmd.pluginCtx = desc->plugin_ctx;
+    cmd.enabled = desc->enabled;
+    cmd.invoke = desc->invoke;
+    s->ribbonCommands.push_back(std::move(cmd));
+    return CAD_OK;
+}
+
 // ── compute context ─────────────────────────────────────────────────────────────────────
 
 CadStatus hostComputeInputCount(void* ctx, CadComputeCtx cc, std::uint32_t* out) {
@@ -1220,6 +1518,10 @@ const CadHost* cad_plugin_host(CadSession handle) {
             h.shape_sub_count = &hostShapeSubCount;
             h.shape_sub_at = &hostShapeSubAt;
             h.register_feature = &hostRegisterFeature;
+            h.register_command = &hostRegisterCommand;
+            h.register_tab = &hostRegisterTab;
+            h.register_settings_page = &hostRegisterSettingsPage;
+            h.register_section = &hostRegisterSection;
             h.compute_input_count = &hostComputeInputCount;
             h.compute_input_shape = &hostComputeInputShape;
             h.compute_param_real = &hostComputeParamReal;
@@ -1239,6 +1541,110 @@ const CadHost* cad_plugin_host(CadSession handle) {
         return CAD_OK;
     });
     return result;
+}
+
+CadStatus cad_settings_page_count(CadSession handle, std::uint32_t* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out != nullptr) *out = static_cast<std::uint32_t>(s.settingsPages.size());
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_settings_page_at(CadSession handle, std::uint32_t index, CadSettingsPageDesc* out,
+                               std::uint32_t* outSettingCount) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr || index >= s.settingsPages.size()) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "No settings page at that index.");
+        }
+        const Session::StoredSettingsPage& page = s.settingsPages[index];
+
+        // Written only as far as the CALLER's struct_size. A shell built against an older header has
+        // a shorter struct, and filling our whole one would write past its end -- the mirror image
+        // of the rule that stops us READING past a plugin's.
+        const std::uint32_t room = out->struct_size;
+        const auto fits = [room](std::size_t offset, std::size_t size) {
+            return offset + size <= room;
+        };
+        if (fits(offsetof(CadSettingsPageDesc, id), sizeof(out->id))) out->id = page.id.c_str();
+        if (fits(offsetof(CadSettingsPageDesc, label), sizeof(out->label))) {
+            out->label = page.label.c_str();
+        }
+        if (fits(offsetof(CadSettingsPageDesc, icon_name), sizeof(out->icon_name))) {
+            out->icon_name = page.iconName.c_str();
+        }
+        if (fits(offsetof(CadSettingsPageDesc, group_label), sizeof(out->group_label))) {
+            out->group_label = page.groupLabel.c_str();
+        }
+        if (outSettingCount != nullptr) {
+            *outSettingCount = static_cast<std::uint32_t>(page.settings.size());
+        }
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_settings_at(CadSession handle, std::uint32_t pageIndex, std::uint32_t settingIndex,
+                          CadSettingDesc* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr || pageIndex >= s.settingsPages.size()) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "No settings page at that index.");
+        }
+        const Session::StoredSettingsPage& page = s.settingsPages[pageIndex];
+        if (settingIndex >= page.settings.size()) {
+            return fail(s, CAD_ERR_INVALID_INPUT, "No setting at that index.");
+        }
+        const Session::StoredSetting& setting = page.settings[settingIndex];
+
+        const std::uint32_t room = out->struct_size;
+        const auto fits = [room](std::size_t offset, std::size_t size) {
+            return offset + size <= room;
+        };
+        if (fits(offsetof(CadSettingDesc, id), sizeof(out->id))) out->id = setting.id.c_str();
+        if (fits(offsetof(CadSettingDesc, label), sizeof(out->label))) {
+            out->label = setting.label.c_str();
+        }
+        if (fits(offsetof(CadSettingDesc, description), sizeof(out->description))) {
+            out->description = setting.description.c_str();
+        }
+        if (fits(offsetof(CadSettingDesc, kind), sizeof(out->kind))) out->kind = setting.kind;
+        if (fits(offsetof(CadSettingDesc, default_value), sizeof(out->default_value))) {
+            out->default_value = setting.defaultValue;
+        }
+        if (fits(offsetof(CadSettingDesc, minimum), sizeof(out->minimum))) {
+            out->minimum = setting.minimum;
+        }
+        if (fits(offsetof(CadSettingDesc, maximum), sizeof(out->maximum))) {
+            out->maximum = setting.maximum;
+        }
+        if (fits(offsetof(CadSettingDesc, default_text), sizeof(out->default_text))) {
+            out->default_text = setting.defaultText.c_str();
+        }
+        if (fits(offsetof(CadSettingDesc, choice_count), sizeof(out->choice_count))) {
+            // Pointers into a session-owned scratch array, so they outlive this call by exactly as
+            // long as every other string this ABI hands back: until the next one.
+            s.choicePointers.clear();
+            for (const std::string& choice : setting.choices) {
+                s.choicePointers.push_back(choice.c_str());
+            }
+            out->choices = s.choicePointers.empty() ? nullptr : s.choicePointers.data();
+            out->choice_count = static_cast<std::uint32_t>(s.choicePointers.size());
+        }
+        return CAD_OK;
+    });
+}
+
+CadStatus cad_ribbon_counts(CadSession handle, std::uint32_t* outTabs, std::uint32_t* outSections,
+                            std::uint32_t* outCommands) {
+    return withSession(handle, [&](Session& s) {
+        // Seeded on read as well as on write, so a session nobody registered into still reports the
+        // built-in ribbon rather than an empty one.
+        s.seedBuiltinRibbon();
+        if (outTabs != nullptr) *outTabs = static_cast<std::uint32_t>(s.tabs.size());
+        if (outSections != nullptr) *outSections = static_cast<std::uint32_t>(s.sections.size());
+        if (outCommands != nullptr) {
+            *outCommands = static_cast<std::uint32_t>(s.ribbonCommands.size());
+        }
+        return CAD_OK;
+    });
 }
 
 int32_t cad_abi_accepts(std::uint32_t pluginAbiMajor, std::uint32_t pluginMinHostMinor,

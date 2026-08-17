@@ -340,3 +340,4 @@ fn a_hidden_placement_is_skipped() {
     s.scene_submit().unwrap();
     assert_eq!(s.scene_stats().unwrap().instances, 1);
 }
+

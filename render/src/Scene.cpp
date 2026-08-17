@@ -190,17 +190,82 @@ void SceneBuilder::setHighlight(const naming::ElementName& name, Highlight h) {
         if (id < highlights_.size()) highlights_[id] = h;
     }
     frame_.highlights = highlights_;
+    refreshEdgeHighlights();
 }
 
 void SceneBuilder::setHighlight(std::uint32_t element, Highlight h) {
     if (element >= highlights_.size()) return;
     highlights_[element] = h;
     frame_.highlights = highlights_;
+    refreshEdgeHighlights();
+}
+
+void SceneBuilder::refreshEdgeHighlights() {
+    // Drop last frame's overlays and rebuild. Cheap because it is per HIGHLIGHTED element, not per
+    // element: a selection is a handful of things even in a million-part assembly.
+    edgeBatches_.resize(baseEdgeBatches_);
+    edgeBatchGroup_.resize(baseEdgeBatches_);
+
+    const auto colourFor = [](Highlight h, std::uint8_t out[4]) {
+        switch (h) {
+            case Highlight::Selected: out[0] = 10;  out[1] = 108; out[2] = 196; break;
+            case Highlight::Hovered:  out[0] = 120; out[1] = 170; out[2] = 230; break;
+            case Highlight::Error:    out[0] = 200; out[1] = 60;  out[2] = 50;  break;
+            case Highlight::None:     return false;
+        }
+        out[3] = 255;
+        return true;
+    };
+
+    for (std::uint32_t element = 0; element < highlights_.size(); ++element) {
+        std::uint8_t colour[4]{};
+        if (!colourFor(highlights_[element], colour)) continue;
+
+        const InstanceSlice* slice = sliceFor(element);
+        if (slice == nullptr || slice->resources == nullptr || !slice->resources->mesh) continue;
+        if (slice->resources->edgeVertices == BufferId::None) continue;
+
+        // The element index WITHIN this mesh. An element id is global across the frame; a mesh's
+        // edge ranges are numbered locally, because one mesh is shared by every placement of it.
+        const std::uint32_t local = element - slice->elementBase;
+
+        for (const EdgeRange& range : slice->resources->mesh->edges) {
+            if (range.element != local || range.vertexCount == 0) continue;
+
+            // The base batch for this mesh, for its instance buffer and its culled draw ranges.
+            // Found by edge-buffer identity rather than by index, because the batch order is not
+            // the slice order and matching by position would silently highlight another mesh.
+            const EdgeBatch* base = nullptr;
+            std::uint32_t group = 0;
+            for (std::size_t i = 0; i < baseEdgeBatches_; ++i) {
+                if (edgeBatches_[i].vertices == slice->resources->edgeVertices) {
+                    base = &edgeBatches_[i];
+                    group = i < edgeBatchGroup_.size() ? edgeBatchGroup_[i] : 0;
+                    break;
+                }
+            }
+            if (base == nullptr || base->ranges.empty()) continue;
+
+            EdgeBatch overlay = *base;
+            overlay.vertexOffset = range.vertexOffset;
+            overlay.vertexCount = range.vertexCount;
+            for (int c = 0; c < 4; ++c) overlay.colour[c] = colour[c];
+            // Wider, so the highlight reads as a highlight rather than as a slightly different
+            // grey. Drawn after the base pass, so it lands on top of the edge it replaces.
+            overlay.widthPx = base->widthPx + 1.5f;
+
+            edgeBatches_.push_back(overlay);
+            edgeBatchGroup_.push_back(group);
+        }
+    }
+
+    frame_.edgeBatches = edgeBatches_;
 }
 
 void SceneBuilder::clearHighlights() {
     std::fill(highlights_.begin(), highlights_.end(), Highlight::None);
     frame_.highlights = highlights_;
+    refreshEdgeHighlights();
 }
 
 std::optional<naming::ElementName> SceneBuilder::resolve(const IPicker::Hit& hit) const {
@@ -555,6 +620,9 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
     for (const auto& list : cells_) totalCells += list.size();
     ranges_.reserve(totalCells);
 
+    // Everything emitted so far is a BASE edge batch. Recorded before any overlay exists, so
+    // refreshEdgeHighlights can truncate back to exactly this point.
+    baseEdgeBatches_ = edgeBatches_.size();
     highlights_.assign(elementCount_, Highlight::None);
 
     frame_.batches = batches_;
@@ -661,6 +729,10 @@ void SceneBuilder::cull() noexcept {
             edgeBatches_[ei++].ranges = span;
         }
     }
+
+    // AFTER the ranges are assigned: an overlay copies its base batch's draw ranges, so it has to
+    // be rebuilt whenever those change. Culling changes them on every camera move.
+    refreshEdgeHighlights();
 
     cullStats_.ranges = ranges_.size();
     cullStats_.lastCullMs =

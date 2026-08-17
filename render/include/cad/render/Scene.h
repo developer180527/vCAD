@@ -135,6 +135,18 @@ private:
         document::ObjectId object;
     };
 
+    /// Rebuilds the extra edge batches that draw highlighted edges in their highlight colour.
+    ///
+    /// Separate from `rebuild` because highlights change WITHOUT the scene changing — a hover is
+    /// not a document edit — and separate from the base edge batches because an edge's colour is
+    /// per draw call while the base batch covers every edge of a mesh at once. That is the same
+    /// constraint that made `u_highlight` unable to express "this face and not the other five";
+    /// for edges the answer is a second draw over a vertex sub-range, which `EdgeRange` already
+    /// describes, so it needs no change to the mesh format.
+    ///
+    /// Must run AFTER `cull()`, because it copies each base batch's draw ranges.
+    void refreshEdgeHighlights();
+
     /// A spatial bucket of instances within one batch, contiguous in the instance buffer.
     struct Cell {
         Bounds bounds;
@@ -179,6 +191,9 @@ private:
     /// both or neither, so the three vectors are not parallel.
     std::vector<std::uint32_t> batchGroup_;
     std::vector<std::uint32_t> edgeBatchGroup_;
+    /// Edge batches up to this index are the base ones; everything after is a highlight
+    /// overlay, rebuilt whenever the highlight set or the culling changes.
+    std::size_t baseEdgeBatches_ = 0;
 
     CullSettings cull_;
     CullStats cullStats_;

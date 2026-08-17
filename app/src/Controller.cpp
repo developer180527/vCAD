@@ -226,15 +226,40 @@ void Controller::refresh() {
         std::remove_if(elementSelection_.begin(), elementSelection_.end(), orphaned),
         elementSelection_.end());
 
-    // Every computed object gets a placement if it does not have one. Real assemblies will place
-    // deliberately; for a part document, "everything is visible once" is what a user expects.
+    // Only the TIP bodies are placed — an object that a later feature consumed is not drawn.
+    //
+    // Placing everything meant a fillet's result and the box it was built from were BOTH rendered,
+    // occupying the same space, and the two z-fought into a dithered checkerboard that looked like
+    // a shader bug. It was reported as one. Selecting the box then tinted its copy and the fight
+    // became blue-and-grey, which is how it was found.
+    //
+    // It is also what a history-based modeller means: a feature CONSUMES its input. SolidWorks and
+    // Inventor show the final body, not every intermediate one. Two independent boxes are both tips
+    // and both stay visible, which is the case the old rule was right about.
     const auto& doc = history_.current();
     for (const ObjectId id : doc.ids()) {
         const auto object = doc.find(id);
         if (!object || object->output() == nullptr) continue;
-        const bool known = std::any_of(placements_.begin(), placements_.end(),
-                                       [&](const render::Placement& p) { return p.object == id; });
-        if (!known) {
+
+        // Consumed if anything that depends on it actually produced a body. A dependent that FAILED
+        // consumes nothing, so its input stays visible — otherwise a broken fillet would make the
+        // part disappear, which is the worst possible response to a failed operation.
+        bool consumed = false;
+        for (const ObjectId dependent : doc.dependents(id)) {
+            const auto other = doc.find(dependent);
+            if (other && other->output() != nullptr) {
+                consumed = true;
+                break;
+            }
+        }
+
+        const auto existing = std::find_if(placements_.begin(), placements_.end(),
+                                           [&](const render::Placement& p) { return p.object == id; });
+        if (consumed) {
+            if (existing != placements_.end()) placements_.erase(existing);
+            continue;
+        }
+        if (existing == placements_.end()) {
             render::Placement p;
             p.object = id;
             std::copy(kIdentity, kIdentity + 12, p.transform);

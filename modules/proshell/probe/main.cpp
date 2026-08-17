@@ -30,6 +30,9 @@
 #include "proshell/Icons.h"
 #include "proshell/MarkingMenu.h"
 #include "proshell/Ribbon.h"
+#include "proshell/Settings.h"
+#include "proshell/SettingsModel.h"
+#include "proshell/SettingsWindow.h"
 #include "proshell/ShellWindow.h"
 #include "proshell/Theme.h"
 
@@ -205,6 +208,183 @@ private:
     int storeys_ = 0;
 };
 
+/// Paper White is FROZEN, and this is what makes that a fact rather than a comment.
+///
+/// The reference theme's stylesheet IS the template, so `recolour` returns it untouched and its
+/// output is byte-identical by construction. That property is easy to break — one eager
+/// substitution, one "tidy up" of the transform — and a theme that has drifted is not something
+/// anyone notices from a diff. So: assert the literals survive verbatim.
+///
+/// It also checks the other three actually CHANGED. A transform with a bug that returns its input
+/// would leave all four themes identical and every test about Paper White would still pass.
+int checkThemes(QApplication& app) {
+    int failures = 0;
+    const auto fail = [&failures](const char* what) {
+        std::fprintf(stderr, "themes: FAIL %s\n", what);
+        ++failures;
+    };
+
+    proshell::applyTheme(app, proshell::Theme::PaperWhite);
+    const QString reference = app.styleSheet();
+    const QColor referenceWindow = app.palette().color(QPalette::Window);
+
+    // The three colours this theme is most identifiable by: warm-grey chrome, its hairline, and the
+    // Inventor blue. If these are intact the transform did not touch the reference.
+    if (!reference.contains(QLatin1String("#f0efed"))) fail("Paper White lost its chrome colour");
+    if (!reference.contains(QLatin1String("#cfcdc9"))) fail("Paper White lost its hairline colour");
+    if (!reference.contains(QLatin1String("#0a6cc4"))) fail("Paper White lost its accent colour");
+    if (referenceWindow != QColor(0xf0, 0xef, 0xed)) fail("Paper White's window colour moved");
+
+    if (proshell::themeNames().size() != 4) fail("themeNames does not list four themes");
+
+    for (const auto theme : {proshell::Theme::ClassicWhite, proshell::Theme::Midnight,
+                             proshell::Theme::ClassicDark}) {
+        proshell::applyTheme(app, theme);
+        if (app.styleSheet() == reference) fail("a theme produced the reference unchanged");
+        if (app.styleSheet().isEmpty()) fail("a theme produced an empty stylesheet");
+        // Every literal must have been rewritten. A leftover light colour on a dark theme is the
+        // failure this catches, and it is invisible until someone looks at that exact widget.
+        if (app.styleSheet().contains(QLatin1String("#f0efed"))) {
+            fail("a theme left a Paper White literal behind");
+        }
+    }
+
+    // The dark themes must actually be dark, and differ from each other only in hue -- which is the
+    // entire reason for offering both Midnight and Classic Dark.
+    proshell::applyTheme(app, proshell::Theme::Midnight);
+    const QColor midnight = app.palette().color(QPalette::Window);
+    proshell::applyTheme(app, proshell::Theme::ClassicDark);
+    const QColor classicDark = app.palette().color(QPalette::Window);
+
+    if (midnight.lightness() > 110) fail("Midnight is not dark");
+    if (classicDark.lightness() > 110) fail("Classic Dark is not dark");
+    if (classicDark.saturation() > 12) fail("Classic Dark is not neutral");
+    if (midnight.saturation() < 12) fail("Midnight has no blue in it");
+
+    // Leave the application on the reference, so a --shot after this is the theme people expect.
+    proshell::applyTheme(app, proshell::Theme::PaperWhite);
+
+    if (failures == 0) std::printf("themes: OK\n");
+    return failures;
+}
+
+/// The settings store's contract, checked from the one binary that links no domain code.
+///
+/// Here rather than in the CAD test suite for the same reason the probe exists at all: settings are
+/// meant to serve a SECOND application, and a test that runs inside the first one proves nothing
+/// about that. Returns the number of failures.
+int checkSettings() {
+    int failures = 0;
+    const auto fail = [&failures](const char* what) {
+        std::fprintf(stderr, "settings: FAIL %s\n", what);
+        ++failures;
+    };
+
+    // A scope of its own, cleared first, so a developer's real preferences are never read or
+    // written by a test run.
+    proshell::Settings settings(QStringLiteral("proshell-probe"), QStringLiteral("settings-check"));
+
+    proshell::SettingsPage page;
+    page.id = QStringLiteral("probe.general");
+    page.label = QStringLiteral("General");
+    proshell::SettingsGroup group;
+    group.label = QStringLiteral("Behaviour");
+
+    proshell::Setting flag;
+    flag.id = QStringLiteral("probe.flag");
+    flag.label = QStringLiteral("A flag");
+    flag.kind = proshell::SettingKind::Bool;
+    flag.fallback = false;
+    group.settings.push_back(flag);
+
+    proshell::Setting count;
+    count.id = QStringLiteral("probe.count");
+    count.label = QStringLiteral("A count");
+    count.kind = proshell::SettingKind::Int;
+    count.fallback = 7;
+    count.minimum = 0;
+    count.maximum = 100;
+    group.settings.push_back(count);
+
+    page.groups.push_back(group);
+    settings.addPage(page);
+
+    settings.resetPage(page.id);   // start from declared defaults whatever a previous run left
+
+    // The fallback is what an untouched setting reads as.
+    if (settings.integer(QStringLiteral("probe.count")) != 7) fail("fallback not returned");
+    if (settings.isOverridden(QStringLiteral("probe.count"))) fail("untouched reads as overridden");
+
+    // An UNKNOWN id must not answer. Returning a default-constructed value would let a typo look
+    // like a real `false` and be acted on.
+    if (settings.value(QStringLiteral("probe.nope")).isValid()) fail("unknown id answered");
+    if (settings.boolean(QStringLiteral("probe.nope"), true) != true) {
+        fail("unknown id ignored the caller's own fallback");
+    }
+
+    // Storing something nothing declared is refused, so a stale id in a saved layout cannot
+    // resurrect a setting that no longer exists.
+    settings.setValue(QStringLiteral("probe.nope"), 1);
+    if (settings.value(QStringLiteral("probe.nope")).isValid()) fail("undeclared id was stored");
+
+    int changes = 0;
+    QObject::connect(&settings, &proshell::Settings::changed,
+                     [&changes](const QString&, const QVariant&) { ++changes; });
+
+    settings.setValue(QStringLiteral("probe.count"), 12);
+    if (settings.integer(QStringLiteral("probe.count")) != 12) fail("value did not persist");
+    if (!settings.isOverridden(QStringLiteral("probe.count"))) fail("override not recorded");
+    if (changes != 1) fail("a change did not notify exactly once");
+
+    // Writing the same value again must be silent. A dialog that writes every field on close would
+    // otherwise emit a storm of changes nothing acted on.
+    settings.setValue(QStringLiteral("probe.count"), 12);
+    if (changes != 1) fail("an unchanged write notified");
+
+    // Reset REMOVES the key rather than writing the default. The difference shows up on the next
+    // release: a value stored explicitly survives a change to the default, and a user who never
+    // overrode it should follow the new one.
+    settings.reset(QStringLiteral("probe.count"));
+    if (settings.isOverridden(QStringLiteral("probe.count"))) fail("reset left the key behind");
+    if (settings.integer(QStringLiteral("probe.count")) != 7) fail("reset did not restore fallback");
+
+    // Merging into an existing page is the normal case; a duplicate SETTING id inside it is not.
+    proshell::SettingsPage more;
+    more.id = QStringLiteral("probe.general");
+    proshell::SettingsGroup extra;
+    extra.label = QStringLiteral("More");
+    extra.settings.push_back(flag);   // a duplicate id, which must be dropped
+    proshell::Setting fresh;
+    fresh.id = QStringLiteral("probe.fresh");
+    fresh.label = QStringLiteral("Fresh");
+    fresh.kind = proshell::SettingKind::Bool;
+    fresh.fallback = true;
+    extra.settings.push_back(fresh);
+    more.groups.push_back(extra);
+    settings.addPage(more);
+
+    if (settings.pages().size() != 1) fail("merging created a second page");
+    if (!settings.boolean(QStringLiteral("probe.fresh"))) fail("merged setting not readable");
+
+    std::size_t flagCount = 0;
+    for (const auto& p : settings.pages()) {
+        for (const auto& g : p.groups) {
+            for (const auto& s : g.settings) {
+                if (s.id == QLatin1String("probe.flag")) ++flagCount;
+            }
+        }
+    }
+    if (flagCount != 1) fail("a duplicate setting id was accepted");
+
+    // And the window must construct over whatever the store holds. A settings system whose window
+    // crashes on a Choice with no choices is not reusable, it is a trap.
+    proshell::SettingsWindow window(settings);
+    window.showPage(QStringLiteral("probe.general"));
+
+    if (failures == 0) std::printf("settings: OK\n");
+    return failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -225,8 +405,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromLocal8Bit(argv[i]);
         if (arg == QLatin1String("--check")) {
+            const int failures = checkSettings() + checkThemes(app);
             delete window;
-            return 0;
+            return failures == 0 ? 0 : 1;
         }
         if (arg == QLatin1String("--shot") && i + 1 < argc) {
             shot = QString::fromLocal8Bit(argv[++i]);

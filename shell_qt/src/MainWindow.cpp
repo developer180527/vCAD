@@ -4,6 +4,10 @@
 #include "proshell/HomePage.h"
 #include "Icons.h"
 #include "proshell/Ribbon.h"
+#include "proshell/Settings.h"
+#include "proshell/Theme.h"
+#include "proshell/SettingsModel.h"
+#include "proshell/SettingsWindow.h"
 #include "SketchCanvas.h"
 #include "Viewport.h"
 
@@ -787,6 +791,13 @@ void MainWindow::createDocument(DocumentKind kind) {
     if (!editor->attachRenderer()) {
         statusBar()->showMessage(tr("Viewport: %1").arg(editor->rendererError()));
     }
+
+    // A click that selects nothing has a REASON — a curved face, geometry the naming layer never
+    // named, empty space — and the status bar is where a user looks for it. Swallowing it is how a
+    // pick that is working correctly looks like one that is broken.
+    connect(editor, &Viewport::pickMessage, this, [this](const QString& text) {
+        setStatusMessage(text);
+    });
     // The sketch surface is a SIBLING in the stack, not an overlay on the viewport. A sketch is
     // edited face-on in its own 2D coordinate system; sharing the 3D camera would mean unprojecting
     // every click onto a plane before it meant anything.
@@ -1092,72 +1103,161 @@ QPixmap MainWindow::grabPluginManager() {
     return pluginManager_ != nullptr ? pluginManager_->grab() : grab();
 }
 
-void MainWindow::showOptions() {
-    auto* c = controller();
-    if (c == nullptr) {
-        setStatusMessage(tr("Open a document to change options"));
+void MainWindow::declareSettings() {
+    if (settings_ != nullptr) return;
+    settings_ = new proshell::Settings(QStringLiteral("vCAD"), QStringLiteral("vCAD"), this);
+
+    // The ids are PERMANENT — they are what the user's stored preferences are keyed by, so renaming
+    // one silently discards whatever they had chosen. The labels are free to reword and translate.
+    // Same rule as a ribbon section id, a sketch parameter name and a plugin feature type: anything
+    // persisted is permanent, anything displayed is not.
+    proshell::SettingsPage general;
+    general.id = QStringLiteral("vcad.general");
+    general.label = tr("General");
+    general.iconName = QStringLiteral("parameters");
+
+    proshell::SettingsGroup display;
+    display.label = tr("Display");
+
+    proshell::Setting units;
+    units.id = QStringLiteral("general.displayUnits");
+    units.label = tr("Display units");
+    units.description = tr("How lengths are shown and how a bare number is read. Storage is always "
+                           "millimetres — this never changes what is in the file.");
+    units.kind = proshell::SettingKind::Choice;
+    // Order matches units::UnitSystem so the index IS the enum value. Kept adjacent to that fact
+    // rather than mapped, because a mapping table is one more thing to forget to update.
+    units.choices = {tr("Millimetres"), tr("Centimetres"), tr("Metres"), tr("Inches"), tr("Feet")};
+    units.fallback = 0;
+    display.settings.push_back(units);
+
+    proshell::Setting navigation;
+    navigation.id = QStringLiteral("general.navigation");
+    navigation.label = tr("Navigation");
+    navigation.description = tr("Which mouse button orbits. Match whichever application you came "
+                                "from — this is muscle memory, not preference.");
+    navigation.kind = proshell::SettingKind::Choice;
+    navigation.choices = {tr("CAD (middle drag orbits)"), tr("Fusion (middle drag pans)"),
+                          tr("Blender")};
+    navigation.fallback = 0;
+    display.settings.push_back(navigation);
+
+    general.groups.push_back(display);
+    settings_->addPage(general);
+
+    proshell::SettingsPage sketch;
+    sketch.id = QStringLiteral("vcad.sketch");
+    sketch.label = tr("Sketch");
+    sketch.iconName = QStringLiteral("sketch");
+
+    proshell::SettingsGroup inference;
+    inference.label = tr("Constraint inference");
+
+    proshell::Setting snap;
+    snap.id = QStringLiteral("sketch.snapTolerance");
+    snap.label = tr("Snap tolerance");
+    snap.description = tr("Endpoints closer than this are treated as one point when inferring "
+                          "constraints from an imported file.");
+    snap.kind = proshell::SettingKind::Double;
+    snap.minimum = 0.0001;
+    snap.maximum = 100.0;
+    snap.fallback = 0.01;
+    inference.settings.push_back(snap);
+
+    proshell::Setting angle;
+    angle.id = QStringLiteral("sketch.angleTolerance");
+    angle.label = tr("Angle tolerance (degrees)");
+    angle.description = tr("A line within this of an axis is inferred horizontal or vertical. Keep "
+                           "it small: a 2° taper is design intent, not a drafting error.");
+    angle.kind = proshell::SettingKind::Double;
+    angle.minimum = 0.0;
+    angle.maximum = 45.0;
+    angle.fallback = 0.5;
+    inference.settings.push_back(angle);
+
+    sketch.groups.push_back(inference);
+    settings_->addPage(sketch);
+
+    proshell::SettingsPage appearance;
+    appearance.id = QStringLiteral("vcad.appearance");
+    appearance.label = tr("Appearance");
+    appearance.iconName = QStringLiteral("view");
+
+    proshell::SettingsGroup colours;
+    colours.label = tr("Colour scheme");
+
+    proshell::Setting theme;
+    theme.id = QStringLiteral("appearance.theme");
+    theme.label = tr("Theme");
+    theme.description = tr("Paper White is the reference scheme. The others are alternatives to it, "
+                           "not replacements — it is deliberately soft rather than stark.");
+    theme.kind = proshell::SettingKind::Choice;
+    // From proshell, in Theme order, so the stored INDEX is the enum value and no mapping table has
+    // to be kept in step with the enum.
+    theme.choices = proshell::themeNames();
+    theme.fallback = static_cast<int>(proshell::Theme::PaperWhite);
+    colours.settings.push_back(theme);
+
+    appearance.groups.push_back(colours);
+    settings_->addPage(appearance);
+
+    connect(settings_, &proshell::Settings::changed, this,
+            [this](const QString& id, const QVariant&) { applySetting(id); });
+}
+
+void MainWindow::applySetting(const QString& id) {
+    if (settings_ == nullptr) return;
+
+    if (id == QLatin1String("appearance.theme")) {
+        // Applied to the whole application, not this window: menus, dialogs and the settings window
+        // itself are all painted by the same palette, and repainting one of them would look broken.
+        if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+            proshell::applyTheme(*app,
+                                 static_cast<proshell::Theme>(settings_->integer(id)));
+        }
+        setStatusMessage(tr("Theme applied"));
         return;
     }
-    const auto current = c->preferences();
 
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Options"));
-    auto* form = new QFormLayout(&dialog);
+    cad::app::Preferences next;
+    next.displayUnits = static_cast<cad::units::UnitSystem>(
+        settings_->integer(QStringLiteral("general.displayUnits")));
+    next.navigation = static_cast<cad::render::NavigationPreset>(
+        settings_->integer(QStringLiteral("general.navigation")));
+    next.snapTolerance = settings_->real(QStringLiteral("sketch.snapTolerance"), 0.01);
+    next.angleTolerance = settings_->real(QStringLiteral("sketch.angleTolerance"), 0.5);
 
-    auto* units = new QComboBox(&dialog);
-    // Order matches units::UnitSystem so the index IS the enum value. Kept adjacent to the enum
-    // rather than mapped, because a mapping table is one more thing to forget to update.
-    units->addItems({tr("Millimetres"), tr("Centimetres"), tr("Metres"), tr("Inches"), tr("Feet")});
-    units->setCurrentIndex(static_cast<int>(current.displayUnits));
-    form->addRow(tr("Display units"), units);
-
-    auto* navigation = new QComboBox(&dialog);
-    navigation->addItems({tr("CAD (middle drag orbits)"), tr("Fusion (middle drag pans)"),
-                          tr("Blender")});
-    navigation->setCurrentIndex(static_cast<int>(current.navigation));
-    navigation->setToolTip(tr("Which mouse button orbits. Match whichever application you came "
-                              "from — this is muscle memory, not preference."));
-    form->addRow(tr("Navigation"), navigation);
-
-    auto* snap = new QDoubleSpinBox(&dialog);
-    snap->setRange(0.0001, 100.0);
-    snap->setDecimals(4);
-    snap->setValue(current.snapTolerance);
-    snap->setToolTip(tr("Endpoints closer than this are treated as one point when inferring "
-                        "constraints from an imported file."));
-    form->addRow(tr("Snap tolerance"), snap);
-
-    auto* angle = new QDoubleSpinBox(&dialog);
-    angle->setRange(0.0, 45.0);
-    angle->setDecimals(2);
-    angle->setValue(current.angleTolerance);
-    angle->setSuffix(tr("°"));
-    angle->setToolTip(tr("A line within this of an axis is inferred horizontal or vertical. Keep "
-                         "it small: a 2° taper is design intent, not a drafting error."));
-    form->addRow(tr("Angle tolerance"), angle);
-
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    form->addRow(buttons);
-
-    if (dialog.exec() != QDialog::Accepted) return;
-
-    cad::app::Preferences next = current;
-    next.displayUnits = static_cast<cad::units::UnitSystem>(units->currentIndex());
-    next.navigation = static_cast<cad::render::NavigationPreset>(navigation->currentIndex());
-    next.snapTolerance = snap->value();
-    next.angleTolerance = angle->value();
-
-    // Applied to EVERY open document, not just the active one. Units are a property of the user,
-    // not of a file, and having the tab you switch to still show millimetres would read as a bug.
+    // Every open document. Units belong to the user, not to a file.
+    const std::size_t active = session_.count() > 0 ? session_.activeIndex() : 0;
     for (std::size_t i = 0; i < session_.count(); ++i) {
         session_.activate(i);
         if (auto* ctl = session_.active()) ctl->setPreferences(next);
     }
+    if (session_.count() > 0) session_.activate(active);
+
     refreshProperties();
     refreshStatus();
-    setStatusMessage(tr("Options applied"));
+    setStatusMessage(tr("Applied %1").arg(id));
+}
+
+void MainWindow::restoreTheme() {
+    // At startup, so the window is painted in the user's theme rather than flashing the default
+    // first. Declaring the settings is what makes the stored value readable at all.
+    declareSettings();
+    if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+        proshell::applyTheme(*app, static_cast<proshell::Theme>(
+                                       settings_->integer(QStringLiteral("appearance.theme"))));
+    }
+}
+
+void MainWindow::showOptions() {
+    // Replaces a hand-built QFormLayout that read and wrote Controller::preferences() directly and
+    // persisted NOTHING — every preference reset on restart, which docs/STATUS.md recorded as an
+    // outstanding gap. The store persists them, so this fixes that as a side effect of being
+    // declarative rather than as a separate feature.
+    declareSettings();
+    proshell::SettingsWindow window(*settings_, this);
+    window.exec();
 }
 
 void MainWindow::showBrowserMenu(const QPoint& at) {

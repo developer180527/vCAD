@@ -28,6 +28,8 @@ qt_add_library(proshell STATIC
   src/MarkingMenu.cpp
   src/ShellWindow.cpp
   src/HomePage.cpp
+  src/Settings.cpp
+  src/SettingsWindow.cpp
   include/proshell/Ribbon.h
   include/proshell/Theme.h
   include/proshell/Icons.h
@@ -35,6 +37,9 @@ qt_add_library(proshell STATIC
   include/proshell/ShellWindow.h
   include/proshell/HomePage.h
   include/proshell/HomeModel.h
+  include/proshell/Settings.h
+  include/proshell/SettingsModel.h
+  include/proshell/SettingsWindow.h
 )
 
 target_include_directories(proshell PUBLIC include)

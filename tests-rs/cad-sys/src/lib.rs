@@ -13,7 +13,7 @@
 use std::os::raw::{c_char, c_int, c_void};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 18;
+pub const CAD_ABI_VERSION_MINOR: u32 = 20;
 
 pub type CadStatus = i32;
 

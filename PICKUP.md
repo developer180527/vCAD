@@ -221,15 +221,33 @@ same paths.
    `build-qt/shell_qt/shaders/metal/*.bin` timestamps against `build-qt/shaders/metal/*.bin` before
    doubting the shader.
 
-### What is still not visible
+### ~~What is still not visible~~ — edges now highlight too
 
-**A selected EDGE does not highlight.** The edge vertex stream is positions only, and `vs_edge`
-writes `v_ids = 0`, so the lookup cannot work for edges. Faces and whole bodies do highlight. Fixing
-it means either adding the element index to the edge stream (a mesh-format change, so it touches the
-tessellator, the layout and the content hash) or emitting one draw range per highlighted edge from
-`SceneBuilder` — `RenderMesh::edges` already carries `EdgeRange{vertexOffset, vertexCount, element}`
-and `EdgeBatch` already has a colour and a vertex sub-range, so the second option needs no format
-change at all. Prefer it.
+**A selected EDGE highlights.** Done the cheap way, as this section previously argued for: an extra
+`EdgeBatch` per highlighted edge, over that edge's own vertex sub-range, in the highlight colour.
+`RenderMesh::edges` already carried `EdgeRange{vertexOffset, vertexCount, element}` and `EdgeBatch`
+already had a colour and a vertex sub-range, so **nothing about the mesh format, the tessellator or
+the content hash changed** — which was the whole argument for preferring it over adding element ids
+to the edge stream.
+
+`SceneBuilder::refreshEdgeHighlights()` rebuilds the overlays. Three things about it are load
+-bearing:
+
+- It runs on highlight change AND **after `cull()`**, because an overlay copies its base batch's
+  draw ranges and culling rebuilds those on every camera move. Without that, a selection would
+  vanish the moment the user orbited — worse than never highlighting, because it looks random.
+  There is a test for exactly that (`a camera move keeps the overlays alive`).
+- It matches the base batch by **edge-buffer identity, not by index**. Batch order is not slice
+  order, and matching by position would silently highlight a different mesh.
+- It is per HIGHLIGHTED element, not per element, so a selection of three things costs three
+  lookups even in a million-part assembly.
+
+Three tests in `tests/acceptance/edge_highlight.cpp`, verified RED by disabling the overlay
+emission — all three fail, which is the point. The overlay is asserted to be a strict sub-range of
+the base batch (otherwise every edge of the body lights up and the highlight says nothing), to
+differ in colour, and to draw the same instances as its base (a highlighted edge of a mesh placed
+fifty times highlights in all fifty, because an element id identifies document geometry rather than
+one thing on screen).
 
 ---
 

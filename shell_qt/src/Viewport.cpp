@@ -257,6 +257,8 @@ void Viewport::resizeEvent(QResizeEvent*) {
 
 void Viewport::mousePressEvent(QMouseEvent* event) {
     lastMouse_ = event->pos();
+    pressAt_ = event->pos();
+    dragged_ = false;
     const int button = event->button() == Qt::LeftButton ? 0
                        : event->button() == Qt::MiddleButton ? 1 : 2;
     // Gesture mapping comes from the controller so both shells behave identically instead of
@@ -268,6 +270,9 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
     if (drag_ == cad::render::Drag::None) return;
+    // Four logical pixels. Below that it is a click with a shaky hand, and treating it as an orbit
+    // both fails to select and nudges the camera, which reads as the application ignoring clicks.
+    if ((event->pos() - pressAt_).manhattanLength() > 4) dragged_ = true;
     const QPoint delta = event->pos() - lastMouse_;
     lastMouse_ = event->pos();
 
@@ -293,7 +298,33 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
     markDirty();
 }
 
-void Viewport::mouseReleaseEvent(QMouseEvent*) { drag_ = cad::render::Drag::None; }
+void Viewport::mouseReleaseEvent(QMouseEvent* event) {
+    const cad::render::Drag was = drag_;
+    drag_ = cad::render::Drag::None;
+
+    // A CLICK: left button, released without having dragged. This is the call the viewport never
+    // made — `Controller::clickAt` has always done the whole job (pick, resolve at the current
+    // selection level, select, highlight, notify), and nothing asked it to. Selecting from the Model
+    // panel worked, which is why the picker looked broken rather than unused.
+    if (was != cad::render::Drag::Orbit && was != cad::render::Drag::Pan
+        && was != cad::render::Drag::Zoom) {
+        // fall through: a button with no gesture mapped is still a click
+    } else if (dragged_) {
+        return;   // it was a gesture, not a click
+    }
+    if (event->button() != Qt::LeftButton) return;
+
+    // DEVICE pixels. The id buffer is indexed in them, and forwarding logical coordinates picks at
+    // half the intended position on a Retina display — a bug that looks like an inaccurate picker
+    // rather than a units mistake. Controller::pickAt documents the same requirement.
+    const auto dpr = devicePixelRatioF();
+    const auto x = static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr));
+    const auto y = static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr));
+
+    const auto result = controller_.clickAt(x, y, event->modifiers().testFlag(Qt::ShiftModifier));
+    if (!result.message.empty()) emit pickMessage(QString::fromStdString(result.message));
+    if (result.changed) markDirty();
+}
 
 void Viewport::wheelEvent(QWheelEvent* event) {
     controller_.camera().zoom(float(event->angleDelta().y()) / 120.0f);

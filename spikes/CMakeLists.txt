@@ -8,4 +8,5 @@ add_subdirectory(scale)
 add_subdirectory(planegcs_standalone)
 add_subdirectory(sketch_solve)
 add_subdirectory(dxf_import)
+add_subdirectory(highlight)
 # add_subdirectory(assetlib_standalone)   # 0.5

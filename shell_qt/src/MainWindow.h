@@ -24,11 +24,18 @@ namespace proshell {
 class HomePage;
 }
 
+// At global scope, NOT inside `namespace cadqt`. Declared inside, it becomes `cadqt::proshell` and
+// shadows the real namespace for the whole header — every existing `proshell::ShellWindow` then
+// resolves to a type that does not exist. The same mistake this shell made once with a
+// `class QFormLayout*` inside a namespace.
+namespace proshell { class Settings; }
+
 namespace cadqt {
 
 class PluginManager;
 class SketchCanvas;
 class Viewport;
+
 
 /// vCAD, on proshell's frame.
 ///
@@ -50,6 +57,10 @@ public:
     /// Screenshot support (`--shot`). Selecting a ribbon tab and opening a populated document
     /// are the two things a UI screenshot needs and a fresh window does not do on its own.
     void selectRibbonTab(int index);
+    /// Applies the stored theme. Called from main() at startup, so the window is painted in the
+    /// user's scheme rather than flashing the default first.
+    void restoreTheme();
+
     void openDemoDocument();
     /// Screenshot support for the plugin manager, which is a window of its own.
     void openPluginManagerForShot();
@@ -117,6 +128,20 @@ private:
     void showBrowserMenu(const QPoint&);
     void showPluginManager();
     void showOptions();
+
+    /// Declares vCAD's settings into the shell's store, once.
+    ///
+    /// The store is `proshell`'s and knows nothing about CAD; this is where the ids, labels and
+    /// defaults that ARE about CAD get named. A second application built on the same shell declares
+    /// its own and shares none of them.
+    void declareSettings();
+
+
+    /// Pushes a changed setting into the running controllers.
+    ///
+    /// Applied to EVERY open document, not just the active one: units are a property of the USER,
+    /// not of a file, and the tab you switch to still showing millimetres would read as a bug.
+    void applySetting(const QString& id);
     void refreshProperties();
     void refreshCommandStates();
     void refreshStatus();
@@ -128,6 +153,7 @@ private:
     [[nodiscard]] cad::app::Controller* controller() noexcept { return session_.active(); }
 
     cad::app::Session session_;
+    proshell::Settings* settings_ = nullptr;
     /// Answers proshell's home-page questions from the session. Declared after it, since it
     /// holds a reference.
     CadHomeModel homeModel_{session_};

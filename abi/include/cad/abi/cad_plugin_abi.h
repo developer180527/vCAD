@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 18
+#define CAD_ABI_VERSION_MINOR 20
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -270,7 +270,149 @@ typedef struct {
      * so it must be cheap and must not mutate the document. */
     int32_t   (*enabled)(void* plugin_ctx, CadCommandCtx ctx);
     CadStatus (*invoke)(void* plugin_ctx, CadCommandCtx ctx);
+
+    /* WHERE the button goes. Fusion's vocabulary, because it is the one users have: a TAB is
+     * "SOLID" or "SURFACE"; a SECTION is "CREATE" or "MODIFY" within a tab; a command is
+     * "Extrude" within a section.
+     *
+     * Both name an id that must ALREADY be registered — a built-in one, or one this plugin
+     * registered itself. A command naming an unknown tab or section is REFUSED rather than having
+     * them created for it: implicit creation means a typo silently produces an empty tab called
+     * "Creat", and the author sees a missing button with no error.
+     *
+     * NULL means the host's default for this plugin, which is a section of its own inside the
+     * tab a plugin-provided command would otherwise have no home in. Never nothing: a command
+     * that registers successfully and appears nowhere is worse than one that is refused. */
+    const char* tab;
+    const char* section;
+    uint32_t    placement;              /* CAD_UI_* below */
+    uint32_t    order;                  /* lower first; ties broken by registration order */
 } CadCommandDesc;
+
+/* Where a command may appear. A plugin asks; the host decides the geometry. */
+#define CAD_UI_RIBBON        (1u << 0)   /* the section named above */
+#define CAD_UI_CONTEXT_MENU  (1u << 1)   /* right-click, when the selection matches */
+#define CAD_UI_MARKING_MENU  (1u << 2)   /* eligible for a wedge, if the user assigns one */
+
+/* The BUILT-IN tab and section ids.
+ *
+ * Part of the ABI, and therefore permanent. A plugin that puts its button in CAD_SECTION_CREATE
+ * must still land there in ten years, so these are defined here rather than invented in the host:
+ * a string literal in the implementation is not a promise, and this is.
+ *
+ * The LABELS are not fixed — "3D Model" may be renamed or translated. Only the ids are. */
+#define CAD_TAB_MODEL      "cad.tab.model"
+#define CAD_TAB_SKETCH     "cad.tab.sketch"
+#define CAD_TAB_INSPECT    "cad.tab.inspect"
+#define CAD_TAB_ANNOTATE   "cad.tab.annotate"
+#define CAD_TAB_MANAGE     "cad.tab.manage"
+#define CAD_TAB_VIEW       "cad.tab.view"
+
+#define CAD_SECTION_SKETCH     "cad.section.sketch"
+#define CAD_SECTION_CREATE     "cad.section.create"
+#define CAD_SECTION_PRIMITIVES "cad.section.primitives"
+#define CAD_SECTION_MODIFY     "cad.section.modify"
+#define CAD_SECTION_PATTERN    "cad.section.pattern"
+#define CAD_SECTION_EDIT       "cad.section.edit"
+#define CAD_SECTION_HISTORY    "cad.section.history"
+
+/* --- settings ------------------------------------------------------------------------
+ *
+ * A plugin declares settings; it does not draw them. The shell renders whatever kinds it knows,
+ * which is what lets one declaration become a desktop dialog, a tablet list and a line in a support
+ * bundle — and what stops fifteen plugins each inventing their own idea of what a preferences page
+ * looks like.
+ *
+ * The HOST stores the values, under one preferences file, keyed by the setting's id. A plugin that
+ * persisted its own would have to choose a format and cope with being uninstalled — and worse, the
+ * settings window could then not show a page for a plugin that is not loaded, so a user could not
+ * re-enable a plugin's ribbon contribution without the plugin already being on. Same reasoning as
+ * §4A: the host stores a plugin's data so the data outlives the plugin. */
+typedef enum {
+    CAD_SETTING_BOOL = 0,
+    CAD_SETTING_INT = 1,
+    CAD_SETTING_DOUBLE = 2,
+    CAD_SETTING_TEXT = 3,
+    CAD_SETTING_CHOICE = 4,   /* stored as the INDEX, so a label can be translated */
+} CadSettingKind;
+
+/* The numeric values above are STORED IN PREFERENCES and are therefore permanent, written
+ * explicitly for the same reason CadParamKind's are. */
+
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    /* Dotted, stable, and PERSISTED — "com.acme.sheetmetal.gauge". Never renamed: a rename silently
+     * discards whatever the user had chosen, which is worse than imperfect wording. Prefix it with
+     * the plugin id, because the id space is shared with the host and every other plugin. */
+    const char* id;
+    const char* label;
+
+    /* One sentence, shown under the field. A setting whose effect is only discoverable by trying it
+     * is one most users leave alone. */
+    const char* description;
+
+    uint32_t    kind;           /* CadSettingKind */
+    uint32_t    reserved0;
+
+    /* Bool uses 0 or 1; Choice uses the index; Text uses `default_text` and ignores this. */
+    double      default_value;
+    double      minimum;
+    double      maximum;
+    const char* default_text;
+
+    const char* const* choices;
+    uint32_t    choice_count;
+    uint32_t    reserved1;
+} CadSettingDesc;
+
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    /* Naming an EXISTING page merges into it, unlike a ribbon tab, which is refused. Two plugins
+     * adding a group to a shared page is the normal case rather than a conflict; two plugins
+     * claiming one ribbon tab is not. */
+    const char* id;
+    const char* label;
+    const char* icon_name;
+
+    /* The heading this plugin's settings sit under within the page. Groups are visual only, so they
+     * have no id and nothing is stored against them. */
+    const char* group_label;
+} CadSettingsPageDesc;
+
+/* A ribbon TAB — "SOLID", "SHEET METAL". The largest thing a plugin may add, and the one to add
+ * least often.
+ *
+ * A full domain suite (sheet metal, mould design) legitimately owns a tab. Fifteen plugins each
+ * claiming one is how a mature CAD ribbon becomes unreadable — Revit had to retrofit a one-tab
+ * limit per add-in after exactly that. vCAD's answer is not to forbid it but to make it the USER's
+ * ribbon: every plugin-provided tab, section and command can be hidden in settings without
+ * uninstalling the plugin. A user who cannot turn a tab off eventually turns the plugin off. */
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    const char* id;                     /* "com.acme.sheetmetal.tab", stable; layouts persist it */
+    const char* label;                  /* "SHEET METAL", shown to the user; may change freely */
+    uint32_t    order;                  /* lower is further left; built-in tabs occupy 0..999 */
+    uint32_t    reserved0;
+} CadTabDesc;
+
+/* A SECTION within a tab — "CREATE", "MODIFY". Either a new one, or nothing: to add buttons to an
+ * EXISTING section a plugin names it on the command and does not register anything here. */
+typedef struct {
+    uint32_t    struct_size;
+    uint32_t    struct_version;
+
+    const char* id;                     /* "com.acme.sheetmetal.flanges" */
+    const char* label;                  /* "FLANGES" */
+    const char* tab;                    /* an existing tab id, or one this plugin registered */
+    uint32_t    order;
+    uint32_t    reserved0;
+} CadSectionDesc;
 
 /* An import/export format. */
 #define CAD_FORMAT_IMPORT  (1u << 0)
@@ -341,6 +483,21 @@ struct CadHost {
     /* Parameters arrive WITH the feature, so a feature and its parameters cannot disagree. */
     CadStatus (*register_feature)(void* ctx, const CadFeatureDesc* desc,
                                   const CadParamDesc* params, uint32_t param_count);
+
+    /* Ribbon structure. Order matters and the host enforces it: a section must name a tab that
+     * exists, and a command must name a section that exists. Registering in the wrong order is
+     * refused with a message rather than silently creating what was missing.
+     *
+     * All three are legal for a plugin, which is a deliberate change from the first draft of
+     * PLUGIN_CONTRACT 7.3: it forbade new tabs outright, and the reason to allow them is that a
+     * real domain suite genuinely owns one. The protection moved from "you may not" to "the user
+     * may hide it". */
+    /* Settings arrive WITH their page, so a page and its fields cannot disagree. */
+    CadStatus (*register_settings_page)(void* ctx, const CadSettingsPageDesc* page,
+                                       const CadSettingDesc* settings, uint32_t setting_count);
+
+    CadStatus (*register_tab)(void* ctx, const CadTabDesc* desc);
+    CadStatus (*register_section)(void* ctx, const CadSectionDesc* desc);
     CadStatus (*register_command)(void* ctx, const CadCommandDesc* desc);
     CadStatus (*register_format)(void* ctx, const CadFormatDesc* desc);
 
@@ -837,6 +994,28 @@ CAD_API CadStatus cad_scene_set_next_hit(CadSession, uint32_t instance, uint32_t
                                          int32_t valid);
 CAD_API const char* cad_scene_pick(CadSession, uint32_t x, uint32_t y);
 CAD_API CadStatus cad_scene_pick_owner(CadSession, uint32_t x, uint32_t y, CadObject* out);
+
+/* How much ribbon exists, including the built-ins. Any output pointer may be null.
+ *
+ * Deliberately only counts. A shell needs to READ tabs, sections and commands to draw them, and
+ * that surface should be designed when the shell is written rather than guessed at now — every
+ * function added here is one we support for a decade. This much makes registration observable,
+ * which is what a test needs. */
+CAD_API CadStatus cad_ribbon_counts(CadSession, uint32_t* out_tabs, uint32_t* out_sections,
+                                    uint32_t* out_commands);
+
+/* Reading back what plugins declared, so a shell can render it.
+ *
+ * Strings point into the session and are valid until the NEXT call on it — the same rule as every
+ * other string this ABI returns. Copy before calling again.
+ *
+ * `out` structs are filled only as far as the struct_size the CALLER set, so a shell built against
+ * an older header is not written past its own end. */
+CAD_API CadStatus cad_settings_page_count(CadSession, uint32_t* out);
+CAD_API CadStatus cad_settings_page_at(CadSession, uint32_t index, CadSettingsPageDesc* out,
+                                       uint32_t* out_setting_count);
+CAD_API CadStatus cad_settings_at(CadSession, uint32_t page, uint32_t setting,
+                                  CadSettingDesc* out);
 
 /* --- units, exposed so bindings do not reimplement parsing --- */
 CAD_API CadStatus cad_parse_length(const char* text, int32_t assumed_system, double* out_mm);

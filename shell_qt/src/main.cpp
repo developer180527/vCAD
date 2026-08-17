@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     app.setOrganizationName(QStringLiteral("vCAD"));
 
     QString shotPath;
+    int shotTheme = -1;
     int shotTab = -1;
     bool shotHome = false;
     bool shotPlugins = false;
@@ -199,6 +200,11 @@ int main(int argc, char** argv) {
             shotPath = QString::fromUtf8(argv[++i]);
         } else if (arg == QStringLiteral("--tab") && i + 1 < argc) {
             shotTab = QString::fromUtf8(argv[++i]).toInt();
+        } else if (arg == QStringLiteral("--theme") && i + 1 < argc) {
+            // A theme is a visual thing, and the only check that catches one which applies
+            // correctly and LOOKS wrong is a picture of it. Bypasses the stored setting on purpose:
+            // a screenshot must not depend on, or disturb, whatever the developer has chosen.
+            shotTheme = QString::fromLocal8Bit(argv[++i]).toInt();
         } else if (arg == QStringLiteral("--home")) {
             shotHome = true;
         } else if (arg == QStringLiteral("--plugins")) {
@@ -218,6 +224,14 @@ int main(int argc, char** argv) {
     cadqt::registerCadIcons();
 
     cadqt::MainWindow window;
+    // AFTER the window exists, because the stored theme lives in the settings the window declares.
+    // applyTheme above painted the default; this repaints in the user's choice before anything is
+    // shown, so there is no flash of the wrong scheme.
+    if (shotTheme >= 0) {
+        proshell::applyTheme(app, static_cast<proshell::Theme>(shotTheme));
+    } else {
+        window.restoreTheme();
+    }
     if (!shotPath.isEmpty()) {
         return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins, shotSelect);
     }

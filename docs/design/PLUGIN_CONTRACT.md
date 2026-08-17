@@ -651,11 +651,32 @@ top-level ribbon tab, and a user with fifteen add-ins has a ribbon they cannot r
 restrict add-ins to a single tab after the fact; FreeCAD's equivalent is workbench proliferation,
 where every addon becomes its own mode with its own duplicated commands.
 
-**Our rule: a plugin cannot create a top-level tab.** It contributes commands to *existing*
-categories. If a plugin genuinely needs its own tab — a full sheet-metal suite might — that is a
-user decision made in settings, not a plugin decision made at registration. Defaulting to "no" and
-letting the user promote is recoverable; defaulting to "yes" and asking fifteen vendors to be
-considerate is not.
+**REVISED — a plugin MAY create a tab. (RESOLVED, ABI 1.19)** The first draft of this section
+forbade it outright, and the reason to allow it is that a real domain suite genuinely owns a tab:
+Fusion's own SOLID / SURFACE / SHEET METAL are exactly that, and forcing sheet metal into someone
+else's Create panel is worse than giving it a tab.
+
+**The protection moved from "you may not" to "the user may hide it".** Every plugin-provided tab,
+section and command is listable and hideable in settings without uninstalling the plugin — which is
+§7.3's "unremovable UI" rule doing the work that a prohibition was doing badly.
+
+Three levels, in Fusion's vocabulary because it is the one users have:
+
+| Level | What it is | Descriptor |
+|---|---|---|
+| **Tab** | "SOLID", "SHEET METAL" | `CadTabDesc` via `register_tab` |
+| **Section** | "CREATE", "MODIFY" inside a tab | `CadSectionDesc` via `register_section` |
+| **Command** | "Extrude", "Box" inside a section | `CadCommandDesc.tab` + `.section` |
+
+**Ordered validation is the load-bearing part.** A section must name a tab that exists; a command
+must name a section that exists. Naming something unknown is REFUSED with a message that names the
+missing thing — never created implicitly, because a typo would then produce an empty tab called
+"Creat" and the author would see a missing button with no error anywhere.
+
+The built-in ids (`CAD_TAB_MODEL`, `CAD_SECTION_CREATE`, …) are **defined in the header**, not
+invented in the host. A plugin naming `CAD_SECTION_CREATE` must still land there in ten years, and a
+string literal in an implementation is not a promise. Labels stay free to change and translate; only
+the ids are fixed.
 
 **Modal dialogs.** Not offered. A plugin cannot block the application on its own UI, cannot open a
 window, and cannot own an event loop. Anything needing more than a parameter list is a *task panel*

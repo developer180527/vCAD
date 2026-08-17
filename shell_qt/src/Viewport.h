@@ -54,6 +54,14 @@ public:
     /// to do with the scene — a ribbon hover, a tooltip, an overlapping panel. Re-rendering on
     /// each of those is most of what made the viewport feel slow.
     void markDirty();
+
+signals:
+    /// Why a click did not select, when there is a reason worth saying — a curved face, geometry
+    /// with no name, empty space. Emitted rather than swallowed: a click that does nothing and
+    /// explains nothing is the failure this whole path was reported as.
+    void pickMessage(const QString& text);
+
+public:
     /// Empty unless attachRenderer() failed, in which case it is the user-facing reason.
     [[nodiscard]] const QString& rendererError() const noexcept { return rendererError_; }
 
@@ -84,6 +92,14 @@ private:
     cad::app::Controller& controller_;
     QPoint lastMouse_;
     cad::render::Drag drag_ = cad::render::Drag::None;
+
+    /// Where the press landed, and whether the mouse has moved far enough since to count as a drag.
+    ///
+    /// A click and an orbit start identically, so the two can only be told apart on RELEASE. Without
+    /// the threshold, the hand-tremor of a normal click registers as a drag and the click is lost —
+    /// which is indistinguishable from picking not working at all.
+    QPoint pressAt_;
+    bool dragged_ = false;
 
     bool attached_ = false;
     /// Presenting straight to a native surface, rather than blitting a read-back image.

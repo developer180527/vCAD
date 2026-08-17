@@ -1,0 +1,6 @@
+add_executable(spike_highlight main.cpp)
+target_link_libraries(spike_highlight PRIVATE cad::render cad::features cad::recompute cad::document)
+cad_set_warnings(spike_highlight)
+if(TARGET cad_shaders)
+  add_dependencies(spike_highlight cad_shaders)
+endif()
