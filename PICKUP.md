@@ -1,3 +1,53 @@
+# PICKUP — next session starts here
+
+## 1. Finish in-place sketching: the overlay draw (small, well-defined)
+
+Everything in-place sketching needs EXCEPT one renderer change is landed and tested. The shell still
+swaps to `SketchCanvas`, and it must keep doing so until this lands — removing it first leaves the
+user drawing blind.
+
+**What is done**
+
+- `CameraController::rayThrough(x, y, viewport)` — world ray through a device pixel, both projections.
+- `Controller::sketchPointAt(x, y)` — that ray against the sketch frame, in sketch coordinates.
+  Refuses on an edge-on plane rather than returning a coordinate nobody pointed at.
+- `Controller::sketchClickAt` + `SketchTool{Select,Line,Circle}` — clicks become geometry. Tool and
+  pending point are MODEL state so both shells behave identically.
+- `Controller::alignCameraToSketch()` — entering a sketch points the camera at its plane, v axis up.
+- `features::resolveSketchFrame` — shared by `computeSketch` and `editSketch`, so a face sketch can
+  actually be edited. Was the reason clicks on face sketches were refused.
+- `Controller::addSketchOnFace(body, face)` — the app could not create one at all before this.
+- `IGpuResources::uploadDynamicEdgeVertices(key, revision, span)` in both backends — keyed and
+  revisioned, so an editing session holds ONE buffer rather than one per stroke.
+- `Controller::sketchOverlayVertices()` / `sketchOverlayRevision()` — the sketch as world-space
+  lines plus a digest that changes on edit and not on orbit.
+
+**The one thing left, and why it was not rushed**
+
+`SceneBuilder`'s overlay batches (`refreshEdgeHighlights`) all CLONE a base batch to borrow its
+instance buffer and its culled `DrawRange`s. The sketch overlay has no base: it is raw world-space
+lines with no instances and no mesh. So it needs an instance-free edge draw:
+
+1. An `EdgeBatch` with `instances == BufferId::None` — decide whether the edge shader can take an
+   identity instance, or whether it needs a variant that skips the instance attributes. Check
+   `render/shaders/` for what the edge vertex shader actually reads. **This is the design question**;
+   the rest is mechanical.
+2. `SceneBuilder::setSketchOverlay(std::span<const float>, std::uint64_t revision)` — upload via
+   `uploadDynamicEdgeVertices`, append after `baseEdgeBatches_` exactly as the highlight overlay
+   does, and give it its own `DrawRange` covering the whole buffer.
+3. `Viewport` calls it whenever `controller.environment() == Environment::Sketch`.
+4. THEN remove the `SketchCanvas` swap in `MainWindow::syncWorkspace` (~line 890) and move the
+   Line/Circle/Select tools onto `Controller::setSketchTool`. Route `Viewport::mousePressEvent` in
+   sketch mode to `sketchClickAt`.
+5. A rubber band from `sketchPending()` to the cursor, so a half-drawn line is visible.
+
+**Verify it the way everything else here got verified**: a pixel assertion. `--shot` the viewport
+mid-sketch and check the line is drawn where `sketchPointAt` says it is. A test that only checks the
+batch count would pass with the sketch drawn in the wrong place, which is this project's recurring
+failure mode.
+
+---
+
 # Pick up here
 
 Updated 17 Aug 2026 at commit `80911a2`. The 15 Aug session's notes are kept below; the sections

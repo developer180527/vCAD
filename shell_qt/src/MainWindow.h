@@ -68,6 +68,13 @@ public:
     /// Screenshot support for the plugin manager, which is a window of its own.
     void openPluginManagerForShot();
 
+    /// Enters a sketch and draws two lines, for `--shot --sketch`.
+    ///
+    /// Here because "the sketch is drawn in the 3D viewport" is a claim about PIXELS. It was
+    /// previously true that sketching swapped to a different widget entirely, and no test noticed
+    /// — the only thing that can tell the difference is a picture.
+    void drawSketchForShot();
+
     /// Selects a row of the model browser, for `--shot --select N`.
     ///
     /// Through the browser rather than through Controller::select, so what the screenshot proves is
@@ -143,6 +150,9 @@ private:
     /// The store is `proshell`'s and knows nothing about CAD; this is where the ids, labels and
     /// defaults that ARE about CAD get named. A second application built on the same shell declares
     /// its own and shares none of them.
+    /// Lights the active drawing tool and greys them all outside the sketch environment.
+    void refreshSketchToolStates();
+
     void declareSettings();
 
     /// Loads installed plugins, once, before any UI reads what they contribute.
@@ -182,6 +192,12 @@ private:
 
     /// Non-empty when a plugin failed to load, shown once the status bar exists.
     QString pluginLoadWarning_;
+
+    struct SketchToolAction {
+        QAction* action = nullptr;
+        cad::app::Controller::SketchTool tool{};
+    };
+    std::vector<SketchToolAction> sketchToolActions_;
 
     proshell::Settings* settings_ = nullptr;
     /// Answers proshell's home-page questions from the session. Declared after it, since it

@@ -129,7 +129,7 @@ std::string startLogging(const char* argv0) {
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
                bool home, bool plugins, int select, const QString& settingsPage,
-               bool settings) {
+               bool settings, bool sketch) {
     window.show();
 
     // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
@@ -138,7 +138,7 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
     // two wait on each other forever. No output, no error, no window -- which is what this mode
     // did when the viewport started rendering for real.
     QTimer::singleShot(0, &app, [&app, &window, path, tab, home, plugins, select, settingsPage,
-                                 settings] {
+                                 settings, sketch] {
         // A populated document, because an empty Home page says nothing about the ribbon and the
         // docks, which is the part being reviewed. `--home` skips it to shoot Home itself.
         if (!home) window.openDemoDocument();
@@ -148,6 +148,7 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
         if (plugins) window.openPluginManagerForShot();
         // After the document exists, so there is something to select.
         if (select >= 0) window.selectBrowserRowForShot(select);
+        if (sketch) window.drawSketchForShot();
 
         QTimer::singleShot(0, &app, [&app, &window, path, plugins, settingsPage, settings] {
             const QPixmap shot = settings   ? window.grabSettingsForShot(settingsPage)
@@ -198,6 +199,7 @@ int main(int argc, char** argv) {
     bool shotHome = false;
     bool shotPlugins = false;
     bool shotSettings = false;
+    bool shotSketch = false;
     QString shotSettingsPage;
     int shotSelect = -1;
     for (int i = 1; i < argc; ++i) {
@@ -213,6 +215,8 @@ int main(int argc, char** argv) {
             shotTheme = QString::fromLocal8Bit(argv[++i]).toInt();
         } else if (arg == QStringLiteral("--home")) {
             shotHome = true;
+        } else if (arg == QStringLiteral("--sketch")) {
+            shotSketch = true;
         } else if (arg == QStringLiteral("--plugins")) {
             shotPlugins = true;
         } else if (arg == QStringLiteral("--settings")) {
@@ -245,7 +249,7 @@ int main(int argc, char** argv) {
     }
     if (!shotPath.isEmpty()) {
         return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins, shotSelect,
-                          shotSettingsPage, shotSettings);
+                          shotSettingsPage, shotSettings, shotSketch);
     }
 
     window.show();

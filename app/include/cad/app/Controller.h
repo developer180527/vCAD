@@ -548,6 +548,9 @@ public:
     /// replaced by a 2D surface that shares none of its coordinates.
     void alignCameraToSketch();
 
+    /// Hands the sketch being edited to the scene as an overlay, so it is visible while drawn.
+    void pushSketchOverlay();
+
     /// Re-solves the edited sketch and notifies observers. Called after every edit, because a
     /// sketch that does not follow its constraints while you draw is not a sketch.
     sketch::SolveReport solveSketch();

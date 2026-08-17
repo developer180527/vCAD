@@ -200,6 +200,42 @@ void SceneBuilder::setHighlight(std::uint32_t element, Highlight h) {
     refreshEdgeHighlights();
 }
 
+/// Buffer key for the sketch overlay. Any value distinct from a batch key works; batch keys are
+/// derived from mesh content hashes, so a small constant cannot collide with one.
+constexpr std::uint64_t kSketchOverlayKey = 0x5E7C4000000001ull;
+
+void SceneBuilder::setSketchOverlay(std::span<const float> lineVertices, std::uint64_t revision) {
+    if (lineVertices.empty()) {
+        sketchVertexCount_ = 0;
+        refreshEdgeHighlights();
+        return;
+    }
+
+    sketchVertices_ = gpu_.uploadDynamicEdgeVertices(kSketchOverlayKey, revision,
+                                                            lineVertices);
+    if (sketchVertices_ == BufferId::None) {
+        sketchVertexCount_ = 0;
+        return;
+    }
+    sketchVertexCount_ = static_cast<std::uint32_t>(lineVertices.size() / 3);
+
+    // One identity instance, so the ordinary edge shader can draw world-space lines: its
+    // instancePosition() multiplies by the instance basis, and the identity leaves the vertex
+    // where it is. Uploaded once -- the revision never changes, so this costs nothing after the
+    // first frame of an editing session.
+    Instance identity;
+    static constexpr float kIdentity[12]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    std::copy(std::begin(kIdentity), std::end(kIdentity), identity.transform);
+    identity.colour[0] = 0.04f;
+    identity.colour[1] = 0.44f;
+    identity.colour[2] = 0.78f;
+    sketchInstance_ = gpu_.uploadInstances(kSketchOverlayKey, 1u,
+                                                  std::span<const Instance>(&identity, 1));
+
+    sketchRange_.assign(1, DrawRange{0, 1});
+    refreshEdgeHighlights();
+}
+
 void SceneBuilder::refreshEdgeHighlights() {
     // Drop last frame's overlays and rebuild. Cheap because it is per HIGHLIGHTED element, not per
     // element: a selection is a handful of things even in a million-part assembly.
@@ -257,6 +293,26 @@ void SceneBuilder::refreshEdgeHighlights() {
             edgeBatches_.push_back(overlay);
             edgeBatchGroup_.push_back(group);
         }
+    }
+
+    // The sketch overlay last, so it draws over both the model and its highlights: it is the thing
+    // being edited, and anything covering it would be covering the user's own strokes.
+    if (sketchVertexCount_ > 0 && sketchVertices_ != BufferId::None
+        && sketchInstance_ != BufferId::None) {
+        EdgeBatch sketch;
+        sketch.vertices = sketchVertices_;
+        sketch.vertexOffset = 0;
+        sketch.vertexCount = sketchVertexCount_;
+        sketch.instances = sketchInstance_;
+        sketch.instanceCount = 1;
+        sketch.ranges = sketchRange_;
+        sketch.colour[0] = 10;
+        sketch.colour[1] = 112;
+        sketch.colour[2] = 200;
+        sketch.colour[3] = 255;
+        sketch.widthPx = 2.0f;
+        edgeBatches_.push_back(sketch);
+        edgeBatchGroup_.push_back(0);
     }
 
     frame_.edgeBatches = edgeBatches_;

@@ -689,8 +689,18 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
                 // is not enough.
                 bgfx::setUniform(impl_.uEdgeColor, colour);
                 bgfx::setUniform(impl_.uEdgeParams, edgeParams);
-                bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx}, batch.vertexOffset,
-                                      batch.vertexCount);
+                // The handle TYPE has to match how the buffer was created. Binding a dynamic
+                // buffer through a static handle is not a type error in bgfx -- the handle is a
+                // bare index, and both pools use the same numbering -- so it reaches Metal as an
+                // attribute pointing at a buffer with no stride, and asserts inside the driver.
+                // The sketch overlay is the only dynamic edge buffer, and this is where it enters.
+                if (vb->kind == BgfxResources::Kind::DynamicEdge) {
+                    bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
+                                          batch.vertexOffset, batch.vertexCount);
+                } else {
+                    bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx},
+                                          batch.vertexOffset, batch.vertexCount);
+                }
                 // The SAME buffer the shaded pass used, at the same offsets. Edges used to
                 // carry their own copy of identical data, which doubled instance memory.
                 bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},

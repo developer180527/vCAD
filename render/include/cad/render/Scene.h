@@ -77,6 +77,20 @@ public:
     /// By NAME: marks that element in every placement of the mesh, because an `ElementName`
     /// identifies geometry in the document and the document does not know about placements.
     /// Costs one hash lookup per placement.
+    /// Draws loose world-space line segments over the scene: x,y,z per endpoint, two per segment.
+    ///
+    /// For the sketch being edited. That sketch is NOT in the document until it is finished, so
+    /// nothing else in the frame draws it and without this the user draws blind.
+    ///
+    /// Unlike every other batch here it has no mesh, no placements and no culling — it is a handful
+    /// of lines in world space. It rides through the ordinary edge shader on a single identity
+    /// instance, which costs one 48-byte upload and avoids a second shader variant that would then
+    /// need its own pipeline state on every backend.
+    ///
+    /// `revision` must change when the lines change and NOT when the camera moves, or an orbit
+    /// re-uploads the sketch every frame. Pass an empty span to clear.
+    void setSketchOverlay(std::span<const float> lineVertices, std::uint64_t revision);
+
     void setHighlight(const naming::ElementName&, Highlight);
 
     /// By absolute element SLOT, as returned by a pick. O(1), and the only one hover should use
@@ -187,6 +201,13 @@ private:
     /// reallocation would dangle every span already handed to the frame).
     std::vector<std::vector<Cell>> cells_;
     std::vector<DrawRange> ranges_;
+
+    /// The sketch overlay's own buffers and its single draw range, kept alive between frames
+    /// because the batch's span points into this.
+    BufferId sketchVertices_ = BufferId::None;
+    BufferId sketchInstance_ = BufferId::None;
+    std::uint32_t sketchVertexCount_ = 0;
+    std::vector<DrawRange> sketchRange_;
     /// Batch index -> group index, because a group contributes a shaded batch, an edge batch,
     /// both or neither, so the three vectors are not parallel.
     std::vector<std::uint32_t> batchGroup_;

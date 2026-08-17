@@ -275,8 +275,15 @@ void CameraController::fit(const Bounds& b, const Viewport& vp) {
     (void)vp;   // aspect is applied in matrices(); fit is aspect-independent by design
 }
 
-Drag CameraController::dragFor(int button, bool shift, bool ctrl) const {
+Drag CameraController::dragFor(int button, bool shift, bool ctrl, bool alt) const {
     constexpr int kLeft = 0, kMiddle = 1, kRight = 2;
+
+    // Before the presets, and before the left-is-selection rule below, because on a trackpad this
+    // is the ONLY way to orbit. Every preset put orbit on the middle button, which a laptop does
+    // not have -- so the viewport could be panned and zoomed but never rotated.
+    if (alt && button == kLeft) return Drag::Orbit;
+    if (alt && button == kRight) return Drag::Pan;
+
     if (ctrl && button == kMiddle) return Drag::Zoom;
 
     switch (preset_) {

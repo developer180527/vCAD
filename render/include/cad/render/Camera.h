@@ -96,7 +96,14 @@ public:
 
     /// Maps a gesture to an action under the active preset. Kept here rather than in the shell
     /// so every shell — Qt, SwiftUI — behaves identically without reimplementing the table.
-    [[nodiscard]] Drag dragFor(int button, bool shift, bool ctrl) const;
+    /// Which gesture a drag is, given the button and modifiers.
+    ///
+    /// `alt` exists because every preset here mapped orbit to the MIDDLE BUTTON, and a laptop
+    /// trackpad does not have one. On a MacBook that left no gesture that rotates the view at all:
+    /// pan worked, zoom worked, and the viewport simply could not be orbited. Alt with the left
+    /// button orbits under every preset — the binding Maya, Blender and most Mac CAD share, and
+    /// the one a trackpad user is most likely to already know.
+    [[nodiscard]] Drag dragFor(int button, bool shift, bool ctrl, bool alt = false) const;
 
     /// NDC depth convention, from `bgfx::getCaps()->homogeneousDepth`.
     ///

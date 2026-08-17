@@ -469,21 +469,27 @@ void MainWindow::rebuildRibbon() {
     if (c->environment() == cad::app::Environment::Sketch) {
         auto* sketchTab = ribbon()->addTab(tr("Sketch"));
         auto* draw = sketchTab->addPanel(tr("Draw"));
+        // The tool is set on the CONTROLLER, not on a canvas widget: the sketch is drawn in the
+        // 3D viewport now, and the tool has to mean the same thing to any shell that hosts it.
         const auto addTool = [&](const QString& label, const QString& iconName,
-                                 SketchCanvas::Tool tool, const QString& shortcut) {
+                                 cad::app::Controller::SketchTool tool, const QString& shortcut) {
             auto* action = new QAction(icon(iconName), label, this);
             action->setToolTip(tr("%1 (%2)").arg(label, shortcut));
+            action->setCheckable(true);
+            action->setShortcut(QKeySequence(shortcut));
             connect(action, &QAction::triggered, this, [this, tool] {
-                const std::size_t index = session_.activeIndex();
-                if (index < sketchCanvases_.size()) sketchCanvases_[index]->setTool(tool);
+                if (auto* c = controller()) c->setSketchTool(tool);
+                refreshSketchToolStates();
             });
+            sketchToolActions_.push_back({action, tool});
             draw->addLarge(action);
         };
-        addTool(tr("Select"), QStringLiteral("select"), SketchCanvas::Tool::Select,
-                QStringLiteral("S"));
-        addTool(tr("Line"), QStringLiteral("line"), SketchCanvas::Tool::Line, QStringLiteral("L"));
-        addTool(tr("Circle"), QStringLiteral("circle"), SketchCanvas::Tool::Circle,
-                QStringLiteral("C"));
+        addTool(tr("Select"), QStringLiteral("select"),
+                cad::app::Controller::SketchTool::Select, QStringLiteral("S"));
+        addTool(tr("Line"), QStringLiteral("line"),
+                cad::app::Controller::SketchTool::Line, QStringLiteral("L"));
+        addTool(tr("Circle"), QStringLiteral("circle"),
+                cad::app::Controller::SketchTool::Circle, QStringLiteral("C"));
 
         // Constrain. Enablement is derived from the SELECTION, so a button is live only when it
         // would actually apply -- the same rule as the model ribbon, and the reason none of these
@@ -828,6 +834,7 @@ void MainWindow::createDocument(DocumentKind kind) {
         refreshProperties();
         refreshCommandStates();
         refreshSketchConstraintStates();
+        refreshSketchToolStates();
         syncCommandPanel();
         refreshStatus();
         // The title's dirty marker is derived from the document, so it has to be refreshed on
@@ -887,16 +894,14 @@ void MainWindow::syncWorkspace() {
     const std::size_t index = session_.activeIndex();
     if (index >= editors_.size()) return;
     auto* c = controller();
-    const bool sketching = c != nullptr && c->environment() == cad::app::Environment::Sketch;
-    if (sketching && index < sketchCanvases_.size()) {
-        workspaces()->setCurrentWidget(sketchCanvases_[index]);
-        // Frame the sketch on entry: one loaded from a file can be anywhere, and an empty canvas
-        // showing the wrong region reads as "the sketch is gone".
-        sketchCanvases_[index]->fit();
-        sketchCanvases_[index]->setFocus();
-    } else {
-        workspaces()->setCurrentWidget(editors_[index]);
-    }
+    // The VIEWPORT, always. Sketching used to swap to a separate 2D canvas, which put the user in
+    // a different world from their model: the part vanished, the camera was unrelated to the one
+    // they had arranged, and finishing the sketch teleported them back. A sketch is drawn on a
+    // plane in the same space as the model, so it is edited there — the camera moves to the plane
+    // (Controller::alignCameraToSketch) and the geometry is drawn as an overlay while it is being
+    // made (Controller::pushSketchOverlay).
+    workspaces()->setCurrentWidget(editors_[index]);
+    editors_[index]->setFocus();
     if (index < session_.count()) {
         setWindowTitle(tr("vCAD — %1")
                            .arg(QString::fromStdString(session_.documents()[index].title)));
@@ -1111,6 +1116,26 @@ void MainWindow::showPluginManager() {
 
 void MainWindow::openPluginManagerForShot() { showPluginManager(); }
 
+void MainWindow::drawSketchForShot() {
+    auto* c = controller();
+    if (c == nullptr) return;
+    c->beginSketch();
+    c->setSketchTool(cad::app::Controller::SketchTool::Line);
+    // Device pixels, as the viewport passes them.
+    const std::size_t index = session_.activeIndex();
+    if (index >= editors_.size()) return;
+    auto* view = qobject_cast<Viewport*>(editors_[index]);
+    if (view == nullptr) return;
+    const float dpr = static_cast<float>(view->devicePixelRatioF());
+    const float w = static_cast<float>(view->width()) * dpr;
+    const float h = static_cast<float>(view->height()) * dpr;
+    c->sketchClickAt(w * 0.35f, h * 0.35f);
+    c->sketchClickAt(w * 0.65f, h * 0.40f);
+    c->sketchClickAt(w * 0.65f, h * 0.40f);
+    c->sketchClickAt(w * 0.55f, h * 0.65f);
+    view->markDirty();
+}
+
 QPixmap MainWindow::grabPluginManager() {
     return pluginManager_ != nullptr ? pluginManager_->grab() : grab();
 }
@@ -1152,6 +1177,18 @@ void MainWindow::loadPlugins() {
                                    : tr("%1 plugins could not be loaded — see Plugins.").arg(failed);
         CAD_WARN(::cad::log::Category::Shell) << detail.toStdString();
         pluginLoadWarning_ = detail;
+    }
+}
+
+void MainWindow::refreshSketchToolStates() {
+    auto* c = controller();
+    const bool sketching = c != nullptr && c->environment() == cad::app::Environment::Sketch;
+    for (const auto& [action, tool] : sketchToolActions_) {
+        action->setEnabled(sketching);
+        // Checked from the CONTROLLER rather than from which button was last pressed: the tool can
+        // also be reset by finishing a sketch, and a toolbar showing Line still lit after the
+        // sketch closed is how a user ends up wondering why clicking does nothing.
+        action->setChecked(sketching && c->sketchTool() == tool);
     }
 }
 

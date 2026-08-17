@@ -891,6 +891,7 @@ bool Controller::editSketch(ObjectId id) {
 
     environment_ = Environment::Sketch;
     alignCameraToSketch();
+    pushSketchOverlay();
     lastSketchSolve_ = editing_->solve();
     notifyDocument();
     notifyView();
@@ -917,6 +918,11 @@ void Controller::finishSketch() {
     }
     editing_.reset();
     environment_ = Environment::Model;
+    // Cleared BEFORE the refresh rebuilds the scene: leaving it up would draw the finished sketch
+    // twice, once as the overlay and once as the feature's own edges, fighting for the same pixels.
+    pushSketchOverlay();
+    sketchPending_.reset();
+    sketchTool_ = SketchTool::Select;
     refresh();
     status("Finished sketch");
 }
@@ -924,6 +930,9 @@ void Controller::finishSketch() {
 void Controller::cancelSketch() {
     editing_.reset();
     environment_ = Environment::Model;
+    pushSketchOverlay();
+    sketchPending_.reset();
+    sketchTool_ = SketchTool::Select;
     notifyDocument();
     notifyView();
     status("Discarded sketch changes");
@@ -1281,6 +1290,7 @@ bool Controller::sketchClickAt(float x, float y) {
     // while you draw is not a sketch -- it is a drawing that will jump when you finally solve it.
     lastSketchSolve_ = editing_->solve();
     status(lastSketchSolve_.message);
+    pushSketchOverlay();
     notifyDocument();
     notifyView();
     return true;
@@ -1358,6 +1368,14 @@ std::uint64_t Controller::sketchOverlayRevision() const {
         }
     }
     return hash;
+}
+
+void Controller::pushSketchOverlay() {
+    if (!scene_) return;
+    // Cleared when leaving the sketch, or the finished sketch would be drawn twice: once as the
+    // overlay and once as the feature's own edges, at slightly different depths.
+    const auto lines = sketchOverlayVertices();
+    scene_->setSketchOverlay(lines, sketchOverlayRevision());
 }
 
 void Controller::alignCameraToSketch() {
