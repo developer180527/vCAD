@@ -29,6 +29,25 @@ public:
     /// Recomputes view and projection for the given viewport.
     [[nodiscard]] Camera matrices(const Viewport&) const;
 
+    /// A world-space ray through a pixel, for turning a click into a point on a plane.
+    ///
+    /// The GPU pick buffer answers "what did I click on", which is the wrong question while
+    /// sketching: most of a sketch is drawn over empty space, where the pick buffer holds nothing.
+    /// This answers "where in the world is this pixel", which has an answer everywhere.
+    ///
+    /// Pixels are DEVICE pixels with the origin at the top-left, the same convention as `pickAt`
+    /// and as Qt's mouse events — one convention for screen coordinates, so a caller never has to
+    /// remember which of two this particular function wanted.
+    ///
+    /// Under an orthographic projection every ray shares the view direction and they differ only in
+    /// origin; under perspective they share an origin and differ in direction. Callers do not have
+    /// to care, which is the reason this returns both rather than a direction and a promise.
+    struct Ray {
+        float origin[3]{0, 0, 0};
+        float direction[3]{0, 0, -1};   ///< unit length
+    };
+    [[nodiscard]] Ray rayThrough(float x, float y, const Viewport&) const;
+
     /// Where the camera looks and which way is up on screen. Unit vectors, mutually perpendicular.
     ///
     /// Exists because yaw/pitch cannot express every view. See `alignTo`.

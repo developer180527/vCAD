@@ -1208,6 +1208,58 @@ bool Controller::applySketchRadius(double millimetres) {
     return true;
 }
 
+std::optional<std::array<double, 2>> Controller::sketchPointAt(float x, float y) const {
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) return std::nullopt;
+
+    // The frame the sketch is actually on. A face-placed sketch that has not been resolved yet has
+    // no 3D interpretation of its own coordinates, so there is nothing to map a pixel onto -- the
+    // same refusal Sketch::toWire makes, for the same reason.
+    std::array<double, 3> origin{0.0, 0.0, 0.0};
+    std::array<double, 3> u{1.0, 0.0, 0.0};
+    std::array<double, 3> v{0.0, 1.0, 0.0};
+    if (const auto& resolved = active->resolvedFrame()) {
+        origin = {resolved->origin[0], resolved->origin[1], resolved->origin[2]};
+        u = {resolved->u[0], resolved->u[1], resolved->u[2]};
+        v = {resolved->v[0], resolved->v[1], resolved->v[2]};
+    } else if (active->needsResolution()) {
+        return std::nullopt;
+    } else {
+        switch (active->plane()) {
+            case sketch::Plane::XY: u = {1, 0, 0}; v = {0, 1, 0}; break;
+            case sketch::Plane::XZ: u = {1, 0, 0}; v = {0, 0, 1}; break;
+            case sketch::Plane::YZ: u = {0, 1, 0}; v = {0, 0, 1}; break;
+        }
+    }
+
+    const std::array<double, 3> normal{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                       u[0] * v[1] - u[1] * v[0]};
+
+    const auto ray = camera_.rayThrough(x, y, viewport_);
+    const double denominator = normal[0] * ray.direction[0] + normal[1] * ray.direction[1] +
+                               normal[2] * ray.direction[2];
+
+    // Edge-on. Not an error and not a fallback: a ray parallel to the plane meets it nowhere, and
+    // any number returned here would be a coordinate the user did not point at. 1e-6 rather than
+    // zero because a grazing angle produces a finite but meaningless answer -- at 0.0001 the hit
+    // is kilometres away, off screen, and looks to the user like the click was ignored anyway.
+    if (std::abs(denominator) < 1e-6) return std::nullopt;
+
+    const double t = ((origin[0] - ray.origin[0]) * normal[0] +
+                      (origin[1] - ray.origin[1]) * normal[1] +
+                      (origin[2] - ray.origin[2]) * normal[2]) / denominator;
+
+    const std::array<double, 3> hit{ray.origin[0] + ray.direction[0] * t,
+                                    ray.origin[1] + ray.direction[1] * t,
+                                    ray.origin[2] + ray.direction[2] * t};
+
+    // Back into the sketch's own axes. u and v are unit and perpendicular (PlaneFrame and the
+    // global planes both guarantee it), so projecting is a dot product rather than a solve.
+    const std::array<double, 3> d{hit[0] - origin[0], hit[1] - origin[1], hit[2] - origin[2]};
+    return std::array<double, 2>{d[0] * u[0] + d[1] * u[1] + d[2] * u[2],
+                                 d[0] * v[0] + d[1] * v[1] + d[2] * v[2]};
+}
+
 sketch::SolveReport Controller::solveSketch() {
     if (!editing_.has_value()) return {};
     lastSketchSolve_ = editing_->solve();

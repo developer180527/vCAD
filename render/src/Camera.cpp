@@ -175,6 +175,50 @@ render::Camera CameraController::matrices(const Viewport& vp) const {
     return out;
 }
 
+CameraController::Ray CameraController::rayThrough(float x, float y, const Viewport& vp) const {
+    Ray ray;
+    if (vp.width == 0 || vp.height == 0) return ray;
+
+    const Basis b = basis();
+    const float aspect = static_cast<float>(vp.width) / static_cast<float>(vp.height);
+
+    // Normalised device coordinates. The Y flip is the whole reason this is written out rather
+    // than inlined at the call site: screen Y grows downward and world "up" grows upward, and
+    // getting it wrong produces a sketch that mirrors vertically -- which looks like a solver bug.
+    const float ndcX = (2.0f * x / static_cast<float>(vp.width)) - 1.0f;
+    const float ndcY = 1.0f - (2.0f * y / static_cast<float>(vp.height));
+
+    const float eye[3]{target_[0] - b.forward[0] * distance_,
+                       target_[1] - b.forward[1] * distance_,
+                       target_[2] - b.forward[2] * distance_};
+
+    if (orthographic_) {
+        // Parallel rays: the pixel chooses where the ray STARTS, not which way it goes. Built from
+        // the same halfH/halfW as matrices() above, so the ray and the picture agree.
+        const float halfH = orthoHeight_ * 0.5f;
+        const float halfW = halfH * aspect;
+        for (int i = 0; i < 3; ++i) {
+            ray.origin[i] = eye[i] + b.right[i] * (ndcX * halfW) + b.up[i] * (ndcY * halfH);
+            ray.direction[i] = b.forward[i];
+        }
+        return ray;
+    }
+
+    // Perspective: one origin, and the pixel chooses the direction. tan(fov/2) with the same 0.7
+    // radian vertical field matrices() passes to bx::mtxProj.
+    const float tanHalf = std::tan(0.7f * 0.5f);
+    float dir[3];
+    for (int i = 0; i < 3; ++i) {
+        dir[i] = b.forward[i] + b.right[i] * (ndcX * aspect * tanHalf) + b.up[i] * (ndcY * tanHalf);
+    }
+    const float length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    for (int i = 0; i < 3; ++i) {
+        ray.origin[i] = eye[i];
+        ray.direction[i] = length > 0.0f ? dir[i] / length : b.forward[i];
+    }
+    return ray;
+}
+
 void CameraController::orbit(float dx, float dy) {
     // Orbiting IS the request to leave a face-on view, so the alignment is released rather than
     // ignored -- and released to the direction currently being looked along, so the first pixel of

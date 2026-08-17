@@ -21,6 +21,7 @@
 #include "cad/units/Units.h"
 
 #include <functional>
+#include <array>
 #include <optional>
 #include <memory>
 #include <string>
@@ -462,6 +463,22 @@ public:
     /// add geometry; every mutation must be followed by solveSketch().
     [[nodiscard]] sketch::Sketch* activeSketch() noexcept;
     [[nodiscard]] const sketch::Sketch* activeSketch() const noexcept;
+
+    /// Where a click at these device pixels lands on the sketch being edited, in the sketch's own
+    /// 2D coordinates.
+    ///
+    /// This is what makes sketching IN the viewport possible at all. `pickAt` answers "what did I
+    /// click on" from the GPU pick buffer, which is empty wherever there is no geometry — and most
+    /// of a sketch is drawn over empty space. This answers "where on the sketch plane is this
+    /// pixel", which has an answer everywhere the plane is visible.
+    ///
+    /// Empty when there is no sketch being edited, or when the plane is edge-on: a ray parallel to
+    /// the plane meets it nowhere, or nowhere useful, and returning a colossal coordinate would put
+    /// a line the user cannot see into their sketch. The shell should refuse the click and say why
+    /// rather than drawing something absurd.
+    ///
+    /// Device pixels, origin top-left — the same convention as `pickAt` and `clickAt`.
+    [[nodiscard]] std::optional<std::array<double, 2>> sketchPointAt(float x, float y) const;
 
     /// Re-solves the edited sketch and notifies observers. Called after every edit, because a
     /// sketch that does not follow its constraints while you draw is not a sketch.
