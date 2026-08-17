@@ -1,17 +1,48 @@
 # Pick up here
 
-Written 15 Aug 2026, at the end of a long session. Everything below was verified on that commit,
-not remembered.
+Updated 17 Aug 2026 at commit `80911a2`. The 15 Aug session's notes are kept below; the sections
+they superseded say so. Everything here was verified on this commit, not remembered.
 
-**The tree is green and every promise currently marked (RESOLVED) is genuinely tested.** Nothing is
-half-wired. You can start clean.
+**The tree is green and nothing is half-wired.** You can start clean.
 
 ---
 
-## What that session actually did
+## What the 17 Aug session did
 
-Recorded because the sections below are organised by subject rather than by order, and the arc is
-hard to reconstruct from them.
+Read this before the 15 Aug arc below it; several of that session's "next steps" are now done.
+
+1. **Fixed the compatibility museum**, which looked like it was checking something and was not: the
+   exhibit binary was never committed (`*.dylib` swallowed it), a platform with no exhibit FAILED
+   rather than skipping, and the recorded sha256 was for a human to check by hand. All three fixed;
+   the digest is verified now.
+2. **Face picking through `Controller`** (1d step 1). `pickAt` returns object + `ElementName` + slot;
+   `pickSketchFace` returns a `Result` so a refusal -- nothing there, an edge, a curved face --
+   reaches the shell instead of becoming a click that silently does nothing.
+3. **Camera alignment to a sketch frame** (1d step 2), which needed an explicit basis because a
+   turntable cannot express face-on: a sketch on XY is pitch = 90 exactly, the pole the orbit clamp
+   avoids, and yaw/pitch has no roll so it cannot put u on the screen's x.
+4. **Found and fixed that the viewport rendered MIRRORED.** bx defaults to left-handed matrices and
+   this world is right-handed Z-up, so a front view put +X on the left. Invisible because backface
+   culling is deliberately off and every part so far is symmetric. Only a sketch frame has the
+   chirality to show it.
+5. **Audited the features** -- `docs/design/FEATURE_AUDIT.md`, counted not recalled. The finding is
+   not the feature count: three capabilities are implemented, tested, and unreachable.
+6. **Selection below the level of a feature.** `SelectionLevel{Body,Face,Edge,Vertex}`, an element
+   selection list, `clickAt`/`hoverAt`, and **Fillet/Chamfer now take the edges you picked** instead
+   of every edge of the body.
+7. **Made selection VISIBLE**, which took four separate bugs -- see "The four selection bugs" below.
+   That section is the most valuable thing in this file for a fresh session.
+
+**Still not wired: a click in the 3D VIEWPORT.** The core is tested and ready; `shell_qt/Viewport`
+still maps every button to a navigation gesture. That is the next step, and the design is agreed --
+see "Agreed next: viewport clicks and export".
+
+---
+
+## What the 15 Aug session did
+
+Kept for context. Recorded because the sections below are organised by subject rather than by order,
+and the arc is hard to reconstruct from them.
 
 1. **Ported the DXF reader to Rust** behind an unchanged `importDxf`, with a neutral `RawEntity`
    seam so both readers feed one sketch-building pass. Then **differentially fuzzed the two against
@@ -32,7 +63,8 @@ hard to reconstruct from them.
    committed to nothing).
 
 **Next is features, not architecture.** The plugin loader (step 6), then the boring important
-tools. See "Then".
+tools. See "Then". *The loader landed on 16 Aug; the priority still holds, and the 17 Aug audit
+sharpened it.*
 
 ---
 
@@ -47,12 +79,27 @@ tools. See "Then".
 | DXF fallback (`-DCAD_USE_RUST_DXF=OFF`, rebuild, rerun) | green; differential skips |
 | Layering (`cmake --build build`) | Layering OK |
 | Qt shell (`cmake --build build-qt --target vcad`) | builds clean |
-| ABI golden snapshot | no drift, regenerated for **1.17** |
+| ABI golden snapshot | no drift, at **1.18** |
 | Qt shell boundary (`ctest -R proshell_boundary`) | green; `proshell` links Qt and nothing else |
 | CI matrix | 5 platforms — Windows x64/arm64, Linux x64/arm64, macOS arm64 |
+| Selection is visible on a GPU | verified by screenshot, both ways round — see below |
 
-**158 tests in `tests-rs`, 26 in `rust/cad-parse`, 35 C++ tests, zero failures** at the time of
-writing.
+**93 C++ tests, 161 passing in `tests-rs` (+1 ignored), 26 in `rust/cad-parse`, zero failures**,
+counted on this commit.
+
+### Verify the viewport with your eyes, not only with ctest
+
+```bash
+./build-qt/shell_qt/vcad --shot /tmp/shot.png --select 0
+```
+
+`--select N` selects the Nth **feature** and is the check that selection highlighting works. It is
+the Nth feature, NOT the Nth row: row 0 is the document, whose id is 0, so selecting it correctly
+selects nothing — and looks exactly like the bug it was written to catch. `--tab N`, `--home` and
+`--plugins` shoot the other surfaces.
+
+Expect: `--select 0` tints the box blue and leaves the cylinder grey; `--select 1` is the other way
+round; shading survives in both.
 
 Two build directories, on purpose: `build` (core, tests, spikes) and `build-qt` (renderer + Qt
 shell). Rust links the library from `build/abi`, so **run `cmake --build build` before
@@ -128,6 +175,91 @@ and it is cheap once 1–3 exist.
 
 ---
 
+## The four selection bugs, and what they teach
+
+Reported as "I cannot select by clicking, even from the Model side panel". It was four bugs, each
+hiding the next. Written up because three of them are still-live traps for anything that touches the
+same paths.
+
+1. **The browser destroyed its own selection.** The `itemSelectionChanged` handler called
+   `clearSelection()`, which notifies; the notification runs `refreshTree()` **synchronously**; and
+   `refreshTree()` begins with `browser_->clear()`. The loop that followed then read an empty list.
+   Clicking a feature in the Model panel had never selected it.
+
+   **The trap:** in this shell, any controller call that notifies will rebuild the widget you are
+   iterating, before your next line runs. Read the widget FIRST, then call the controller once.
+   `Controller::setSelection` exists for exactly this — one call, one notification, one rebuild.
+
+2. **The renderer never drew highlights.** `applyShadingUniforms` set `u_highlight` to zero strength
+   unconditionally, so `SceneFrame::highlights` — correctly maintained by the scene layer since M3 —
+   went nowhere. The cause is structural rather than a slip: **a uniform is per DRAW CALL**, one
+   call covers a whole mesh across every placement of it, and selection is per element. No value
+   could mean "this face and not the other five". It is now an R8 lookup texture indexed by element
+   slot, uploaded only when the table changes, with the tint per kind in the shader where it can
+   vary per fragment.
+
+3. **Every element id was 255× too large.** `vs_shaded` passed `unpackU32(a_color1 * 255.0)`, but the
+   attribute is declared UNNORMALISED in the vertex layout, so bgfx already delivers 0..255 — which
+   is what `unpackU32` expects.
+
+   **What this means beyond highlighting: GPU PICKING HAS NEVER WORKED.** `fs_pick` writes the same
+   `v_ids`, so every GPU pick resolved to a slot that does not exist and silently found nothing. No
+   test caught it because every picking test drives the scripted `NullPicker` — deliberately, and
+   correctly, since the scene layer's job is slot → name. The gap is that nothing drove the GPU
+   picker at all. **The fix is in and has NOT been verified end to end**, because the viewport still
+   does not pick. Verify it when wiring the click.
+
+4. **Shader edits did not reach the app.** The copy beside the executable was
+   `add_custom_command(TARGET vcad POST_BUILD)`, which only runs when **vcad relinks** — so a
+   shader-only edit compiled into `${CMAKE_BINARY_DIR}/shaders` and stayed there while the app loaded
+   the previous binary. This cost more time than the other three combined, because it made a correct
+   fix look like it had no effect. Now driven by the shader files through a stamp target
+   (`vcad_shaders`), with the output list published as `CAD_SHADER_OUTPUTS` on the `cad_shaders`
+   target.
+
+   **The residue:** if a shader change ever appears to do nothing, check
+   `build-qt/shell_qt/shaders/metal/*.bin` timestamps against `build-qt/shaders/metal/*.bin` before
+   doubting the shader.
+
+### What is still not visible
+
+**A selected EDGE does not highlight.** The edge vertex stream is positions only, and `vs_edge`
+writes `v_ids = 0`, so the lookup cannot work for edges. Faces and whole bodies do highlight. Fixing
+it means either adding the element index to the edge stream (a mesh-format change, so it touches the
+tessellator, the layout and the content hash) or emitting one draw range per highlighted edge from
+`SceneBuilder` — `RenderMesh::edges` already carries `EdgeRange{vertexOffset, vertexCount, element}`
+and `EdgeBatch` already has a colour and a vertex sub-range, so the second option needs no format
+change at all. Prefer it.
+
+---
+
+## Agreed next: viewport clicks and export
+
+Decided with the user on 17 Aug, including two explicit choices. **Extract the reusable halves as we
+go** rather than after — this project already knows retrofitting a boundary is the expensive path —
+and **export writes the selected body**, falling back to the only body when nothing is selected and
+refusing with "Select the body to export" when there are several.
+
+1. **`proshell::ViewportInput`** — the domain-neutral input half: click-versus-drag discrimination by
+   movement threshold (the part everyone gets wrong), modifier semantics, hover delivery.
+   `shell_qt/Viewport` keeps bgfx presentation and delegates. This is what a BIM viewport inherits
+   verbatim. Below it, `Controller::clickAt`/`hoverAt` already exist and are tested.
+2. **Move the Body/Face/Edge/Vertex filter bar into `proshell`** as a control driven by app-supplied
+   level labels, backed by `Controller::setSelectionLevel`. `MainWindow.cpp` already predicted this
+   move in a comment.
+3. **Export**: `proshell::ExportSource` (an interface in Qt types only — `exportTargets`,
+   `suggestedBaseName`, `exportTo`) plus `proshell::runExportDialog` owning the filter-string
+   assembly, extension appending, overwrite confirmation, error surfacing and last-directory memory.
+   `cadqt` implements it over new `Controller::exportFormats()`/`exportTo()`, which read
+   `FormatRegistry` and offer only formats whose `write` is true, so the dialog can never claim a
+   format the core cannot write. Entry point is `File ▸ Export…` — `ShellWindow` already owns the
+   File menu, and that is where Inventor and SolidWorks put it.
+
+`core/io` already implements STEP, IGES and STL **writers** (`OcctProvider.cpp`). Nothing in
+`shell_qt` or `app` mentions `exportFile`. This is wiring, not invention.
+
+---
+
 ## 1d: in-place sketching, which is the point of the whole exercise
 
 Steps 1a–1c are done: a sketch can be placed on a named face, the recompute locates it, and a shell
@@ -147,8 +279,11 @@ Two screenshots taken on 15 Aug show it exactly:
 
 ### The pieces already exist; 1d is wiring
 
+**Steps 1 and 2 are now done (17 Aug).** See below for what remains.
+
 - The pick pass is in the bgfx backend (`pickReadback`, `IPicker`) and has **never been driven from
-  the shell**. That is the one genuinely new piece.
+  the shell**. That is the one genuinely new piece. — *`Controller::pickAt` now drives it; the
+  shell still does not. And note bug 3 above: the GPU picker's ids were broken until this commit.*
 - `Controller` already has `Environment{Model,Sketch}`.
 - The sketch now has a world transform: `SketchFrame` + `to3d`.
 - `cad_sketch_create_on_face` exists, and `Session::new_sketch_on_face` wraps it.
@@ -167,17 +302,24 @@ rather than the only way. Deleting it would trade one missing mode for another.
 
 ### The order that keeps it verifiable
 
-1. **Face picking through `Controller`**, headless-testable: a pick returns an `ElementName`, and a
-   name that resolves to a non-planar face is refused with a reason (`kernel::planeOf` already
-   does this — the shell must surface it, not swallow it).
-2. **Camera alignment** to a `SketchFrame`. Pure maths, testable without a screen.
-3. **Draw sketch curves in the 3D viewport.** This is the part that needs eyes, and it is the only
-   part that does.
-4. **Make the 2D canvas a view toggle** rather than an environment switch.
+1. ~~**Face picking through `Controller`**~~ — **DONE**, 6 tests in `tests/acceptance/face_pick.cpp`.
+   `pickAt` returns object + `ElementName` + slot; `pickSketchFace` returns a `Result` carrying the
+   frame, and refuses nothing-there / an edge / a curved face with distinguishable codes
+   (`NotDone` / `InvalidInput` / `Unsupported` from `kernel::planeOf`). Useful discovery: **a box
+   carries 18 named slots — 6 faces and 12 edges** — so the tests exercise the refusal 12 times
+   rather than skipping, and the box case asserts six DISTINCT names.
+2. ~~**Camera alignment** to a `SketchFrame`~~ — **DONE**, 10 tests in
+   `tests/acceptance/camera_align.cpp`, plus `Controller::alignViewTo`. `CameraController` now
+   carries an explicit basis; `orbit()` RELEASES the alignment to the direction currently being
+   looked along, so the first pixel of drag does not teleport the model. This is what exposed the
+   mirrored viewport.
+3. **Draw sketch curves in the 3D viewport.** Still to do, and still the part that needs eyes — but
+   `--shot` plus the `--select` flag is now a working loop for exactly this.
+4. **Make the 2D canvas a view toggle** rather than an environment switch. Still to do.
 
-Steps 1–2 can be proven headlessly. Step 3 is a claim about pixels, and this project's history is
-unambiguous about those: instancing, the empty-scene clear and the 100k pixel check all looked
-right and were not. Get a human to look, or assert on a pixel.
+Step 3 is a claim about pixels, and this project's history is unambiguous about those: instancing,
+the empty-scene clear, the 100k pixel check, and now the mirrored viewport and the never-drawn
+highlight all looked right and were not. Get a human to look, or assert on a pixel.
 
 ## Done: the DXF parser in Rust
 
@@ -538,21 +680,30 @@ losing work would care about.
 
 ## Then — and the priority has changed
 
-**The next work is features, not architecture.** That is a deliberate decision taken at the end of
-the session, and `docs/design/COMPETITIVE_REVIEW.md` is the argument for it: 46 of ~73 ribbon
-entries are disabled stand-ins, there are 11 feature types against SolidWorks' hundred or so, and
-one of four document kinds is implemented. The expensive-to-retrofit work is done. The
-characteristic risk of that ordering is architecture that never meets features, in a codebase whose
-culture makes the remaining work the least attractive kind.
+**The next work is features, not architecture.** Still true, and `docs/design/FEATURE_AUDIT.md`
+(17 Aug) is now the sharper argument for it than `COMPETITIVE_REVIEW.md`: **67 ribbon entries, 44 of
+them disabled stand-ins → 34% live**, 11 feature types, 11 constraints, **2 sketch drawing tools**
+against a `Sketch` class that also has points and arcs, and 1 of 4 document kinds.
 
-So: the loader first, because it is the one architectural item that unblocks a whole category, and
-then the boring important tools.
+The audit's finding is not the count, though. **Three capabilities are implemented, tested, and
+unreachable**, and each is wiring rather than invention:
 
-6. **The loader** — discovery, manifest, `dlopen` with `RTLD_LOCAL`, lifecycle. Plus the
-   compatibility museum and the hostile-plugin test. Built last, deliberately: the loader is the
-   first client and a client freezes the design it is built against. **It is also the thing that
-   turns the plugin ABI from a well-designed contract with zero clients into something real** — no
-   third-party plugin has ever been loaded, and every plugin test to date runs an in-process fake.
+- a click in the viewport did nothing (core now done, shell pending — see "Agreed next")
+- there is no way to EXPORT, though `core/io` writes STEP, IGES and STL
+- `Shape::measure()` and `Shape::volume()` exist behind an Inspect tab of four disabled stand-ins
+
+The audit's ordering, shortest-payoff first: viewport click → export → standard views and view modes
+(`CameraController::alignTo` makes front/top/right/iso nearly free, and the View tab has no entries
+for them) → finish in-place sketching (1d.3, 1d.4) → sketch tools (rectangle, arc, dimension, trim,
+offset — the laborious one, and what makes the sketcher usable rather than demonstrable) → Hole,
+Revolve and the pattern family → then assemblies.
+
+~~6. **The loader**~~ — **DONE** (16 Aug): discovery, manifest-before-dlopen, `RTLD_NOW|RTLD_LOCAL`,
+   a real compiled plugin loaded from disk, a Plugins panel and manager window, and the compatibility
+   museum (repaired 17 Aug — it was not actually checking anything; see the top of this file). Still
+   open on this thread: **the app does not load plugins at startup** (blocked on lifting the
+   `CadHost` construction out of `abi::Session` so `cad::app::Controller` can own one), the §2
+   registration window, §5 error containment, and the hostile-plugin test.
 7. **WASM sandbox ADR** — decided in principle (`PLUGIN_CONTRACT.md` §9). Needs: memory ownership
    across the linear-memory boundary, what a handle means when the guest cannot hold a host
    pointer, and the per-recompute performance cost.
@@ -615,6 +766,25 @@ Also open, from the performance work and not on the plugin thread at all:
 - **An invariant written `if let Ok(v) = ...` is an invariant that turns itself off.** The Clean
   -object volume check did exactly this: a Clean object whose volume could not be computed passed
   without comment. Assert the call succeeded, then assert the value.
+- **A controller call that notifies will rebuild the widget you are iterating**, synchronously,
+  before your next statement. That is bug 1 above, and it made the Model panel unable to select
+  anything. Read the widget first, then call once.
+- **A `bgfx` uniform is per DRAW CALL**, and one draw call covers a whole mesh across every placement
+  of it. Anything that must vary per element — highlight, per-face colour, section state — cannot be
+  a uniform. Use the element slot in `v_ids.x` and a lookup texture.
+- **bx's matrix helpers default to `Handedness::Left`.** This world is right-handed Z-up. Passing the
+  default mirrors the image with no other symptom, because backface culling is deliberately off. The
+  three calls in `Camera.cpp` must all say `Handedness::Right`, and must agree.
+- **`a_color1` arrives UNNORMALISED**, i.e. already 0..255, because the vertex layout says so. Do not
+  scale it before `unpackU32`. Doing so made every element id 255× too large and broke GPU picking
+  invisibly for months.
+- **A `POST_BUILD` command on a target only runs when that TARGET rebuilds.** The shader copy was one,
+  so shader-only edits never reached the app and a correct fix looked inert. If a shader change seems
+  to do nothing, compare `build-qt/shell_qt/shaders/metal/*.bin` against `build-qt/shaders/metal/*.bin`
+  before doubting the shader.
+- **`--shot` renders through the GPU, not the Qt fallback.** The fallback is a wireframe box plus a
+  grid, so if a screenshot shows shaded surfaces it came from bgfx. Worth knowing before concluding a
+  screenshot proves nothing about the renderer.
 - **A test harness must not keep host state in a `static mut`.** The fake plugin did, passed under
   `--test-threads=1`, and SIGABRT'd under the parallel suite. `plugin_ctx` is what a plugin carries
   its state in; a harness that cheats around it is not testing the boundary it claims to.
@@ -629,13 +799,22 @@ viewport. The native path works, there is no readback, and the 27 fps ceiling is
 been open for a week and is now closed — it was the last thing blocking in-place sketching from
 being verifiable.
 
-**`--shot` hangs, but only with a document open.** Measured on `f2e5447`: `--shot --home` exits 0
-and writes the PNG; `--shot` with a document times out. So the cause is in the viewport render
-path, not in the screenshot code — an earlier note here said it had "never worked", which is too
-strong and made the bug look unfindable. Evidence: the offscreen path repaints continuously (paints
-1–4 render, 5+ arrive with nothing dirty), and Qt drains newly-posted events inside the same
-`sendPostedEvents` pass, so the pending zero-timer that calls `grab()` never runs. `sample` puts the
-main thread in an ordinary Qt repaint, not in the grab.
+**`--shot` hangs, but only with a document open — and the PNG is still written.** Refined 17 Aug: the
+grab DOES happen and the file is complete and correct; it is the process that never exits, so the
+shot was used heavily this session. Practical recipe:
+
+```bash
+(./build-qt/shell_qt/vcad --shot /tmp/shot.png --select 0 >/dev/null 2>&1 &) ; sleep 22
+```
+
+Then read the PNG. Do not run it in the foreground — it will sit there until the timeout.
+
+Original diagnosis, still the best lead: `--shot --home` exits 0; `--shot` with a document does not.
+The offscreen path repaints continuously (paints 1–4 render, 5+ arrive with nothing dirty), and Qt
+drains newly-posted events inside the same `sendPostedEvents` pass, so the pending zero-timer that
+calls `app.quit()` never runs. `sample` puts the main thread in an ordinary Qt repaint, not in the
+grab. Since the artefact is produced, this is an annoyance rather than a blocker — but it is 20+
+seconds per visual check, which adds up.
 
 ## Decisions made, so they are not relitigated
 
@@ -650,6 +829,20 @@ main thread in an ordinary Qt repaint, not in the grab.
   works on one. A plugin cannot create a top-level ribbon tab — that is a user decision in
   settings, not a plugin decision at registration. Revit had to retrofit that limit; FreeCAD's
   equivalent is workbench proliferation.
+- **Reusable machinery is extracted AS the feature is built, not afterwards** (17 Aug, with the user).
+  The generic half goes into `modules/proshell` from the start, with the boundary probe enforcing that
+  it stays domain-neutral, so a future BIM or civil app inherits it. The reasoning is this project's
+  own history: retrofitting a boundary is the expensive path, and an extraction deferred until after
+  the next feature loses to the next feature.
+- **Export writes the SELECTED body**, the only body when nothing is selected, and refuses with
+  "Select the body to export" when there are several (17 Aug, with the user). Not a silent fuse of
+  every body: that is a modelling decision made on the user's behalf, and OCCT can fail at it.
+- **`SelectionLevel` lives in `app/`, not the shell.** "A click at this level means that face" is a
+  model rule, and a rule that lives in `MainWindow` does not exist on iPad. It is a LEVEL, not a
+  filter: it does not narrow a set, it decides what a pick resolves to. Changing it DROPS the
+  selection made at the old level, because there is no honest mapping from "this face" to "this edge".
+- **`SketchCanvas` is not deleted.** A face-on 2D view is still right for a dense sketch and both
+  Inventor and SolidWorks offer one. In-place sketching makes it a view option, not a replacement.
 - **The API is forever; the geometry is reproducible only within a kernel generation.** A 2026
   plugin loads in 2036. The shape it produces may differ if the kernel improved, and the document
   says so. This is the one real boundary on the decade promise and it is deliberate.
@@ -658,9 +851,13 @@ main thread in an ordinary Qt repaint, not in the grab.
 
 ## Documents worth reading before starting
 
+- `docs/design/FEATURE_AUDIT.md` — **read this one first** (17 Aug). Whether anybody could do a job
+  with vCAD, counted from the tree. Its finding is the three implemented-and-unreachable
+  capabilities, and its ordering is the shortest path to a usable tool.
 - `docs/design/COMPETITIVE_REVIEW.md` — how far from SolidWorks and Inventor, with every vCAD
-  number counted from the tree rather than remembered. Read it before deciding what to build next;
-  it is the argument for the priority change above.
+  number counted from the tree rather than remembered. The architectural companion to the audit; its
+  §5 names the risk the audit then measured. Two of its claims are now stale: the sketch-plane
+  section predates 1a–1d.2, and its counts predate the audit's.
 - `docs/design/PLUGIN_CONTRACT.md` — the contract, the incumbents' mistakes it was designed
   against, and §8's implementation order. Steps 1–4 are RESOLVED; 5 and 6 are not.
 - `docs/design/PDF_EDITOR.md` — a concept note for a second product on these primitives.
