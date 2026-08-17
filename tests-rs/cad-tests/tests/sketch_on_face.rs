@@ -41,7 +41,8 @@ fn a_face_sketch_needs_its_body_before_it_can_build() {
     let text = s.sketch_text(sketch);
     let feature = s.add_sketch_feature(&text).expect("sketch feature");
     // Deliberately NOT linked to the body.
-    s.recompute().expect("recompute returns a report, not an error");
+    s.recompute()
+        .expect("recompute returns a report, not an error");
 
     let state = s.state(feature).expect("state");
     assert_ne!(
@@ -69,7 +70,8 @@ fn a_face_sketch_extrudes_from_the_face_it_was_drawn_on() {
 
     let text = s.sketch_text(sketch);
     let feature = s.add_sketch_feature(&text).expect("sketch feature");
-    s.set_input(feature, "body", body).expect("the body the face belongs to");
+    s.set_input(feature, "body", body)
+        .expect("the body the face belongs to");
 
     s.recompute().expect("recompute");
     let state = s.state(feature).expect("state");
