@@ -1295,9 +1295,11 @@ void Controller::addExtrude(double millimetres) {
         return;
     }
 
-    // The direction comes from the sketch's plane, so carry it across. Extrude reads it from its own
-    // property rather than re-parsing the sketch text on every recompute.
-    std::int64_t plane = 0;
+    // Carried across ONLY when the sketch actually has one. A sketch placed on a face has no global
+    // plane, and defaulting to XY here used to hand the extrude a direction lying in the profile's
+    // own plane -- which sweeps to a zero-volume sheet. With the property absent, computeExtrude
+    // measures the profile's normal instead, which is the right answer for any face.
+    std::optional<std::int64_t> plane;
     if (const auto* stored = object->find("plane")) {
         if (const auto* v = std::get_if<std::int64_t>(stored)) plane = *v;
     }
@@ -1305,8 +1307,8 @@ void Controller::addExtrude(double millimetres) {
     auto [next, id] = history_.current().add("Extrude");
     const auto created = next.find(id);
     auto updated = created->withProperty("a_profile", profile)
-                       .withProperty("distance", units::millimetres(millimetres))
-                       .withProperty("plane", plane);
+                       .withProperty("distance", units::millimetres(millimetres));
+    if (plane) updated = updated.withProperty("plane", *plane);
     next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
     history_.commit(std::move(next), "Extrude");
 

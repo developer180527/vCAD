@@ -278,22 +278,43 @@ kernel::Result<Output> computeExtrude(const ComputeContext& ctx) {
         return Error{ErrorCode::InvalidInput, "An extrude needs a non-zero distance."};
     }
 
-    // The plane is recorded on the extrude so it does not have to re-parse the sketch text. Defaults
-    // to XY, which matches Sketch's own default.
-    std::int64_t plane = 0;
-    if (const auto* stored = ctx.object.find("plane")) {
-        if (const auto* v = std::get_if<std::int64_t>(stored)) plane = *v;
-    }
     const double d = distance.value().base();
     double dx = 0.0;
     double dy = 0.0;
     double dz = d;
-    if (plane == 1) {        // XZ: the sketch spans x and z, so it grows along y
-        dy = d;
-        dz = 0.0;
-    } else if (plane == 2) { // YZ
-        dx = d;
-        dz = 0.0;
+
+    // Where the direction comes from, and why it is not one rule.
+    //
+    // A stored plane index (0=XY, 1=XZ, 2=YZ) only ever described the three GLOBAL planes. A sketch
+    // drawn on a face of the model has no index that means anything, so it extruded along whichever
+    // global axis the index happened to hold -- and for a sketch on a side face that direction lies
+    // IN the profile's own plane. Sweeping a face along a direction it contains produces a
+    // zero-volume sheet, so the feature reported success and built nothing.
+    //
+    // So: no index means measure the profile, which is what this function's contract always claimed
+    // to do and is right for any plane, global or not.
+    //
+    // An index that IS present still wins, and that is a compatibility decision rather than a
+    // geometric one. The three global planes have always grown towards the positive axis, and the
+    // XZ frame's own normal is -Y (u x v with u=x, v=z), so measuring it would silently reverse
+    // every existing XZ extrude -- models built before today would come back inside out. The index
+    // is the record of what the document meant when it was written, and it is honoured.
+    if (const auto* stored = ctx.object.find("plane")) {
+        std::int64_t plane = 0;
+        if (const auto* v = std::get_if<std::int64_t>(stored)) plane = *v;
+        if (plane == 1) {        // XZ: the sketch spans x and z, so it grows along y
+            dy = d;
+            dz = 0.0;
+        } else if (plane == 2) { // YZ
+            dx = d;
+            dz = 0.0;
+        }
+    } else if (const auto measured = kernel::planeOf(ctx.inputs[0]->shape)) {
+        const auto& f = measured.value();
+        // u x v: the profile's normal, in the same right-handed order PlaneFrame stores.
+        dx = (f.u[1] * f.v[2] - f.u[2] * f.v[1]) * d;
+        dy = (f.u[2] * f.v[0] - f.u[0] * f.v[2]) * d;
+        dz = (f.u[0] * f.v[1] - f.u[1] * f.v[0]) * d;
     }
 
     auto op = kernel::extrude(ctx.inputs[0]->shape, dx, dy, dz);

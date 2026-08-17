@@ -1,6 +1,8 @@
 # Feature audit: how far is vCAD from a functional CAD?
 
-Counted from the tree on 17 Aug 2026, at commit `18fec06`. Every number below was measured today,
+Counted from the tree on 17 Aug 2026, at commit `18fec06`; **re-measured 18 Aug 2026 at
+`e5f86a9`** — changed numbers and closed gaps are marked. The re-count exists because two of the
+three §2 gaps were meant to have been closed since, and one of them was. Every number below was measured today,
 not carried over from `COMPETITIVE_REVIEW.md` (15 Aug), which asked a different question — how vCAD
 compares *architecturally* to SolidWorks and Inventor. This one asks something narrower and more
 useful right now: **could somebody do a job with it?**
@@ -19,12 +21,12 @@ with no way for a user to invoke them.
 | Commands in `Controller`'s registry | **19** | 8 feature, 5 edit, 3 sketch, 2 view, 1 delete |
 | Sketch constraint kinds | **11** | Coincident, Horizontal, Vertical, Parallel, Perpendicular, Distance, Radius, PointOnLine, EqualLength, LockX, LockY |
 | Sketch drawing tools in the UI | **2** | Line, Circle. (`Sketch` itself also has Point and Arc — no tool reaches them) |
-| Ribbon entries | **67** | of which **44 are disabled stand-ins** → **23 live, ~34%** |
+| Ribbon entries | **66** | of which **43 are disabled stand-ins** → **23 live, ~35%** |
 | Document kinds | **1 of 4** | Part. Assembly, Drawing, Presentation declared and inert |
 | Import formats | **4** | STEP, IGES, STL, DXF |
 | Export formats reachable by a user | **0** | see §2 |
-| C plugin ABI | **1.18**, 73 entry points | loader, catalogue and manager UI all landed |
-| Tests | **79** C++, **164** Rust (`tests-rs`), **26** Rust (`cad-parse`) | |
+| C plugin ABI | **1.21** (was 1.18) | loader, catalogue, manager UI, ribbon and settings extension. The shell now *loads* plugins, which until 18 Aug it never did |
+| Tests | **110** C++ (was 79), **164** Rust (`tests-rs`), **26** Rust (`cad-parse`) | |
 | Product code | **~27,000 lines** | core 9.9k, abi 3.9k, shell_qt 3.6k, render 3.6k, proshell 2.2k, app 2.2k, rust 1.6k |
 | Test code | **~12,300 lines** | a 0.45 ratio to product code |
 
@@ -55,24 +57,17 @@ Four tabs are entirely aspirational.
 These matter more than the counts, because in each case the hard part is done and the reachable part
 is not. They are also the cheapest wins in the repository.
 
-### A click in the viewport does nothing
+### A click in the viewport does nothing — **CLOSED 18 Aug**
 
-`Viewport::mousePressEvent` maps the button to an orbit/pan/zoom gesture and returns. There is no
-selection path from the 3D view at all: `Controller::select` is called from exactly one place in the
-whole shell, the model tree (`MainWindow.cpp:1021`).
+`Viewport::mouseReleaseEvent` now calls `Controller::clickAt` when the mouse did not travel far
+enough to count as a drag, and the fillet path takes the picked edges. The four bugs this uncovered
+(a click and an orbit being indistinguishable until release, highlight batches dropped by culling,
+every computed body being placed so the fillet z-fought its own input, and a pick message nobody
+emitted) are fixed.
 
-This is the single largest usability gap in the product. Clicking a thing you can see is not a
-feature of CAD software, it is the interaction CAD software is made of. And as of this session the
-missing piece is no longer missing — `Controller::pickAt` returns an object and an `ElementName`,
-with six tests behind it. Nothing calls it.
-
-Downstream consequences, all of which disappear with the same wiring:
-
-- **Fillet and chamfer apply to every edge of the body.** `addEdgeFeature` calls `edgesOf(target)`
-  and passes the whole list, because there is no way to pick one. The engine supports per-edge
-  selection; the UI cannot express it.
-- No hover highlight, although `SceneBuilder::setHighlight` exists and is O(1) by element slot.
-- The Body/Face/Edge/Vertex filter in the top-right of the window has nothing to filter.
+It is wired, not finished. It has been described in use as "VERY buggy", and the threshold-based
+click/drag split is the likeliest cause: 4 px at device resolution is tight on a trackpad. Worth
+re-measuring against a real session before adding more on top of it.
 
 ### There is no way to get geometry out
 
@@ -81,6 +76,44 @@ Downstream consequences, all of which disappear with the same wiring:
 
 A modeller you cannot export from cannot be used for anything, however good the model is. This is one
 command and one file dialog away from working, against an implementation that is already tested.
+
+### A sketch on a side face extruded to nothing — **found and FIXED 18 Aug**
+
+Worth recording in full, including the part of it I got wrong, because the wrong half is instructive.
+
+**The claim that failed.** The first pass of this audit reported that the resolved face frame was
+never consumed — `resolvedFrame()` has no callers in `core/`, `app/`, `shell_qt/` or `tests/`. That
+grep was for the ACCESSOR. `Sketch::to3d` and `Sketch::toWire` read the member `resolved_` directly,
+so the profile was always placed on the face correctly. A search for the public getter said nothing
+about the private field, and reading it as "nothing uses this" was an unfounded leap.
+
+**The bug that was real, and worse than described.** `computeExtrude` took its direction from a
+stored plane index (0=XY, 1=XZ, 2=YZ), which only ever described the three global planes. A sketch
+on a face got whichever global axis the index happened to hold — and `Controller::addExtrude`
+defaulted it to XY for every extrude, face-placed or not.
+
+For a sketch on a SIDE face that direction lies in the profile's own plane. Sweeping a face along a
+direction it contains does not produce a thin solid or a wrong-facing one; it produces **nothing**.
+Measured on the +X face of a 40x30x20 box: `volume() == 0.0`, centroid still at x = 40. The feature
+reported success.
+
+**Why nothing caught it.** `sketch_plane.cpp` asserts `placement().kind`, the face string, and
+`needsResolution()` — all claims about the DECLARATION, none about geometry. The self-agreeing
+assertion pattern again, and the third time it has produced a green suite over a broken feature.
+
+**The fix, and the compatibility decision inside it.** No index means measure the profile's own
+normal, which is right for any plane and is what the function's doc comment always claimed. An index
+that IS present still wins, because the XZ frame's own normal is -Y (`u x v` with u=x, v=z) while
+XZ extrudes have always grown towards +Y: measuring it would silently reverse every XZ extrude in
+every existing document. The index is the record of what the file meant when it was written.
+`Controller::addExtrude` now carries the index across only when the sketch actually has one, instead
+of defaulting it to XY.
+
+`tests/acceptance/extrude_direction.cpp` covers both, and asserts coordinates: a centroid at
+x = 42.5 and a volume of 180 for the face case, and the positive-axis direction for all three global
+planes — the latter added because changing the code path for global sketches could have flipped
+their sign and nothing else in the suite pinned it down. It flipped XZ on the first run, which is
+how the compatibility question surfaced at all.
 
 ### Measurement is implemented and unreachable
 
@@ -98,13 +131,16 @@ Grouped by whether the absence stops work, hinders it, or merely limits scope.
 
 | Capability | Status |
 |---|---|
-| Click geometry to select it | **missing** (pick layer exists, unwired — §2) |
+| Click geometry to select it | **done 18 Aug**, and reported buggy in use — §2 |
 | Export a model | **missing** (writers exist, unwired — §2) |
-| Sketch on a face of the model | **core done, shell missing.** `SketchPlane::Kind::Face`, `SketchFrame`, `cad_sketch_create_on_face` (ABI 1.18), face picking and camera alignment all landed. The shell still swaps to a separate 2D canvas on the XY plane |
+| Sketch on a face of the model | **core done 18 Aug**, shell still swaps to a separate 2D canvas. The profile is placed on the face and extrudes along its normal; what is missing is drawing it in place — §2 |
 | Sketch tools beyond line and circle | **missing.** No rectangle, arc, polygon, slot, spline, fillet, trim, extend, offset, mirror, or construction-geometry toggle in the canvas |
 | Dimensions that drive geometry | **partial.** Distance and Radius constraints exist and solve; the canvas draws dimensions; there is no dimension *tool* |
 | Hole feature | **missing.** Stand-in. The single most-used feature in mechanical CAD |
 | Revolve | **missing.** Stand-in — and it is the second primitive every part needs |
+| Extrude with an operation (Join/Cut/Intersect/New solid) | **missing.** Extrude only ever makes a new solid; combining is a separate `Cut`/`Fuse`/`Common` feature the user must add by hand. Inventor and SolidWorks both put the operation ON the extrude, and vCAD is meant to copy that shape |
+| Extrude beyond blind | **missing.** No symmetric, two-sided, through-all, to-face, or taper — one distance, one direction |
+| Tangent constraint | **missing.** Arcs exist and 11 constraints exist, but none of them is tangent, so no profile with a filleted corner can be fully constrained. Also missing: concentric, symmetric, equal-radius, angle, midpoint |
 | Patterns (linear, circular, mirror) | **missing.** Three stand-ins |
 | Standard views (front/top/right/iso) | **missing.** Now trivial: `CameraController::alignTo` does exactly this, and the View tab has no entries for them |
 | Save and open | **done.** Native `.vpart`, `QFileDialog`-wired, dirty tracking by content digest |
@@ -144,21 +180,22 @@ content-addressed cache, deterministic compute, a versioned C plugin ABI with a 
 compatibility museum, a reusable domain-neutral shell, five-platform CI, a memory-safe importer with a
 differential oracle. These are the expensive-to-retrofit things, and they are done.
 
-### The ordering the audit implies
+### The ordering the audit implies (revised 18 Aug)
 
-The distance to "someone could use this" is much shorter than the distance to Inventor, and the first
-three items are days rather than months:
+1. ~~Make sketch-on-a-face actually geometric.~~ **Done 18 Aug** — see §2.
+2. **Export.** Still zero call sites. One command, one dialog, three writers already implemented and
+   tested. Unchanged from the 17 Aug audit and still the cheapest disqualifying gap.
+3. **Standard views and view modes.** `alignTo` still has no caller in the shell.
+4. **Sketch tools**: rectangle, arc, dimension, trim, offset — plus the **tangent** constraint,
+   without which a filleted profile cannot be constrained at all. The canvas still exposes exactly
+   two drawing tools, Line and Circle, and no constraint UI whatsoever.
+5. **Revolve, Hole, and the pattern family**, and give Extrude its Join/Cut/Intersect operation so
+   combining stops being a manual second feature.
+6. **Measurement**, which is implemented and needs a dialog.
+7. Only then assemblies.
 
-1. **Wire the pick to selection.** Click a face; the tree follows; fillet takes the edge you picked.
-   Everything below it is cheaper afterwards.
-2. **Export.** One command, one dialog, three formats already implemented.
-3. **Standard views and view modes.** `alignTo` exists; six entries in the View tab.
-4. **Finish in-place sketching** (1d steps 3 and 4) — the shell side of a core capability that is
-   already tested.
-5. **Sketch tools**: rectangle, arc, dimension, trim, offset. This is the laborious one, and it is
-   what makes the sketcher usable rather than demonstrable.
-6. **Hole, Revolve, and the pattern family.** After this, a person could model a real bracket.
-7. Only then assemblies, which is where the architecture gets exercised at a scale that matters.
+Item 1 is new to this pass and displaces everything: the 17 Aug audit ranked picking first, and
+picking is now done.
 
 The characteristic risk this audit measures is the one `COMPETITIVE_REVIEW.md` §5 named: architecture
 outrunning features. Three implemented-but-unreachable capabilities is what that looks like from the
