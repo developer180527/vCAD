@@ -222,6 +222,53 @@ public:
     /// waste silently disabled orbiting altogether.
     void cameraChanged();
 
+    // ── picking ───────────────────────────────────────────────────────────────────────────
+    //
+    // Here rather than in the shell for the reason the whole layer exists: "a click at these
+    // pixels means that face" is a model rule, and a Qt implementation of it does not exist on
+    // iPad. The pick pass has been in the bgfx backend since M3 and has never been driven from
+    // above; this is the seam that drives it.
+
+    /// What was under a point, in model terms.
+    struct Pick {
+        bool hit = false;
+        document::ObjectId object{};      ///< which document object owns the element
+        naming::ElementName element;      ///< null if the slot carried no name
+        std::uint32_t slot = 0;           ///< absolute element slot, for O(1) highlighting
+        float depth = 1.0f;
+    };
+
+    /// Nearest element at a point, in DEVICE pixels.
+    ///
+    /// Device rather than logical, because that is what the id buffer is indexed in. A shell on a
+    /// Retina display that forwards logical coordinates picks at half the intended position, and
+    /// the bug looks like an inaccurate picker rather than a units mistake.
+    [[nodiscard]] Pick pickAt(std::uint32_t x, std::uint32_t y);
+
+    /// A planar face at a point, with the frame a sketch would be placed on.
+    ///
+    /// Separate from `pickAt` because the ANSWER is different: a pick either found something or
+    /// did not, whereas asking for a sketch plane can fail in ways the user needs told — nothing
+    /// under the cursor, an element that is an edge rather than a face, or a face that is curved.
+    /// `kernel::planeOf` already refuses a non-planar face with a reason, and the point of
+    /// returning a Result here is that the reason survives the trip to the shell instead of
+    /// becoming a silent no-op on click.
+    struct FacePick {
+        document::ObjectId object{};
+        naming::ElementName face;
+        sketch::SketchFrame frame;
+    };
+    [[nodiscard]] kernel::Result<FacePick> pickSketchFace(std::uint32_t x, std::uint32_t y);
+
+    /// Scripts the next pick, for tests and headless tools.
+    ///
+    /// The null backend's picker has no rasteriser on purpose (see NullBackend.h): what this layer
+    /// owns is turning a slot into an `ElementName` and a plane, and whether a GPU writes the
+    /// right ids into the id buffer needs a GPU to answer honestly. So the headless tests script
+    /// the slot and assert on everything above it. Ignored once a real renderer is attached —
+    /// otherwise a stray call in shipping code would fake a click.
+    void scriptNextPick(std::uint32_t elementSlot, bool valid = true);
+
     /// Viewport background, 0..255 per channel. The shell passes its theme colour down so the
     /// GPU clears to the same paper the rest of the window is painted on.
     void setViewportBackground(int r, int g, int b);

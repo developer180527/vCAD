@@ -503,6 +503,85 @@ ObjectId Controller::addPrimitive(const std::string& type,
     return id;
 }
 
+Controller::Pick Controller::pickAt(std::uint32_t x, std::uint32_t y) {
+    Pick out;
+    if (active_.picker == nullptr) return out;
+
+    const auto raw = active_.picker->pick(scene_->frame(), x, y);
+    if (!raw.valid) return out;
+
+    out.hit = true;
+    out.slot = raw.element;
+    out.depth = raw.depth;
+    if (const auto name = scene_->resolve(raw)) out.element = *name;
+    if (const auto owner = scene_->objectOf(raw.element)) out.object = *owner;
+    return out;
+}
+
+kernel::Result<Controller::FacePick> Controller::pickSketchFace(std::uint32_t x, std::uint32_t y) {
+    const Pick pick = pickAt(x, y);
+    if (!pick.hit) {
+        return kernel::Error{kernel::ErrorCode::NotDone,
+                             "Click a flat face to sketch on it."};
+    }
+    if (pick.element.isNull()) {
+        // A slot with no name is a real state, not a bug: the mesh carries a name per element and
+        // an element the naming layer never named comes back null. Saying "nothing there" would be
+        // a lie about a place the user can see geometry.
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "That geometry cannot be referred to, so a sketch cannot be attached "
+                             "to it."};
+    }
+
+    const auto object = history_.current().find(pick.object);
+    if (!object || object->output() == nullptr) {
+        return kernel::Error{kernel::ErrorCode::NotDone,
+                             "That body has not been computed yet."};
+    }
+
+    const auto shape = object->output()->map.resolve(pick.element);
+    if (!shape) {
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "That face no longer exists in the model.",
+                             "could not resolve element '" + pick.element.toString() + "'"};
+    }
+    if (shape->type() != kernel::ShapeType::Face) {
+        // Checked by resolved TOPOLOGY, not by anything in the name -- the same reason edgesOf
+        // gives. An edge and the face bounding it can share a feature and an operation, so the
+        // name cannot tell them apart and only the shape can.
+        return kernel::Error{kernel::ErrorCode::InvalidInput,
+                            "A sketch needs a face. That is an edge or a vertex."};
+    }
+
+    // The refusal that matters, and it is not ours: kernel::planeOf measures the surface and
+    // refuses a cylinder or a sphere with its own message. Surfaced rather than swallowed, because
+    // a click on the round side of a cylinder that quietly does nothing is indistinguishable from
+    // a broken picker.
+    const auto measured = kernel::planeOf(*shape);
+    if (!measured) return measured.error();
+
+    FacePick out;
+    out.object = pick.object;
+    out.face = pick.element;
+    // Two structurally identical types kept apart so core/sketch need not know the kernel, exactly
+    // as the Sketch feature does when the recompute resolves the same reference. This layer sees
+    // both, so the copy is legitimate here.
+    for (int i = 0; i < 3; ++i) {
+        out.frame.origin[i] = measured.value().origin[i];
+        out.frame.u[i] = measured.value().u[i];
+        out.frame.v[i] = measured.value().v[i];
+    }
+    return out;
+}
+
+void Controller::scriptNextPick(std::uint32_t elementSlot, bool valid) {
+    if (gpu_ != nullptr) return;
+    render::IPicker::Hit hit;
+    hit.element = elementSlot;
+    hit.valid = valid;
+    backend_.picker.setNextHit(hit);
+}
+
 std::vector<naming::ElementName> Controller::edgesOf(ObjectId id) const {
     std::vector<naming::ElementName> edges;
     const auto object = history_.current().find(id);

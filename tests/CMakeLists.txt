@@ -36,8 +36,11 @@ target_sources(cad_tests PRIVATE acceptance/dxf_differential.cpp)
 # public header would invite a plugin to depend on the host's own parsing of its manifest.
 target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugin_loader.cpp
                                  acceptance/plugin_museum.cpp
-                                 acceptance/sketch_plane.cpp)
-target_link_libraries(cad_tests PRIVATE cad::abi)
+                                 acceptance/sketch_plane.cpp
+                                 acceptance/face_pick.cpp)
+# cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
+# means that face" is a model rule that must exist on both shells, not a Qt one.
+target_link_libraries(cad_tests PRIVATE cad::abi cad::app)
 target_link_libraries(cad_tests PRIVATE cad::sketch)
 # catch_discover_tests runs the suite from the build tree, so a relative path to a fixture finds
 # nothing. Baked in rather than copied beside the binary: the fixture is also the Rust fuzzer's
