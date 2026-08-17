@@ -13,9 +13,19 @@
 use std::os::raw::{c_char, c_int, c_void};
 
 pub const CAD_ABI_VERSION_MAJOR: u32 = 1;
-pub const CAD_ABI_VERSION_MINOR: u32 = 17;
+pub const CAD_ABI_VERSION_MINOR: u32 = 18;
 
 pub type CadStatus = i32;
+
+/// Mirrors `CadElementId`. The TEXT is the part that matters across a save and reload — a digest
+/// is only meaningful inside the process that produced it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CadElementId {
+    pub digest: u64,
+    pub text: *const c_char,
+    pub text_len: usize,
+}
 
 pub const CAD_OK: CadStatus = 0;
 pub const CAD_ERR_INVALID_INPUT: CadStatus = 1;
@@ -264,6 +274,11 @@ extern "C" {
 
     // --- sketches ---
     pub fn cad_sketch_create(s: CadSession, plane: i32, out: *mut CadSketch) -> CadStatus;
+    pub fn cad_sketch_create_on_face(
+        s: CadSession,
+        face: *const CadElementId,
+        out: *mut CadSketch,
+    ) -> CadStatus;
     pub fn cad_sketch_release(s: CadSession, sk: CadSketch);
     pub fn cad_sketch_add_line(
         s: CadSession,

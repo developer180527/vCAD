@@ -1,5 +1,5 @@
 define CAD_ABI_VERSION_MAJOR	0288695b698e5310
-define CAD_ABI_VERSION_MINOR	aaeae21cba2de8f1
+define CAD_ABI_VERSION_MINOR	aaea721cba2ddd0c
 define CAD_CAP_FILESYSTEM	434d3d3abfc808cf
 define CAD_CAP_NETWORK	8abedaf5b56d3cb5
 define CAD_CAP_SUBPROCESS	4bac296961c20be1
@@ -120,6 +120,7 @@ fn cad_sketch_add_line	b13c894661a852c2
 fn cad_sketch_constrain	ff607ec705fe8466
 fn cad_sketch_constraint_count	9e695c91e6139090
 fn cad_sketch_create	11195a970ca51c3b
+fn cad_sketch_create_on_face	a8eb56fc99576381
 fn cad_sketch_deserialize	aa2849f4a834222f
 fn cad_sketch_export_dxf	5d6118b0f7415604
 fn cad_sketch_geometry	877eee0f7ad7fc0e

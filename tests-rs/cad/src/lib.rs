@@ -341,6 +341,28 @@ impl Session {
         Ok(Sketch(h))
     }
 
+    /// A sketch placed on a model FACE, named rather than indexed.
+    ///
+    /// The name is what makes the placement survive a rebuild: an edit that changes face ORDER
+    /// leaves the name pointing at the same face, which an index would not. Locating it still
+    /// needs the body's element map, so the sketch feature must also reference the body — until it
+    /// does, the sketch refuses to build a profile rather than guessing at a global plane.
+    pub fn new_sketch_on_face(&mut self, face_name: &str) -> Result<Sketch> {
+        let text = std::ffi::CString::new(face_name).map_err(|_| Error {
+            code: ErrorCode::InvalidInput,
+            message: "a face name cannot contain a NUL".into(),
+        })?;
+        let id = sys::CadElementId {
+            digest: 0,
+            text: text.as_ptr(),
+            text_len: face_name.len(),
+        };
+        let mut h: sys::CadSketch = 0;
+        let st = unsafe { sys::cad_sketch_create_on_face(self.handle, &id, &mut h) };
+        self.check(st)?;
+        Ok(Sketch(h))
+    }
+
     /// Releases a sketch. Idempotent, like every release in this ABI.
     pub fn release_sketch(&mut self, sk: Sketch) {
         unsafe { sys::cad_sketch_release(self.handle, sk.0) };

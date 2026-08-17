@@ -195,6 +195,10 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
     // sketch cached against the face's old position after an edit moved it — the Import bug in its
     // third costume.
     if (sketch.value().needsResolution()) {
+        // The FIRST input. A sketch has exactly one body today, so this is unambiguous — but it
+        // is unambiguous by convention rather than by construction, and a second ObjectId property
+        // on a sketch would silently change which body the face is resolved against. If a sketch
+        // ever gains another reference, this must select by property name instead.
         if (ctx.inputs.empty() || ctx.inputs.front() == nullptr) {
             return Error{ErrorCode::InvalidInput,
                          "This sketch is placed on a face, but nothing tells it which body.",

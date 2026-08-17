@@ -20,9 +20,9 @@ Design and traps: `PICKUP.md`, "Start here: step 1". Read that first.
         cache key in — moving the face invalidates the sketch instead of leaving it cached at the
         old position.
       - 64 C++ tests, Rust green.
-- [ ] **1c.** ← NEXT. `cad_sketch_create_on_face` ABI entry point + Rust wrapper + a test that sketches on a
+- [x] **1c.** DONE (ABI 1.18). `cad_sketch_create_on_face` ABI entry point + Rust wrapper + a test that sketches on a
       box face and extrudes from it.
-- [ ] 1d. Shell: pick a face, camera aligns, sketch draws in place.
+- [ ] **1d.** ← NEXT. Shell: pick a face, camera aligns, sketch draws in place.
 
 ## Decisions made while building 1a
 
@@ -84,3 +84,27 @@ Two things that were got right in 1b and must stay right:Two things to get right
    property's target cache key, so the sketch feature must *reference* the face's feature as an
    input rather than only naming it in text — otherwise it is the Import bug again, third
    variation.
+
+
+## 1c as built, and the one thing it does not prove
+
+`cad_sketch_create_on_face(session, const CadElementId*, out)` — a separate entry point rather than
+an argument on `cad_sketch_create`, whose signature is frozen (ADR 0011, enforced by the golden
+snapshot). It takes the face's TEXT and ignores the digest: a digest is only meaningful inside the
+process that produced it, and a placement that stopped working after reopening the file would be
+worse than one that never worked.
+
+Rust wrapper `Session::new_sketch_on_face(&str)`, and three tests in
+`tests-rs/cad-tests/tests/sketch_on_face.rs`: a sketch is created on a named face; a face sketch
+with no body refuses to compute and says why; a face sketch WITH its body computes and extrudes to
+the right volume.
+
+**The gap in that last test, stated because it is the shape of mistake this project keeps making:**
+volume is translation-invariant, so a profile built on the wrong plane and extruded the right
+distance would pass it. The pad's POSITION is not asserted from Rust, because the wrapper has no
+centroid or bounds accessor and adding ABI surface for a test is the wrong trade. Position IS
+asserted for the sketch itself in `tests/acceptance/sketch_plane.cpp`, which can reach `measure()`.
+
+Closing it properly means either a position accessor on the ABI — justified on its own merits, as
+a shell will want one — or a C++ acceptance test that extrudes a face-placed sketch and checks the
+solid's centroid. The second is free and should be done first.

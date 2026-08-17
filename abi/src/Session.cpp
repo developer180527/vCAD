@@ -1590,6 +1590,25 @@ CadStatus cad_object_count(CadSession handle, uint64_t* out) {
     });
 }
 
+CadStatus cad_sketch_create_on_face(CadSession handle, const CadElementId* face, CadSketch* out) {
+    return withSession(handle, [&](Session& s) {
+        if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
+        if (face == nullptr || face->text == nullptr || face->text_len == 0) {
+            // The TEXT is required, not the digest. A digest is only meaningful inside the process
+            // that produced it; the text is what survives a save and reload, and a placement that
+            // stopped working after reopening the file would be worse than one that never worked.
+            return fail(s, CAD_ERR_INVALID_INPUT,
+                        "A sketch on a face needs that face's name.");
+        }
+
+        cad::sketch::SketchPlane placement;
+        placement.kind = cad::sketch::SketchPlane::Kind::Face;
+        placement.face.assign(face->text, face->text_len);
+        *out = registerSketch(s, cad::sketch::Sketch(std::move(placement)));
+        return CAD_OK;
+    });
+}
+
 CadStatus cad_sketch_create(CadSession handle, std::int32_t plane, CadSketch* out) {
     return withSession(handle, [&](Session& s) {
         if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");

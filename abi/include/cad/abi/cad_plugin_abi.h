@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 17
+#define CAD_ABI_VERSION_MINOR 18
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -645,6 +645,20 @@ typedef struct {
 } CadInferReport;
 
 CAD_API CadStatus cad_sketch_create(CadSession, int32_t plane, CadSketch* out);
+
+/* Creates a sketch placed on a model FACE rather than on a global plane.
+ *
+ * `face` is an element name, which is what makes the placement survive a rebuild: the face keeps
+ * its identity when an edit changes face ORDER, which an index would not. That is the whole reason
+ * a CAD tool needs topological naming, and the failure it prevents is the one FreeCAD is known for.
+ *
+ * The sketch is not LOCATED by this call. Locating it needs the body's element map, which only the
+ * recompute has — so the sketch feature must also reference the body as an object property, and
+ * until it does the sketch refuses to build a profile rather than falling back to a global plane.
+ *
+ * A separate entry point rather than an extra argument to cad_sketch_create, because that one's
+ * signature is frozen: ADR 0011 is additive-only and the golden snapshot enforces it. */
+CAD_API CadStatus cad_sketch_create_on_face(CadSession, const CadElementId* face, CadSketch* out);
 CAD_API void      cad_sketch_release(CadSession, CadSketch);
 
 CAD_API CadStatus cad_sketch_add_line(CadSession, CadSketch, double x1, double y1, double x2,
