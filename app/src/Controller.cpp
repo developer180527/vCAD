@@ -412,6 +412,10 @@ void Controller::setViewportSize(std::uint32_t width, std::uint32_t height) {
 
 void Controller::cameraChanged() {
     scene_->setCamera(camera_.matrices(viewport_));
+    // The slice normal faces the camera, so orbiting past the plane has to flip it — otherwise
+    // orbiting to the other side shows the half that was just cut away and hides the half you
+    // were working on.
+    if (slice_) applySlice();
     notifyView();
 }
 
@@ -924,6 +928,9 @@ bool Controller::editSketch(ObjectId id) {
     }
 
     environment_ = Environment::Sketch;
+    // Slice starts OFF on every sketch: it is a deliberate act, and a part arriving half-missing
+    // because the last sketch left it on is alarming rather than helpful.
+    slice_ = false;
 
     // Remembered BEFORE the camera moves, so finishing puts the user back where they were rather
     // than leaving them staring at the sketch plane. Only on the way IN: re-entering a sketch
@@ -1735,10 +1742,63 @@ void Controller::pushSketchOverlay() {
 }
 
 void Controller::restoreCameraAfterSketch() {
+    // Slice is a sketch-scoped view state. Left on after the sketch closes, the user is looking at
+    // a part with half of it missing and no visible reason why.
+    slice_ = false;
+    applySlice();
     if (!cameraBeforeSketch_) return;
     camera_ = *cameraBeforeSketch_;
     cameraBeforeSketch_.reset();
     notifyView();
+}
+
+void Controller::setSliceEnabled(bool on) {
+    if (slice_ == on) return;
+    slice_ = on;
+    applySlice();
+    notifyView();
+}
+
+void Controller::applySlice() {
+    if (!scene_) return;
+
+    const sketch::Sketch* active = activeSketch();
+    if (!slice_ || active == nullptr) {
+        scene_->setSectionPlanes({});
+        return;
+    }
+
+    // The sketch's plane, with its normal turned to face the CAMERA. Which way the frame's own
+    // normal points is an accident of how the face was built, and using it directly would cut away
+    // the half the user is looking at half the time — the tool would appear to work at random.
+    std::array<double, 3> origin{0.0, 0.0, 0.0};
+    std::array<double, 3> normal{0.0, 0.0, 1.0};
+    if (const auto& frame = active->resolvedFrame()) {
+        origin = {frame->origin[0], frame->origin[1], frame->origin[2]};
+        const auto n = frame->normal();
+        normal = {n[0], n[1], n[2]};
+    } else {
+        switch (active->plane()) {
+            case sketch::Plane::XY: normal = {0, 0, 1}; break;
+            case sketch::Plane::XZ: normal = {0, -1, 0}; break;
+            case sketch::Plane::YZ: normal = {1, 0, 0}; break;
+        }
+    }
+
+    const auto basis = camera_.basis();
+    const double towardCamera = -(normal[0] * basis.forward[0] + normal[1] * basis.forward[1] +
+                                  normal[2] * basis.forward[2]);
+    if (towardCamera < 0.0) {
+        normal = {-normal[0], -normal[1], -normal[2]};
+    }
+
+    render::SectionPlane plane;
+    for (int i = 0; i < 3; ++i) plane.normal[i] = static_cast<float>(normal[i]);
+    // The offset is the plane's own position along that normal, so the cut lands exactly on the
+    // sketch rather than a fixed distance from the world origin.
+    plane.offset = static_cast<float>(origin[0] * normal[0] + origin[1] * normal[1] +
+                                      origin[2] * normal[2]);
+    scene_->setSectionPlanes(std::span<const render::SectionPlane>(&plane, 1));
 }
 
 void Controller::alignCameraToSketch() {

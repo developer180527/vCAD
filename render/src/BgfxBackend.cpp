@@ -491,6 +491,11 @@ struct BgfxBackend::Impl {
     void syncHighlights(std::span<const Highlight> highlights);
     bgfx::UniformHandle uEdgeParams = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle uEdgeColor = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle uSectionPlane = BGFX_INVALID_HANDLE;
+
+    /// xyz = plane normal, w = offset. All zero means no section, which is also the value an
+    /// unset uniform already holds — so nothing clips until something asks.
+    float sectionPlane[4]{0.0f, 0.0f, 0.0f, 0.0f};
 
     // Offscreen / pick targets.
     //
@@ -583,6 +588,11 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readTarget(
 }
 
 void BgfxBackend::Impl::applyShadingUniforms() {
+    // PER DRAW, with the others, and for the same reason: bgfx::submit discards uniform bindings,
+    // so a section plane set once before the batch loop would clip the first draw and nothing else
+    // — which looks like the cut applying to one body in an assembly.
+    bgfx::setUniform(uSectionPlane, sectionPlane);
+
     const float shading[4]{config.ambient, 0, 0, 0};
     if (bgfx::isValid(uShading)) bgfx::setUniform(uShading, shading);
     // u_highlight now carries the LOOKUP GEOMETRY, not a colour: xy are the texture dimensions the
@@ -757,6 +767,20 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
     // every element in the scene, not one mesh.
     impl_.syncHighlights(frame.highlights);
 
+    // Read from the frame each submit rather than stored by a setter: the section is a property of
+    // what is being drawn, and a backend holding its own copy would drift the moment a frame was
+    // submitted without one.
+    if (frame.sections.empty()) {
+        impl_.sectionPlane[0] = impl_.sectionPlane[1] = impl_.sectionPlane[2] = 0.0f;
+        impl_.sectionPlane[3] = 0.0f;
+    } else {
+        const SectionPlane& plane = frame.sections.front();
+        impl_.sectionPlane[0] = plane.normal[0];
+        impl_.sectionPlane[1] = plane.normal[1];
+        impl_.sectionPlane[2] = plane.normal[2];
+        impl_.sectionPlane[3] = plane.offset;
+    }
+
     if (frame.showShaded && bgfx::isValid(impl_.shaded)) {
         impl_.stats.drawCalls += impl_.submitBatches(
             frame, kViewShaded, impl_.shaded,
@@ -783,6 +807,7 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
                 // is not enough.
                 bgfx::setUniform(impl_.uEdgeColor, colour);
                 bgfx::setUniform(impl_.uEdgeParams, edgeParams);
+                bgfx::setUniform(impl_.uSectionPlane, impl_.sectionPlane);
                 // The handle TYPE has to match how the buffer was created. Binding a dynamic
                 // buffer through a static handle is not a type error in bgfx -- the handle is a
                 // bare index, and both pools use the same numbering -- so it reaches Metal as an
@@ -1002,6 +1027,7 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     impl_->uHighlight = bgfx::createUniform("u_highlight", bgfx::UniformType::Vec4);
     impl_->uEdgeParams = bgfx::createUniform("u_edgeParams", bgfx::UniformType::Vec4);
     impl_->uEdgeColor = bgfx::createUniform("u_edgeColor", bgfx::UniformType::Vec4);
+    impl_->uSectionPlane = bgfx::createUniform("u_sectionPlane", bgfx::UniformType::Vec4);
     impl_->sHighlight = bgfx::createUniform("s_highlight", bgfx::UniformType::Sampler);
 
     const auto program = [](const char* vs, const char* fs) -> bgfx::ProgramHandle {
@@ -1055,6 +1081,7 @@ void BgfxBackend::shutdown() {
     drop(impl_->uHighlight);
     drop(impl_->uEdgeParams);
     drop(impl_->uEdgeColor);
+    drop(impl_->uSectionPlane);
     // The framebuffers own their attachment textures (createFrameBuffer with destroyTextures =
     // true), so colourTarget and pickTarget must NOT be destroyed here — only the readback copies,
     // which we created standalone.

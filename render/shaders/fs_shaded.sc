@@ -1,4 +1,4 @@
-$input v_normal, v_color, v_ids
+$input v_normal, v_color, v_ids, v_wpos
 
 #include <bgfx_shader.sh>
 
@@ -30,8 +30,21 @@ float highlightStrength(float kind)
 	return 0.30;                   // hovered: a hint, not a commitment
 }
 
+// Section plane: xyz is the normal, w the offset along it. Disabled when the normal is zero,
+// which is what an unset uniform already is -- so a backend that never sets it clips nothing.
+uniform vec4 u_sectionPlane;
+
 void main()
 {
+	// Everything on the near side of the section plane is cut away. This is Slice: sketching on a
+	// face buried inside a part is otherwise done blind, because the material in front of the
+	// sketch plane hides both the face and whatever is being drawn on it.
+	if (dot(u_sectionPlane.xyz, u_sectionPlane.xyz) > 0.25
+	    && dot(v_wpos, u_sectionPlane.xyz) > u_sectionPlane.w)
+	{
+		discard;
+	}
+
 	// Two-sided lighting. CAD surfaces are routinely viewed from their back face — inside a
 	// pocket, through a section cut — and a one-sided model renders those pure black, which
 	// users read as a hole in the part.

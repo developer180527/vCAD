@@ -258,3 +258,40 @@ TEST_CASE("a plane picked in the tree is the plane you sketch on", "[sketch][flo
     CHECK_THAT(alignmentWith(controller, {0.0, 1.0, 0.0}),
                Catch::Matchers::WithinAbs(1.0, 1e-3));
 }
+
+TEST_CASE("Slice cuts between the viewer and the sketch plane", "[sketch][flow][slice]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    controller.alignCameraToSketch();
+
+    // Off on entry: a part arriving half-missing because the last sketch left Slice on is alarming
+    // rather than helpful.
+    CHECK_FALSE(controller.sliceEnabled());
+    CHECK(controller.frame().sections.empty());
+
+    controller.setSliceEnabled(true);
+    REQUIRE(controller.frame().sections.size() == 1);
+
+    const auto facingCamera = [&] {
+        const auto& plane = controller.frame().sections.front();
+        const auto basis = controller.camera().basis();
+        // The normal must point back towards the eye: the cut removes what is on the camera's side.
+        return -(plane.normal[0] * basis.forward[0] + plane.normal[1] * basis.forward[1] +
+                 plane.normal[2] * basis.forward[2]);
+    };
+    CHECK(facingCamera() > 0.0f);
+
+    // Orbiting to the other side has to FLIP it. Without that, orbiting past the plane shows the
+    // half just cut away and hides the half being worked on — the tool would appear to work at
+    // random, which is worse than not having it.
+    controller.camera().orbit(0.0f, 400.0f);
+    controller.cameraChanged();
+    REQUIRE(controller.frame().sections.size() == 1);
+    CHECK(facingCamera() > 0.0f);
+
+    // Sketch-scoped: leaving takes the cut with it.
+    controller.finishSketch();
+    CHECK_FALSE(controller.sliceEnabled());
+    CHECK(controller.frame().sections.empty());
+}

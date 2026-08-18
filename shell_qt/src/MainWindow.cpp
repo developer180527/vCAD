@@ -501,6 +501,38 @@ void MainWindow::rebuildRibbon() {
         addTool(tr("Circle"), QStringLiteral("circle"),
                 cad::app::Controller::SketchTool::Circle, QStringLiteral("C"));
 
+        // Look At: re-aim at the sketch plane. Entering a sketch already does this, but a user
+        // orbits away to see the part in context and then wants back — without it the only way
+        // back is to leave the sketch and re-enter it.
+        auto* view = sketchTab->addPanel(tr("View"));
+        auto* lookAt = new QAction(icon(QStringLiteral("ortho")), tr("Look At"), this);
+        lookAt->setShortcut(QKeySequence(QStringLiteral("F")));
+        lookAt->setToolTip(tr("Look At (F) — face the sketch plane"));
+        connect(lookAt, &QAction::triggered, this, [this] {
+            if (auto* c = controller()) {
+                c->alignCameraToSketch();
+                setStatusMessage(tr("Facing the sketch plane"));
+            }
+        });
+        view->addLarge(lookAt);
+        sketchViewActions_.push_back(lookAt);
+
+        // Slice: cut away what is between the viewer and the sketch plane. Checkable, because it
+        // is a mode you stay in while drawing on a buried face.
+        auto* slice = new QAction(icon(QStringLiteral("section")), tr("Slice"), this);
+        slice->setCheckable(true);
+        slice->setToolTip(tr("Slice — hide material in front of the sketch plane"));
+        connect(slice, &QAction::triggered, this, [this](bool on) {
+            if (auto* c = controller()) {
+                c->setSliceEnabled(on);
+                setStatusMessage(on ? tr("Slice on — material in front of the sketch is hidden")
+                                    : tr("Slice off"));
+            }
+        });
+        view->addLarge(slice);
+        sketchViewActions_.push_back(slice);
+        sliceAction_ = slice;
+
         // Constrain. Enablement is derived from the SELECTION, so a button is live only when it
         // would actually apply -- the same rule as the model ribbon, and the reason none of these
         // can offer themselves before canvas selection existed.
@@ -1231,6 +1263,14 @@ void MainWindow::setOrbitMode(bool on) {
 }
 
 void MainWindow::refreshSketchToolStates() {
+    if (auto* active = controller()) {
+        const bool inSketch = active->environment() == cad::app::Environment::Sketch;
+        for (QAction* action : sketchViewActions_) action->setEnabled(inSketch);
+        // Followed from the CONTROLLER, which turns slice off when a sketch closes. A button left
+        // lit for a mode that is no longer on is how a user stops trusting the toolbar.
+        if (sliceAction_ != nullptr) sliceAction_->setChecked(active->sliceEnabled());
+    }
+
     auto* c = controller();
     const bool sketching = c != nullptr && c->environment() == cad::app::Environment::Sketch;
     for (const auto& [action, tool] : sketchToolActions_) {

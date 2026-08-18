@@ -1,5 +1,5 @@
 $input a_position, i_data0, i_data1, i_data2, i_data3
-$output v_normal, v_color, v_ids
+$output v_normal, v_color, v_ids, v_wpos
 
 #include <bgfx_shader.sh>
 #include "common.sh"
@@ -10,6 +10,7 @@ void main()
 {
 	vec4 world = vec4(instancePosition(i_data0, i_data1, i_data2, a_position), 1.0);
 	vec4 clip = mul(u_viewProj, world);
+	v_wpos = world.xyz;
 
 	// Pull edges toward the viewer in clip space. Without this they z-fight the surfaces they
 	// lie exactly on, producing the stippled, broken outlines that make a viewport look cheap.

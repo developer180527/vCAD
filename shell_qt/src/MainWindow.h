@@ -199,6 +199,9 @@ private:
         cad::app::Controller::SketchTool tool{};
     };
     std::vector<SketchToolAction> sketchToolActions_;
+    /// Sketch-scoped view commands, greyed outside the sketch environment.
+    std::vector<QAction*> sketchViewActions_;
+    QAction* sliceAction_ = nullptr;
 
     /// The Orbit toggle in the View tab, kept so its checked state can follow the controller.
     QAction* orbitAction_ = nullptr;

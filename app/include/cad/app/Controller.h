@@ -652,6 +652,15 @@ public:
     }
     void setOrbitMode(bool);
 
+    /// Cuts away everything between the camera and the sketch plane.
+    ///
+    /// Sketching on a face buried inside a part is otherwise done blind: the material in front of
+    /// the plane hides both the face and what is being drawn on it. Fusion calls this Slice and
+    /// puts it on the sketch palette; it is a VIEW state, so it changes nothing in the document and
+    /// turns itself off when the sketch closes.
+    [[nodiscard]] bool sliceEnabled() const noexcept { return slice_; }
+    void setSliceEnabled(bool);
+
     /// Points the camera squarely at the sketch being edited, with the sketch's own v axis up.
     ///
     /// Called on entering the sketch environment. This is what "sketching happens in the same world
@@ -661,6 +670,10 @@ public:
 
     /// Puts the camera back where it was before the sketch opened. A no-op if nothing was saved.
     void restoreCameraAfterSketch();
+
+    /// Pushes the slice plane to the scene, or clears it. Called whenever the view changes,
+    /// because the plane's normal follows the camera.
+    void applySlice();
 
     /// Hands the sketch being edited to the scene as an overlay, so it is visible while drawn.
     void pushSketchOverlay();
@@ -829,6 +842,7 @@ private:
     /// somewhere they never were, which is worse than not restoring at all.
     std::optional<render::CameraController> cameraBeforeSketch_;
 
+    bool slice_ = false;
     bool orbitMode_ = false;
     SketchTool sketchTool_ = SketchTool::Select;
     /// First point of a two-click tool, in sketch coordinates.

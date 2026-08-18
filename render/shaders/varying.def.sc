@@ -8,3 +8,4 @@ vec4 i_data3     : TEXCOORD4;
 vec3 v_normal    : NORMAL;
 vec4 v_color     : COLOR0;
 vec4 v_ids       : TEXCOORD1;
+vec3 v_wpos      : TEXCOORD2;
