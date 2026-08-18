@@ -61,6 +61,15 @@ Result<Shape> makePlane(int plane, double size);
 /// which is a modelling decision. A compound keeps each body exactly as it is and simply carries
 /// them together — which is what "export these three bodies to one file" means, and what every
 /// exchange format expects at the top level.
+/// A cylinder standing at `base`, running along `axis` for `height`.
+///
+/// The unplaced `makeCylinder` sits at the origin pointing along +Z, which is fine for a primitive a
+/// user then moves. A hole cannot use it: the tool has to start on the face being drilled and run
+/// INTO the material, and composing that from a translate and two rotations at the call site is
+/// three chances to get an orientation wrong for something the kernel can place directly.
+Result<Operation> makeCylinderAt(const double base[3], const double axis[3], double radius,
+                                 double height);
+
 Result<Shape> compound(std::span<const Shape>);
 
 }  // namespace cad::kernel

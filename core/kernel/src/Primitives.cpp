@@ -7,6 +7,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
+#include <gp_Ax2.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 
@@ -93,6 +94,31 @@ Result<Shape> makePlane(int plane, double size) {
         }
         BRepBuilderAPI_MakePolygon polygon(a, b, c, d, /*Close*/ true);
         return wrap(BRepBuilderAPI_MakeFace(polygon.Wire(), /*OnlyPlane*/ true).Face());
+    });
+}
+
+Result<Operation> makeCylinderAt(const double base[3], const double axis[3], double radius,
+                                 double height) {
+    if (!isPositiveFinite(radius) || !isPositiveFinite(height)) {
+        return Error{ErrorCode::InvalidInput, "A hole needs a positive diameter and depth."};
+    }
+    const double length = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    if (length < 1e-12) {
+        return Error{ErrorCode::InvalidInput, "A hole needs a direction to run along."};
+    }
+
+    return guard("makeCylinderAt", [&] {
+        const gp_Ax2 frame(gp_Pnt(base[0], base[1], base[2]),
+                           gp_Dir(axis[0] / length, axis[1] / length, axis[2] / length));
+        auto algo = std::make_shared<BRepPrimAPI_MakeCylinder>(frame, radius, height);
+        algo->Build();
+        if (!algo->IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeCylinder::IsDone() == false");
+        }
+        Operation op;
+        op.impl().algo = algo;
+        op.impl().result = algo->Shape();
+        return op;
     });
 }
 

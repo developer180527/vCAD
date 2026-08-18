@@ -157,4 +157,17 @@ struct PlaneFrame {
 /// is what stops a sketch rotating on its own face between rebuilds.
 [[nodiscard]] Result<PlaneFrame> planeOf(const Shape& face);
 
+/// A straight edge as a point and a direction — the axis a revolve turns about.
+struct LineFrame {
+    double origin[3]{0, 0, 0};
+    double direction[3]{1, 0, 0};   ///< unit length
+};
+
+/// The line an edge lies on, for using that edge as an axis.
+///
+/// Fails rather than approximating when the edge is not straight. An arc has no single axis, and
+/// choosing its chord or its tangent would revolve the profile about something the user did not
+/// point at — the same silent-misplacement argument as `planeOf` refusing a curved face.
+[[nodiscard]] Result<LineFrame> lineOf(const Shape& edge);
+
 }  // namespace cad::kernel

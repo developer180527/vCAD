@@ -17,4 +17,15 @@ Result<Operation> translate(const Shape&, double dx, double dy, double dz);
 /// profile being edited — which is the entire point of ADR 0005.
 Result<Operation> extrude(const Shape& profile, double dx, double dy, double dz);
 
+/// Sweeps a profile about an axis.
+///
+/// `angleRadians` of 2*pi is a full revolution — the common case and the one worth getting exactly
+/// right, so callers pass the full turn rather than a flag meaning "all the way".
+///
+/// The profile must not CROSS the axis. OCCT produces a self-intersecting solid when it does, which
+/// passes every check we make and fails much later in a boolean; the caller is better placed to
+/// explain that to a user than a geometry error three operations downstream.
+Result<Operation> revolve(const Shape& profile, const double origin[3], const double axis[3],
+                          double angleRadians);
+
 }  // namespace cad::kernel

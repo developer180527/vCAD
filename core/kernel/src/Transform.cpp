@@ -1,4 +1,7 @@
 #include "cad/kernel/Transform.h"
+#include <cmath>
+#include <gp_Ax1.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 
 #include "cad/kernel/Guard.h"
 #include "cad/kernel/internal/Occt.h"
@@ -27,6 +30,28 @@ Result<Operation> translate(const Shape& s, double dx, double dy, double dz) {
         op.impl().algo = algo;
         op.impl().result = algo->Shape();
         op.impl().inputs = {occt(const_cast<Shape&>(s))};
+        return op;
+    });
+}
+
+Result<Operation> revolve(const Shape& profile, const double origin[3], const double axis[3],
+                          double angleRadians) {
+    const double length = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    if (length < 1e-12) {
+        return Error{ErrorCode::InvalidInput, "A revolve needs an axis with a direction."};
+    }
+    if (std::abs(angleRadians) < 1e-9) {
+        return Error{ErrorCode::InvalidInput, "A revolve needs a non-zero angle."};
+    }
+
+    return guard("revolve the profile", [&] {
+        const gp_Ax1 pivot(gp_Pnt(origin[0], origin[1], origin[2]),
+                           gp_Dir(axis[0] / length, axis[1] / length, axis[2] / length));
+        BRepPrimAPI_MakeRevol algo(occt(const_cast<Shape&>(profile)), pivot, angleRadians);
+        algo.Build();
+        Operation op;
+        op.impl().algo = std::make_shared<BRepPrimAPI_MakeRevol>(std::move(algo));
+        op.impl().result = op.impl().algo->Shape();
         return op;
     });
 }

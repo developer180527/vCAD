@@ -4,6 +4,8 @@
 
 #include "cad/kernel/Guard.h"
 
+#include <BRepAdaptor_Curve.hxx>
+#include <gp_Lin.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
@@ -188,6 +190,31 @@ std::vector<Shape> subShapes(const Shape& shape, SubShape kind) {
 }  // namespace cad::kernel
 
 namespace cad::kernel {
+
+Result<LineFrame> lineOf(const Shape& edge) {
+    auto guarded = guard("measure the edge's line", [&]() -> Result<LineFrame> {
+        const TopoDS_Shape& shape = occt(const_cast<Shape&>(edge));
+        if (shape.IsNull() || shape.ShapeType() != TopAbs_EDGE) {
+            return Error{ErrorCode::InvalidInput, "That is not an edge."};
+        }
+        BRepAdaptor_Curve curve(TopoDS::Edge(shape));
+        if (curve.GetType() != GeomAbs_Line) {
+            return Error{ErrorCode::InvalidInput,
+                         "That edge is not straight, so it cannot be an axis."};
+        }
+        const gp_Lin line = curve.Line();
+        LineFrame frame;
+        frame.origin[0] = line.Location().X();
+        frame.origin[1] = line.Location().Y();
+        frame.origin[2] = line.Location().Z();
+        frame.direction[0] = line.Direction().X();
+        frame.direction[1] = line.Direction().Y();
+        frame.direction[2] = line.Direction().Z();
+        return frame;
+    });
+    if (!guarded) return guarded.error();
+    return guarded.value();
+}
 
 Result<PlaneFrame> planeOf(const Shape& face) {
     if (face.isNull()) {

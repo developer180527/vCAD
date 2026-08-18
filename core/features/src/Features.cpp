@@ -320,6 +320,107 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
     return out;
 }
 
+/// Revolve: a profile swept about an axis.
+///
+/// The axis is a named EDGE, resolved through the profile's own element map — which is how every CAD
+/// application does it, because "revolve about this line" is a thing the user can point at. It is
+/// NOT defaulted: a revolve with a guessed axis produces a solid somewhere the user did not ask for,
+/// and unlike a wrong distance that is not obvious from looking at it.
+kernel::Result<Output> computeRevolve(const ComputeContext& ctx) {
+    if (ctx.inputs.size() != 1) {
+        return Error{ErrorCode::InvalidInput, "A revolve needs exactly one profile."};
+    }
+    if (ctx.inputs[0]->shape.type() != kernel::ShapeType::Face) {
+        return Error{ErrorCode::InvalidInput,
+                     "A revolve needs a closed profile. This sketch's curves do not form one.",
+                     "input shape is not a face"};
+    }
+
+    const auto* named = ctx.object.find("axis");
+    const auto* axisName = named != nullptr ? std::get_if<naming::ElementName>(named) : nullptr;
+    if (axisName == nullptr) {
+        return Error{ErrorCode::InvalidInput,
+                     "A revolve needs an axis. Select a straight edge to turn the profile about."};
+    }
+
+    const auto edge = ctx.inputs[0]->map.resolve(*axisName);
+    if (!edge) {
+        // NamingLost rather than a fallback, for the same reason a sketch's face reference is: the
+        // edge was deleted or changed beyond recognition, and revolving about something else would
+        // silently produce a different part.
+        return Error{ErrorCode::NamingLost, "The axis this revolve turns about no longer exists."};
+    }
+    const auto line = kernel::lineOf(*edge);
+    if (!line) return line.error();
+
+    // Defaults to a full turn, which is what a revolve usually is.
+    double angle = 2.0 * std::numbers::pi;
+    if (const auto* stored = ctx.object.find("angle")) {
+        if (const auto* v = std::get_if<units::Angle>(stored)) angle = v->base();
+    }
+
+    auto op = kernel::revolve(ctx.inputs[0]->shape, line.value().origin, line.value().direction,
+                              angle);
+    if (!op) return op.error();
+    return nameResult(op.value(), ctx.inputs, ctx.namingSerial);
+}
+
+/// Hole: a cylindrical cut, drilled into a face.
+///
+/// Placed at the centre of a named planar face and running along its INWARD normal, which is the
+/// simplest placement that is never ambiguous. Fusion and Inventor also place holes at sketch
+/// points, which is the fuller version and needs a sketch-point picker first; "a hole in the middle
+/// of this face" is a real operation on its own and is reachable today.
+kernel::Result<Output> computeHole(const ComputeContext& ctx) {
+    if (ctx.inputs.size() != 1) {
+        return Error{ErrorCode::InvalidInput, "A hole needs exactly one body to drill into."};
+    }
+
+    const auto* named = ctx.object.find("face");
+    const auto* faceName = named != nullptr ? std::get_if<naming::ElementName>(named) : nullptr;
+    if (faceName == nullptr) {
+        return Error{ErrorCode::InvalidInput, "A hole needs a flat face to be drilled into."};
+    }
+    const auto face = ctx.inputs[0]->map.resolve(*faceName);
+    if (!face) {
+        return Error{ErrorCode::NamingLost, "The face this hole is drilled into no longer exists."};
+    }
+    const auto plane = kernel::planeOf(*face);
+    if (!plane) return plane.error();
+
+    auto diameter = require<Length>(ctx.object, "diameter");
+    if (!diameter) return diameter.error();
+    auto depth = require<Length>(ctx.object, "depth");
+    if (!depth) return depth.error();
+
+    // The face's centre, not its plane's origin: a plane's origin is wherever OCCT parameterised it
+    // from, which can be far outside the face itself.
+    const auto centre = face->measure();
+    const double at[3]{centre.cx, centre.cy, centre.cz};
+
+    const auto& f = plane.value();
+    double normal[3]{f.u[1] * f.v[2] - f.u[2] * f.v[1], f.u[2] * f.v[0] - f.u[0] * f.v[2],
+                     f.u[0] * f.v[1] - f.u[1] * f.v[0]};
+
+    // INWARD. The face normal may point either way depending on how the face was built, and a hole
+    // drilled outward cuts nothing at all — it would report success and change the part not at all,
+    // which is the worst kind of failure. Decided by asking which direction has material: the body's
+    // centre of mass is on the inside.
+    const auto body = ctx.inputs[0]->shape.measure();
+    const double toCentre[3]{body.cx - at[0], body.cy - at[1], body.cz - at[2]};
+    if (normal[0] * toCentre[0] + normal[1] * toCentre[1] + normal[2] * toCentre[2] < 0.0) {
+        for (double& n : normal) n = -n;
+    }
+
+    auto tool = kernel::makeCylinderAt(at, normal, diameter.value().base() * 0.5,
+                                       depth.value().base());
+    if (!tool) return tool.error();
+
+    auto cut = kernel::booleanCut(ctx.inputs[0]->shape, tool.value().shape());
+    if (!cut) return cut.error();
+    return nameResult(cut.value(), ctx.inputs, ctx.namingSerial);
+}
+
 /// Extrude: a profile swept into a solid.
 ///
 /// Takes its direction from the sketch's PLANE normal rather than a user-supplied vector. An
@@ -484,6 +585,8 @@ recompute::FeatureRegistry builtins() {
     r.add({"Common", 1, computeBoolean<&kernel::booleanCommon>});
     r.add({"Sketch", 1, computeSketch});
     r.add({"Plane", 1, computePlane});
+    r.add({"Revolve", 1, computeRevolve});
+    r.add({"Hole", 1, computeHole});
     r.add({"Extrude", 1, computeExtrude});
     r.add({"Translate", 1, computeTranslate});
     // Import is the ONE built-in that reads outside the document, so it is the one that has to

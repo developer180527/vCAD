@@ -132,7 +132,27 @@ struct NamingContext::Impl {
                     // which is precisely the bug this whole layer exists to prevent.
                     step.provenance = Provenance::Boundary;
                     step.parents = parents;
-                    step.discriminator = needsDiscriminator ? static_cast<std::uint32_t>(k + 1) : 0;
+                    // The TOPOLOGY TYPE is folded into the discriminator, and it has to be.
+                    //
+                    // A boundary name is a function of the bounding faces' names — and for a lone
+                    // FACE, such as a sketch profile, an edge and a vertex have the SAME single
+                    // bounding face, so both passes produced identical names and the vertex
+                    // overwrote the edge. Every edge of every sketch was therefore unreachable: a
+                    // revolve could not name its axis, and a fillet could not name a sketch edge.
+                    //
+                    // Masked on solids, which is why it survived: there an edge has two parent faces
+                    // and a vertex three, so their parent sets already differ.
+                    //
+                    // The VERTEX takes the offset, and which side gets it matters for
+                    // compatibility. Edge names on SOLIDS never collided and are referenced
+                    // everywhere — every fillet and chamfer resolves one — so moving them would
+                    // rename existing references in saved documents. Offsetting the edge instead
+                    // broke 67 assertions in m1_naming_stability, which is the check that exists to
+                    // catch exactly this. Vertices are referenced by no feature today, so they are
+                    // the safe side to move.
+                    const std::uint32_t typeBase = subType == TopAbs_EDGE ? 0u : 0x40000000u;
+                    step.discriminator =
+                        typeBase + (needsDiscriminator ? static_cast<std::uint32_t>(k + 1) : 0u);
                     map.bind(kernel::wrap(siblings[k]), ElementName({step}));
                 }
             }
