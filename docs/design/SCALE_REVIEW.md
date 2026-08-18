@@ -273,6 +273,33 @@ Ordered by what unblocks the next thing, not by size.
    vertex layout. Removes the handle ceiling entirely, and is the precondition for everything in P1:
    you cannot batch draws across meshes that live in different buffers.
 
+### P0 as built, 19 Aug
+
+Shared buffers landed. `BufferId` names a suballocation; meshes are packed into a few large dynamic
+buffers and bound as windows into them.
+
+| Unique parts | Before | After |
+|---|---|---|
+| 2,000 | 3,976 calls, 108,720 tris | unchanged |
+| 8,000 | **0 calls, nothing drawn** | 8,112 calls, 221,856 tris, 71.8 MB, 194 fps |
+| 20,000 | — | 8,044 calls (after culling), 219,912 tris, 253.5 MB, 156 fps |
+
+Three things worth carrying forward:
+
+- **bgfx dynamic buffers created FROM MEMORY take that block's size as their size** and truncate
+  every later update, reporting it and carrying on. `ALLOW_RESIZE` did not grow them either. Growth
+  is therefore an explicit chain of fixed chunks.
+- **Freeing a suballocation reclaims nothing.** Compaction is not built, so arenas grow and never
+  shrink within a session — bounded by the document, not by session length.
+- **Indirect drawing is bigger than this document assumed.** bgfx exposes `createIndirectBuffer` and
+  `destroy` and *no update*: an indirect buffer can only be written by a COMPUTE SHADER. There is no
+  CPU-filled path, so collapsing submits is not a small addition to the arena — it is the
+  GPU-driven pipeline, with per-instance data and bounds in GPU buffers and culling in compute.
+  Caps on this machine report `indirect=1 compute=1`, so it is available.
+
+The 20,000-part run also confirms §P2 item 9 with a number: the no-op placement digest costs
+**19.4 ms** at 20k, against 1.8 ms at 2k. Linear, and it is paid on every idle frame.
+
 ### P1 — the 100k path
 
 4. **Indirect drawing.** With meshes sharing buffers, a bind serves many draws — but each visible

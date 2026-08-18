@@ -317,6 +317,17 @@ public:
             // them, which is bounded by the document rather than by how long the session ran.
             resident_ -= it->second.bytes;
             entries_.erase(it);
+            // The content->id mapping goes WITH it. Leaving it behind means the next upload of the
+            // same mesh gets a cache hit on an id whose entry no longer exists, `find` returns
+            // null, and every batch using that mesh is skipped — the scene rebuilds and draws
+            // nothing. Caught by the spike's single-instance baseline stage at 20k parts, where
+            // the main scene rendered correctly and the rebuild after it did not.
+            for (auto k = byContent_.begin(); k != byContent_.end(); ++k) {
+                if (k->second == id) {
+                    byContent_.erase(k);
+                    break;
+                }
+            }
             return;
         }
         switch (it->second.kind) {
