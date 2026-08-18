@@ -171,6 +171,48 @@ furniture for an empty room.
 
 ---
 
+## 3b. What is actually built, checked against the tree on 18 Aug 2026
+
+Verified by reading the code, not by remembering writing it. Everything in §3 except the palette
+itself has landed since this document was written.
+
+| §3 item | Status | Where |
+|---|---|---|
+| 3.1 Tree folders | **done** | `TreeGroup::{History,Origin}` in `Controller`, folder rendered in `MainWindow::refreshTree`, collapsed, no object id |
+| 3.2 Show Profile | **done** | `SceneBuilder::setSketchProfile`, fed by `Controller::pushSketchProfile`. **Opaque, not translucent** — the shaded shader emits alpha 1 and per-instance alpha needs a uniform, since `i_data3.w` carries the element-id base |
+| 3.3 Dimensions while drawing | **partly** | Length is typeable and creates a driving `Distance`/`Radius`. The **angle is read-only** — Fusion's Tab-between-fields needs field-switching state |
+| 3.4 Look At | **done** | Sketch tab → View; re-aims via `alignCameraToSketch` |
+| 3.4 Slice | **done** | `Controller::setSliceEnabled`. Needed real work: `SectionPlane` existed and the backend **ignored it entirely**, so this added the clip uniform, a world-position varying and a per-fragment discard in both the shaded and edge shaders |
+| 3.5 Sketch palette | **not started** | Four things now exist to put in it: Look At, Slice, a Show Profile toggle, construction linetype |
+
+### Correcting FEATURE_AUDIT.md
+
+That audit claimed vCAD has "no constraint UI whatsoever". **Wrong.** The Sketch tab has a Constrain
+panel wired through `Controller::applySketchConstraint`, exposing five of the eleven constraint
+kinds: Horizontal, Vertical, Parallel, Perpendicular, EqualLength. The grep behind that claim looked
+for `ConstraintKind::` and the shell spells it `CK::` through a local alias — a search that found
+nothing and was read as "nothing exists", the same unfounded leap as the `resolvedFrame()` one.
+
+The six kinds with no button are Coincident, Distance, Radius, PointOnLine, LockX and LockY.
+Distance and Radius are now *reachable* by typing a dimension while drawing, but there is still no
+way to dimension geometry that already exists.
+
+### Still open from §2, unchanged
+
+- **No sketch grid, and no snapping to one.** `snapTolerance` is a preference that nothing in the
+  sketcher reads for grid snap.
+- **No automatic constraint inference.** Fusion infers horizontal, vertical, coincident and tangent
+  as you draw; vCAD applies only what the user asks for, so a sketch drawn by hand stays
+  under-constrained.
+- **No construction or centreline linetype in the UI.** `Geometry::construction` exists in the model
+  and `toWire` already honours it; nothing sets it.
+- **Show Points / Dimensions / Constraints / Projected Geometry toggles**: none, and there is nothing
+  to toggle yet — dimensions and constraints are not drawn in the viewport at all.
+- **Export is still zero call sites**, and `measure()` still has none in the shell. Both predate this
+  document and remain the audit's cheapest disqualifying gaps.
+
+---
+
 ## 4. Deliberate divergences, recorded so they are not "fixed"
 
 | vCAD | Incumbents | Why |
