@@ -704,6 +704,21 @@ void MainWindow::rebuildRibbon() {
     // ── View ────────────────────────────────────────────────────────────────────────────
     auto* view = ribbon()->addTab(tr("View"));
     auto* navigate = view->addPanel(tr("Navigate"));
+
+    // A VISIBLE way to rotate the view. Orbit is otherwise on the middle button or on Alt, and
+    // neither is discoverable: a laptop has no middle button, and nobody finds a modifier chord by
+    // looking at the screen. Checkable, because it is a mode the user stays in until they leave it.
+    orbitAction_ = new QAction(icon(QStringLiteral("ortho")), tr("Orbit"), this);
+    orbitAction_->setCheckable(true);
+    orbitAction_->setShortcut(QKeySequence(QStringLiteral("O")));
+    orbitAction_->setToolTip(tr("Orbit (O) — drag to rotate. Alt-drag orbits at any time."));
+    connect(orbitAction_, &QAction::toggled, this, [this](bool on) {
+        if (auto* c = controller()) c->setOrbitMode(on);
+        setStatusMessage(on ? tr("Orbit: drag to rotate the view")
+                            : tr("Orbit off — drag selects again"));
+    });
+    navigate->addLarge(orbitAction_);
+
     navigate->addLarge(commandOr("view.fit", tr("Fit"), QStringLiteral("fit")));
     navigate->addLarge(commandOr("view.ortho", tr("Ortho"), QStringLiteral("ortho")));
     auto* appearance = view->addPanel(tr("Appearance"));
@@ -1133,6 +1148,10 @@ void MainWindow::drawSketchForShot() {
     c->sketchClickAt(w * 0.65f, h * 0.40f);
     c->sketchClickAt(w * 0.65f, h * 0.40f);
     c->sketchClickAt(w * 0.55f, h * 0.65f);
+    // A third click with no partner, then a hover: this leaves the rubber band on screen, which is
+    // the state a screenshot has to capture because it exists only between two clicks.
+    c->sketchClickAt(w * 0.30f, h * 0.55f);
+    c->sketchHoverAt(w * 0.50f, h * 0.80f);
     view->markDirty();
 }
 

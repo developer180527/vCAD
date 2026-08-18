@@ -280,6 +280,14 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
                        : event->button() == Qt::MiddleButton ? 1 : 2;
     // Gesture mapping comes from the controller so both shells behave identically instead of
     // each reimplementing the preset table.
+    // Orbit mode makes a plain left drag rotate. Checked before the preset table because it is a
+    // deliberate mode the user turned on, and it has to beat the left-is-selection rule that the
+    // table enforces.
+    if (controller_.orbitMode() && event->button() == Qt::LeftButton) {
+        drag_ = cad::render::Drag::Orbit;
+        return;
+    }
+
     drag_ = controller_.camera().dragFor(button,
                                         event->modifiers().testFlag(Qt::ShiftModifier),
                                         event->modifiers().testFlag(Qt::ControlModifier),
@@ -287,6 +295,19 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
+    // The rubber band, before the drag check: a half-drawn shape follows the pointer with no button
+    // held, which is the whole point of it.
+    if (drag_ == cad::render::Drag::None
+        && controller_.environment() == cad::app::Environment::Sketch
+        && controller_.sketchPending()) {
+        const auto dpr = devicePixelRatioF();
+        if (controller_.sketchHoverAt(static_cast<float>(event->position().x() * dpr),
+                                      static_cast<float>(event->position().y() * dpr))) {
+            markDirty();
+            update();
+        }
+        return;
+    }
     if (drag_ == cad::render::Drag::None) return;
     // Four logical pixels. Below that it is a click with a shaky hand, and treating it as an orbit
     // both fails to select and nudges the camera, which reads as the application ignoring clicks.

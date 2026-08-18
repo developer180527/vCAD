@@ -920,9 +920,10 @@ void Controller::finishSketch() {
     environment_ = Environment::Model;
     // Cleared BEFORE the refresh rebuilds the scene: leaving it up would draw the finished sketch
     // twice, once as the overlay and once as the feature's own edges, fighting for the same pixels.
-    pushSketchOverlay();
     sketchPending_.reset();
+    sketchHover_.reset();
     sketchTool_ = SketchTool::Select;
+    pushSketchOverlay();
     refresh();
     status("Finished sketch");
 }
@@ -930,9 +931,10 @@ void Controller::finishSketch() {
 void Controller::cancelSketch() {
     editing_.reset();
     environment_ = Environment::Model;
-    pushSketchOverlay();
     sketchPending_.reset();
+    sketchHover_.reset();
     sketchTool_ = SketchTool::Select;
+    pushSketchOverlay();
     notifyDocument();
     notifyView();
     status("Discarded sketch changes");
@@ -1232,13 +1234,36 @@ bool Controller::applySketchRadius(double millimetres) {
     return true;
 }
 
+void Controller::setOrbitMode(bool on) {
+    if (orbitMode_ == on) return;
+    orbitMode_ = on;
+    notifyView();
+}
+
 void Controller::setSketchTool(SketchTool tool) {
     if (sketchTool_ == tool) return;
     sketchTool_ = tool;
     // Abandoned, not carried across. A line waiting for its second point means nothing to the
     // circle tool, and keeping it is how a stray segment appears from a click made a minute ago.
     sketchPending_.reset();
+    sketchHover_.reset();
     notifyView();
+}
+
+bool Controller::sketchHoverAt(float x, float y) {
+    // Only while a shape is half-drawn. Before the first click the pointer says nothing about what
+    // is being made, and following it anyway would draw a band from the sketch origin to the mouse.
+    if (environment_ != Environment::Sketch || !sketchPending_) return false;
+
+    const auto point = sketchPointAt(x, y);
+    if (!point) return false;
+    if (sketchHover_ && std::abs((*sketchHover_)[0] - (*point)[0]) < 1e-9
+        && std::abs((*sketchHover_)[1] - (*point)[1]) < 1e-9) {
+        return false;   // no movement worth a repaint
+    }
+    sketchHover_ = *point;
+    pushSketchOverlay();
+    return true;
 }
 
 bool Controller::sketchClickAt(float x, float y) {
@@ -1256,6 +1281,9 @@ bool Controller::sketchClickAt(float x, float y) {
 
     if (!sketchPending_) {
         sketchPending_ = *point;
+        // Starts at the click, so the band has zero length until the pointer moves rather than
+        // flicking from wherever the last shape ended.
+        sketchHover_ = *point;
         status(sketchTool_ == SketchTool::Line ? "Line: click the end point"
                                                : "Circle: click to set the radius");
         notifyView();
@@ -1264,6 +1292,7 @@ bool Controller::sketchClickAt(float x, float y) {
 
     const std::array<double, 2> first = *sketchPending_;
     sketchPending_.reset();
+    sketchHover_.reset();
 
     if (sketchTool_ == SketchTool::Line) {
         const double dx = (*point)[0] - first[0];
@@ -1317,6 +1346,28 @@ std::vector<float> Controller::sketchOverlayVertices() const {
         out.insert(out.end(), a.begin(), a.end());
         out.insert(out.end(), b.begin(), b.end());
     };
+
+    // The rubber band first, so the committed geometry draws over it where they overlap: what is
+    // real should win over what is merely proposed.
+    if (sketchPending_ && sketchHover_) {
+        if (sketchTool_ == SketchTool::Circle) {
+            const double dx = (*sketchHover_)[0] - (*sketchPending_)[0];
+            const double dy = (*sketchHover_)[1] - (*sketchPending_)[1];
+            const double radius = std::sqrt(dx * dx + dy * dy);
+            constexpr int kSegments = 64;
+            for (int i = 0; i < kSegments; ++i) {
+                const double a0 = 2.0 * std::numbers::pi * i / kSegments;
+                const double a1 = 2.0 * std::numbers::pi * (i + 1) / kSegments;
+                segment((*sketchPending_)[0] + radius * std::cos(a0),
+                        (*sketchPending_)[1] + radius * std::sin(a0),
+                        (*sketchPending_)[0] + radius * std::cos(a1),
+                        (*sketchPending_)[1] + radius * std::sin(a1));
+            }
+        } else {
+            segment((*sketchPending_)[0], (*sketchPending_)[1],
+                    (*sketchHover_)[0], (*sketchHover_)[1]);
+        }
+    }
 
     for (const auto& g : active->geometry()) {
         switch (g.kind) {

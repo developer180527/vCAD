@@ -519,6 +519,14 @@ public:
     /// snapped to something arbitrary.
     bool sketchClickAt(float x, float y);
 
+    /// Tracks the pointer while a two-click shape is half-drawn, so the overlay can show what the
+    /// shape WOULD be. Ignored when nothing is pending — the cursor means nothing before the first
+    /// click, and following it then would draw a line from the origin to the mouse.
+    ///
+    /// Returns whether the preview changed, so a shell can skip a repaint on a mouse move that did
+    /// not move far enough to matter.
+    bool sketchHoverAt(float x, float y);
+
     /// The pending first point of a two-click tool, for drawing a rubber band. Empty when the next
     /// click starts a shape rather than finishing one.
     [[nodiscard]] const std::optional<std::array<double, 2>>& sketchPending() const noexcept {
@@ -540,6 +548,18 @@ public:
     /// A digest of those vertices, for the renderer's revision check. Changes when the sketch
     /// changes and not when the camera moves, which is what keeps an orbit from re-uploading it.
     [[nodiscard]] std::uint64_t sketchOverlayRevision() const;
+
+    /// Whether a plain left drag orbits instead of selecting.
+    ///
+    /// A discoverable way to rotate the view. Orbit is otherwise on the middle button or on Alt,
+    /// and neither is findable: a laptop has no middle button, and nobody discovers a modifier
+    /// chord by looking at the screen. Every CAD application has had a visible navigation control
+    /// for this reason — this is the state behind one.
+    ///
+    /// Model state, so both shells share it and a touch front end (which has no modifiers at all)
+    /// has the same switch to flip.
+    [[nodiscard]] bool orbitMode() const noexcept { return orbitMode_; }
+    void setOrbitMode(bool);
 
     /// Points the camera squarely at the sketch being edited, with the sketch's own v axis up.
     ///
@@ -705,9 +725,12 @@ private:
     double viewportScale_ = 1.0;   ///< device pixel ratio, kept for layer resizes
 
     std::unique_ptr<render::SceneBuilder> scene_;
+    bool orbitMode_ = false;
     SketchTool sketchTool_ = SketchTool::Select;
     /// First point of a two-click tool, in sketch coordinates.
     std::optional<std::array<double, 2>> sketchPending_;
+    /// Where the pointer is, while `sketchPending_` is set. The rubber band's far end.
+    std::optional<std::array<double, 2>> sketchHover_;
 
     render::CameraController camera_;
     render::Viewport viewport_;

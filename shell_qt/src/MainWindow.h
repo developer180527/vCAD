@@ -199,6 +199,9 @@ private:
     };
     std::vector<SketchToolAction> sketchToolActions_;
 
+    /// The Orbit toggle in the View tab, kept so its checked state can follow the controller.
+    QAction* orbitAction_ = nullptr;
+
     proshell::Settings* settings_ = nullptr;
     /// Answers proshell's home-page questions from the session. Declared after it, since it
     /// holds a reference.

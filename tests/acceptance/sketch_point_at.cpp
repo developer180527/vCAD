@@ -319,3 +319,74 @@ TEST_CASE("the in-progress sketch converts to world lines for drawing", "[sketch
     controller.camera().orbit(30.0f, 15.0f);
     CHECK(controller.sketchOverlayRevision() == after);
 }
+
+TEST_CASE("a half-drawn shape follows the pointer", "[sketch][viewport]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    controller.alignCameraToSketch();
+    controller.setSketchTool(app::Controller::SketchTool::Line);
+
+    const std::size_t committed = controller.activeSketch()->geometry().size();
+    const std::size_t settled = controller.sketchOverlayVertices().size();
+
+    SECTION("nothing is previewed before the first click") {
+        // The pointer means nothing yet. Following it here would draw a band from the sketch
+        // origin to the mouse, which looks like a stray line the user cannot delete.
+        CHECK_FALSE(controller.sketchHoverAt(500.0f, 400.0f));
+        CHECK(controller.sketchOverlayVertices().size() == settled);
+    }
+
+    SECTION("after the first click the band is drawn and tracks the pointer") {
+        REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+
+        // One extra segment: six floats. And still nothing COMMITTED — a preview that quietly
+        // added geometry would leave a stray line behind whenever the user changed their mind.
+        REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
+        CHECK(controller.sketchOverlayVertices().size() == settled + 6);
+        CHECK(controller.activeSketch()->geometry().size() == committed);
+
+        // It ENDS at the pointer, not somewhere near it: the band is a promise about where the
+        // second click will land, and one that lies is worse than none.
+        const auto at = controller.sketchPointAt(700.0f, 500.0f);
+        REQUIRE(at);
+        // The band is written FIRST, so the committed geometry draws over it where they overlap:
+        // what is real should win over what is merely proposed. Its second endpoint is floats 3..5.
+        const auto lines = controller.sketchOverlayVertices();
+        const auto end = controller.activeSketch()->to3d((*at)[0], (*at)[1]);
+        for (int i = 0; i < 3; ++i) {
+            CHECK_THAT(static_cast<double>(lines[3 + i]), Catch::Matchers::WithinAbs(end[i], 1e-4));
+        }
+
+        // A repeat of the same position is not a repaint.
+        CHECK_FALSE(controller.sketchHoverAt(700.0f, 500.0f));
+    }
+
+    SECTION("finishing the shape removes the band") {
+        REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+        REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
+        REQUIRE(controller.sketchClickAt(700.0f, 500.0f));
+
+        // The committed line replaces the preview rather than joining it: one segment, not two.
+        CHECK(controller.activeSketch()->geometry().size() == committed + 1);
+        CHECK(controller.sketchOverlayVertices().size() == settled + 6);
+        CHECK_FALSE(controller.sketchPending().has_value());
+    }
+
+    SECTION("switching tools drops the band with the pending point") {
+        REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+        REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
+        controller.setSketchTool(app::Controller::SketchTool::Select);
+        CHECK(controller.sketchOverlayVertices().size() == settled);
+    }
+}
+
+TEST_CASE("orbit mode is a mode the model owns", "[sketch][viewport]") {
+    app::Controller controller;
+    // Off by default: a plain left drag selects, which is what a viewport is mostly for.
+    CHECK_FALSE(controller.orbitMode());
+    controller.setOrbitMode(true);
+    CHECK(controller.orbitMode());
+    controller.setOrbitMode(false);
+    CHECK_FALSE(controller.orbitMode());
+}
