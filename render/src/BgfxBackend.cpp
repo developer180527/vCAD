@@ -1,5 +1,7 @@
 #include "cad/render/BgfxBackend.h"
 
+#include "cad/log/Log.h"
+
 #include "cad/render/MetalSurface.h"
 
 #include <bgfx/bgfx.h>
@@ -178,13 +180,11 @@ public:
     BufferId uploadVertices(const kernel::ShapeHash& hash,
                             std::span<const CadVertex> v) override {
         if (v.empty()) return BufferId::None;
+        // Into the SHARED arena, not a buffer of its own. One buffer per mesh exhausted bgfx's
+        // fixed pool of 4096 handles at about 2048 unique parts and then drew nothing.
         return intern(hash, 0, v.size() * sizeof(CadVertex), [&] {
-            // makeRef would alias caller memory that outlives nothing; copy is correct here
-            // because RenderMesh may be evicted while the GPU buffer lives on.
-            const bgfx::Memory* mem = bgfx::copy(v.data(),
-                                                static_cast<std::uint32_t>(v.size_bytes()));
-            const auto h = bgfx::createVertexBuffer(mem, cadVertexLayout());
-            return Entry{h.idx, Kind::Vertex, v.size_bytes()};
+            return appendToArena(surfaceArena_, v.data(), static_cast<std::uint32_t>(v.size()),
+                                 v.size_bytes(), &cadVertexLayout(), Kind::Vertex);
         });
     }
 
@@ -192,23 +192,18 @@ public:
                            std::span<const std::uint32_t> i) override {
         if (i.empty()) return BufferId::None;
         return intern(hash, 1, i.size_bytes(), [&] {
-            const bgfx::Memory* mem = bgfx::copy(i.data(),
-                                                static_cast<std::uint32_t>(i.size_bytes()));
-            // BGFX_BUFFER_INDEX32: CAD meshes routinely exceed 65k vertices, and a silent
-            // 16-bit truncation renders convincing garbage rather than failing.
-            const auto h = bgfx::createIndexBuffer(mem, BGFX_BUFFER_INDEX32);
-            return Entry{h.idx, Kind::Index, i.size_bytes()};
+            return appendToArena(indexArena_, i.data(), static_cast<std::uint32_t>(i.size()),
+                                 i.size_bytes(), nullptr, Kind::Index);
         });
     }
 
     BufferId uploadEdgeVertices(const kernel::ShapeHash& hash,
                                 std::span<const float> f) override {
         if (f.empty()) return BufferId::None;
+        // Three floats per edge vertex, so the element count is a third of the span.
         return intern(hash, 2, f.size_bytes(), [&] {
-            const bgfx::Memory* mem = bgfx::copy(f.data(),
-                                                static_cast<std::uint32_t>(f.size_bytes()));
-            const auto h = bgfx::createVertexBuffer(mem, edgeVertexLayout());
-            return Entry{h.idx, Kind::Edge, f.size_bytes()};
+            return appendToArena(edgeArena_, f.data(), static_cast<std::uint32_t>(f.size() / 3),
+                                 f.size_bytes(), &edgeVertexLayout(), Kind::Edge);
         });
     }
 
@@ -315,6 +310,15 @@ public:
     void release(BufferId id) override {
         const auto it = entries_.find(static_cast<std::uint64_t>(id));
         if (it == entries_.end()) return;
+        if (it->second.arena) {
+            // A suballocation owns nothing. Freeing the arena here would destroy every other mesh
+            // sharing it; reclaiming the space needs compaction, which is not built — see
+            // SCALE_REVIEW.md. An editing session therefore grows its arenas and never shrinks
+            // them, which is bounded by the document rather than by how long the session ran.
+            resident_ -= it->second.bytes;
+            entries_.erase(it);
+            return;
+        }
         switch (it->second.kind) {
             case Kind::Vertex:
             case Kind::Edge:
@@ -353,6 +357,16 @@ public:
         std::uint16_t idx = bgfx::kInvalidHandle;
         Kind kind = Kind::Vertex;
         std::size_t bytes = 0;
+
+        /// Where this mesh lives INSIDE a shared buffer, in elements (vertices or indices).
+        ///
+        /// A BufferId used to name a whole GPU buffer, one per mesh — which ran bgfx's fixed pool
+        /// of 4096 handles dry at about 2048 unique parts and silently stopped drawing. It now
+        /// names a SUBALLOCATION: many meshes share one large buffer and differ by offset. Nothing
+        /// above the backend changed, because nothing above it ever looked inside a BufferId.
+        std::uint32_t offset = 0;
+        std::uint32_t count = 0;
+        bool arena = false;   ///< false for the standalone buffers the dynamic paths still use
     };
     [[nodiscard]] const Entry* find(BufferId id) const {
         const auto it = entries_.find(static_cast<std::uint64_t>(id));
@@ -363,7 +377,21 @@ public:
     /// shutdown — which it does report, but only after the fact and only to stderr, so it is
     /// easy to ship. Called from BgfxBackend::shutdown before bgfx::shutdown.
     void releaseAll() {
+        // The arenas own their chunks; the entries pointing into them do not.
+        for (Arena* arena : {&surfaceArena_, &edgeArena_, &indexArena_}) {
+            for (const Chunk& chunk : arena->chunks) {
+                if (chunk.idx == bgfx::kInvalidHandle) continue;
+                if (arena->index) {
+                    bgfx::destroy(bgfx::DynamicIndexBufferHandle{chunk.idx});
+                } else {
+                    bgfx::destroy(bgfx::DynamicVertexBufferHandle{chunk.idx});
+                }
+            }
+            *arena = Arena{};
+        }
+
         for (const auto& [id, entry] : entries_) {
+            if (entry.arena) continue;   // owned by the arena, destroyed above
             switch (entry.kind) {
                 case Kind::Vertex:
                 case Kind::Edge:
@@ -389,7 +417,7 @@ public:
     }
 
 private:
-    template <class Make>
+template <class Make>
     BufferId intern(const kernel::ShapeHash& hash, int kind, std::size_t bytes, Make&& make) {
         // Kind is part of the key: a mesh's vertex and index buffers share one content hash,
         // and without the tag the second would dedupe onto the first and return the wrong
@@ -439,6 +467,77 @@ private:
         }
         slot.revision = revision;
         return slot.id;
+    }
+
+    /// Meshes packed into a small number of large buffers.
+    ///
+    /// One buffer per mesh exhausted bgfx's fixed pool of 4096 handles at about 2048 unique parts
+    /// and then drew nothing at all. Packing many meshes into each buffer removes that ceiling and
+    /// is the precondition for drawing several meshes per call at all.
+    ///
+    /// Growth is a CHAIN OF CHUNKS rather than a resize. bgfx's ALLOW_RESIZE did not grow these —
+    /// every update past the initial size was truncated, which it reports and then carries on from,
+    /// the exact silent-truncation failure this work exists to escape. Adding a chunk needs no
+    /// re-upload and no CPU copy of geometry already on the GPU, and the handle count becomes
+    /// total-size/chunk-size: a handful, not thousands.
+    struct Chunk {
+        std::uint16_t idx = bgfx::kInvalidHandle;
+        std::uint32_t used = 0;
+        std::uint32_t capacity = 0;
+    };
+    struct Arena {
+        std::vector<Chunk> chunks;
+        bool index = false;
+    };
+    Arena surfaceArena_;
+    Arena edgeArena_;
+    Arena indexArena_;
+
+    /// Appends `count` elements, opening a new chunk when the last one cannot hold them.
+    Entry appendToArena(Arena& arena, const void* data, std::uint32_t count, std::size_t bytes,
+                        const bgfx::VertexLayout* layout, Kind kind) {
+        if (count == 0) return Entry{};
+
+        // A chunk large enough that a normal document needs one or two, and small enough that the
+        // first one is not a surprise allocation on a machine with modest memory.
+        constexpr std::uint32_t kChunkElements = 1u << 19;
+
+        Chunk* chunk = arena.chunks.empty() ? nullptr : &arena.chunks.back();
+        if (chunk == nullptr || chunk->used + count > chunk->capacity) {
+            Chunk fresh;
+            fresh.capacity = std::max(count, kChunkElements);
+            if (layout != nullptr) {
+                const auto h = bgfx::createDynamicVertexBuffer(fresh.capacity, *layout,
+                                                               BGFX_BUFFER_COMPUTE_READ);
+                if (!bgfx::isValid(h)) return Entry{};
+                fresh.idx = h.idx;
+            } else {
+                const auto h = bgfx::createDynamicIndexBuffer(
+                    fresh.capacity, BGFX_BUFFER_INDEX32 | BGFX_BUFFER_COMPUTE_READ);
+                if (!bgfx::isValid(h)) return Entry{};
+                fresh.idx = h.idx;
+                arena.index = true;
+            }
+            arena.chunks.push_back(fresh);
+            chunk = &arena.chunks.back();
+        }
+
+        const bgfx::Memory* mem = bgfx::copy(data, static_cast<std::uint32_t>(bytes));
+        if (arena.index) {
+            bgfx::update(bgfx::DynamicIndexBufferHandle{chunk->idx}, chunk->used, mem);
+        } else {
+            bgfx::update(bgfx::DynamicVertexBufferHandle{chunk->idx}, chunk->used, mem);
+        }
+
+        Entry entry;
+        entry.idx = chunk->idx;
+        entry.kind = kind;
+        entry.bytes = bytes;
+        entry.offset = chunk->used;
+        entry.count = count;
+        entry.arena = true;
+        chunk->used += count;
+        return entry;
     }
 
     std::unordered_map<std::uint64_t, InstanceSlot> instanceBuffers_;
@@ -670,12 +769,22 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
             // over separate pools, so binding a dynamic buffer through a static handle is not a
             // type error — it reaches the driver as an attribute with no stride and asserts. The
             // sketch profile is the only dynamic mesh, and this is where it enters.
-            if (vb->kind == BgfxResources::Kind::DynamicVertex) {
+            // A mesh in the shared arena is bound as a WINDOW into it: startVertex acts as the
+            // base vertex bgfx adds to every index, so each mesh's indices stay 0-based exactly as
+            // the tessellator produced them. Without the window every index would address the
+            // start of the arena and the whole scene would collapse into the first mesh.
+            if (vb->arena) {
+                bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx}, vb->offset,
+                                      vb->count);
+            } else if (vb->kind == BgfxResources::Kind::DynamicVertex) {
                 bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx});
             } else {
                 bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx});
             }
-            if (ib->kind == BgfxResources::Kind::DynamicIndex) {
+            if (ib->arena) {
+                bgfx::setIndexBuffer(bgfx::DynamicIndexBufferHandle{ib->idx},
+                                     ib->offset + batch.indexOffset, batch.indexCount);
+            } else if (ib->kind == BgfxResources::Kind::DynamicIndex) {
                 bgfx::setIndexBuffer(bgfx::DynamicIndexBufferHandle{ib->idx}, batch.indexOffset,
                                      batch.indexCount);
             } else {
@@ -821,7 +930,12 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
                 // bare index, and both pools use the same numbering -- so it reaches Metal as an
                 // attribute pointing at a buffer with no stride, and asserts inside the driver.
                 // The sketch overlay is the only dynamic edge buffer, and this is where it enters.
-                if (vb->kind == BgfxResources::Kind::DynamicEdge) {
+                if (vb->arena) {
+                    // The batch's own offset is RELATIVE to the mesh, and the mesh's offset is
+                    // relative to the arena — an edge range within a mesh packed among thousands.
+                    bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
+                                          vb->offset + batch.vertexOffset, batch.vertexCount);
+                } else if (vb->kind == BgfxResources::Kind::DynamicEdge) {
                     bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
                                           batch.vertexOffset, batch.vertexCount);
                 } else {
@@ -1029,6 +1143,18 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
                      "The graphics system could not be started.",
                      "bgfx::init returned false"};
     }
+
+    // Reported once, because the two big scaling levers are conditional on them and a build that
+    // lacks either needs to know at startup rather than when a 100k assembly is opened.
+    const auto* caps = bgfx::getCaps();
+    CAD_INFO(cad::log::Category::Render)
+        << "renderer " << bgfx::getRendererName(caps->rendererType)
+        << "  indirect=" << ((caps->supported & BGFX_CAPS_DRAW_INDIRECT) != 0)
+        << "  compute=" << ((caps->supported & BGFX_CAPS_COMPUTE) != 0)
+        << "  maxVertexBuffers=" << caps->limits.maxVertexBuffers
+        << "  maxIndexBuffers=" << caps->limits.maxIndexBuffers
+        << "  maxDynamicVertexBuffers=" << caps->limits.maxDynamicVertexBuffers;
+
     impl_->initialised = true;
 
     impl_->uShading = bgfx::createUniform("u_shading", bgfx::UniformType::Vec4);
