@@ -203,6 +203,7 @@ void SceneBuilder::setHighlight(std::uint32_t element, Highlight h) {
 /// Buffer key for the sketch overlay. Any value distinct from a batch key works; batch keys are
 /// derived from mesh content hashes, so a small constant cannot collide with one.
 constexpr std::uint64_t kSketchOverlayKey = 0x5E7C4000000001ull;
+constexpr std::uint64_t kSketchPreviewKey = 0x5E7C4000000002ull;
 
 void SceneBuilder::setSketchOverlay(std::span<const float> lineVertices, std::uint64_t revision) {
     if (lineVertices.empty()) {
@@ -219,20 +220,40 @@ void SceneBuilder::setSketchOverlay(std::span<const float> lineVertices, std::ui
     }
     sketchVertexCount_ = static_cast<std::uint32_t>(lineVertices.size() / 3);
 
+    ensureSketchInstance();
+    refreshEdgeHighlights();
+}
+
+void SceneBuilder::ensureSketchInstance() {
+    if (sketchInstance_ != BufferId::None) return;
+
     // One identity instance, so the ordinary edge shader can draw world-space lines: its
-    // instancePosition() multiplies by the instance basis, and the identity leaves the vertex
-    // where it is. Uploaded once -- the revision never changes, so this costs nothing after the
-    // first frame of an editing session.
+    // instancePosition() multiplies by the instance basis, and the identity leaves the vertex where
+    // it is. Shared by the committed sketch and the preview -- the colour comes from the batch, so
+    // a second copy would be identical bytes.
+    //
+    // Created here rather than inside setSketchOverlay because a sketch can be EMPTY: on a face
+    // sketch with nothing drawn yet, the first thing to appear is the preview, and hanging the
+    // instance off the committed overlay meant the first line previewed nothing at all.
     Instance identity;
     static constexpr float kIdentity[12]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     std::copy(std::begin(kIdentity), std::end(kIdentity), identity.transform);
-    identity.colour[0] = 0.04f;
-    identity.colour[1] = 0.44f;
-    identity.colour[2] = 0.78f;
     sketchInstance_ = gpu_.uploadInstances(kSketchOverlayKey, 1u,
-                                                  std::span<const Instance>(&identity, 1));
-
+                                           std::span<const Instance>(&identity, 1));
     sketchRange_.assign(1, DrawRange{0, 1});
+}
+
+void SceneBuilder::setSketchPreview(std::span<const float> lineVertices, std::uint64_t revision) {
+    if (lineVertices.empty()) {
+        previewVertexCount_ = 0;
+        refreshEdgeHighlights();
+        return;
+    }
+    ensureSketchInstance();
+    previewVertices_ = gpu_.uploadDynamicEdgeVertices(kSketchPreviewKey, revision, lineVertices);
+    previewVertexCount_ = previewVertices_ == BufferId::None
+                              ? 0
+                              : static_cast<std::uint32_t>(lineVertices.size() / 3);
     refreshEdgeHighlights();
 }
 
@@ -313,6 +334,31 @@ void SceneBuilder::refreshEdgeHighlights() {
         sketch.widthPx = 2.0f;
         sketch.onTop = true;
         edgeBatches_.push_back(sketch);
+        edgeBatchGroup_.push_back(0);
+    }
+
+    // The preview after the committed sketch, so where they overlap the DASHES win: the user is
+    // being shown where the next click lands, and that is the more urgent of the two.
+    if (previewVertexCount_ > 0 && previewVertices_ != BufferId::None
+        && sketchInstance_ != BufferId::None) {
+        EdgeBatch preview;
+        preview.vertices = previewVertices_;
+        preview.vertexOffset = 0;
+        preview.vertexCount = previewVertexCount_;
+        // The SAME identity instance as the committed overlay: the colour comes from the batch, so
+        // a second instance buffer would hold identical bytes for no reason.
+        preview.instances = sketchInstance_;
+        preview.instanceCount = 1;
+        preview.ranges = sketchRange_;
+        // Dimmer and thinner than the committed sketch, which is the whole point: a proposal must
+        // not read as a fact.
+        preview.colour[0] = 122;
+        preview.colour[1] = 170;
+        preview.colour[2] = 222;
+        preview.colour[3] = 255;
+        preview.widthPx = 1.4f;
+        preview.onTop = true;
+        edgeBatches_.push_back(preview);
         edgeBatchGroup_.push_back(0);
     }
 

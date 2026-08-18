@@ -118,6 +118,13 @@ public:
     [[nodiscard]] bool orthographic() const noexcept { return orthographic_; }
     void setPreset(NavigationPreset p) noexcept { preset_ = p; }
 
+    /// World units per screen pixel at the point being looked at.
+    ///
+    /// Already computed inside pan(); exposed because anything that wants a constant SIZE ON SCREEN
+    /// needs it — a dashed preview whose dashes are a world length stretches into a solid line as
+    /// you zoom in and into dots as you zoom out.
+    [[nodiscard]] float worldPerPixel(const Viewport&) const noexcept;
+
     [[nodiscard]] float distance() const noexcept { return distance_; }
     [[nodiscard]] const float* target() const noexcept { return target_; }
 

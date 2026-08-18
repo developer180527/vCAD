@@ -549,6 +549,14 @@ public:
     /// changes and not when the camera moves, which is what keeps an orbit from re-uploading it.
     [[nodiscard]] std::uint64_t sketchOverlayRevision() const;
 
+    /// The half-drawn shape, as DASHED world-space segments — the same layout, a separate list.
+    ///
+    /// Separate from the committed geometry because it is drawn differently: dimmer and dashed, so
+    /// a proposal cannot be mistaken for a fact. Two batches rather than one, since the edge
+    /// shader takes its colour per batch.
+    [[nodiscard]] std::vector<float> sketchPreviewVertices() const;
+    [[nodiscard]] std::uint64_t sketchPreviewRevision() const;
+
     /// Whether a plain left drag orbits instead of selecting.
     ///
     /// A discoverable way to rotate the view. Orbit is otherwise on the middle button or on Alt,

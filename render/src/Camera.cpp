@@ -233,6 +233,11 @@ void CameraController::orbit(float dx, float dy) {
     pitch_ = std::clamp(pitch_ - dy * kRadiansPerPixel, -kLimit, kLimit);
 }
 
+float CameraController::worldPerPixel(const Viewport& vp) const noexcept {
+    if (vp.height == 0) return 1.0f;
+    return (orthographic_ ? orthoHeight_ : distance_) / static_cast<float>(vp.height);
+}
+
 void CameraController::pan(float dx, float dy, const Viewport& vp) {
     if (vp.height == 0) return;
     // World units per pixel, so panning tracks the pointer exactly at any zoom. Scaling by a

@@ -334,42 +334,70 @@ TEST_CASE("a half-drawn shape follows the pointer", "[sketch][viewport]") {
         // The pointer means nothing yet. Following it here would draw a band from the sketch
         // origin to the mouse, which looks like a stray line the user cannot delete.
         CHECK_FALSE(controller.sketchHoverAt(500.0f, 400.0f));
-        CHECK(controller.sketchOverlayVertices().size() == settled);
+        CHECK(controller.sketchPreviewVertices().empty());
     }
 
-    SECTION("after the first click the band is drawn and tracks the pointer") {
+    SECTION("after the first click the band tracks the pointer, and commits nothing") {
         REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
-
-        // One extra segment: six floats. And still nothing COMMITTED — a preview that quietly
-        // added geometry would leave a stray line behind whenever the user changed their mind.
         REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
-        CHECK(controller.sketchOverlayVertices().size() == settled + 6);
-        CHECK(controller.activeSketch()->geometry().size() == committed);
 
-        // It ENDS at the pointer, not somewhere near it: the band is a promise about where the
-        // second click will land, and one that lies is worse than none.
+        const auto preview = controller.sketchPreviewVertices();
+        CHECK_FALSE(preview.empty());
+
+        // The preview is SEPARATE from the committed geometry, in both lists: nothing was added to
+        // the sketch, and nothing was added to the overlay the committed geometry is drawn from.
+        // A preview that quietly committed would leave a stray line whenever the user changed
+        // their mind, which is the failure this separation exists to make impossible.
+        CHECK(controller.activeSketch()->geometry().size() == committed);
+        CHECK(controller.sketchOverlayVertices().size() == settled);
+
+        // It STARTS at the first click. Exact, because that endpoint is not affected by dashing.
+        const auto from = controller.activeSketch()->to3d((*controller.sketchPending())[0],
+                                                          (*controller.sketchPending())[1]);
+        for (int i = 0; i < 3; ++i) {
+            CHECK_THAT(static_cast<double>(preview[i]), Catch::Matchers::WithinAbs(from[i], 1e-4));
+        }
+
+        // And every dash lies ON the line to the pointer. Asserted as collinearity rather than as
+        // an endpoint, because the number of dashes depends on zoom and the last one stops short
+        // of the end by design — but a band that pointed somewhere else would still be caught.
         const auto at = controller.sketchPointAt(700.0f, 500.0f);
         REQUIRE(at);
-        // The band is written FIRST, so the committed geometry draws over it where they overlap:
-        // what is real should win over what is merely proposed. Its second endpoint is floats 3..5.
-        const auto lines = controller.sketchOverlayVertices();
-        const auto end = controller.activeSketch()->to3d((*at)[0], (*at)[1]);
-        for (int i = 0; i < 3; ++i) {
-            CHECK_THAT(static_cast<double>(lines[3 + i]), Catch::Matchers::WithinAbs(end[i], 1e-4));
+        const auto to = controller.activeSketch()->to3d((*at)[0], (*at)[1]);
+        const double dx = to[0] - from[0];
+        const double dy = to[1] - from[1];
+        const double dz = to[2] - from[2];
+        const double length = std::sqrt(dx * dx + dy * dy + dz * dz);
+        REQUIRE(length > 1e-6);
+        double farthest = 0.0;
+        for (std::size_t v = 0; v + 2 < preview.size(); v += 3) {
+            const double px = preview[v] - from[0];
+            const double py = preview[v + 1] - from[1];
+            const double pz = preview[v + 2] - from[2];
+            const double along = (px * dx + py * dy + pz * dz) / length;
+            // Perpendicular distance from the line: zero for every point on it.
+            const double cx = px - along * dx / length;
+            const double cy = py - along * dy / length;
+            const double cz = pz - along * dz / length;
+            CHECK(std::sqrt(cx * cx + cy * cy + cz * cz) < 1e-3);
+            farthest = std::max(farthest, along);
         }
+        // It reaches the pointer rather than petering out a third of the way: the band is a promise
+        // about where the second click lands, and one that stops short misleads.
+        CHECK(farthest > length * 0.9);
 
         // A repeat of the same position is not a repaint.
         CHECK_FALSE(controller.sketchHoverAt(700.0f, 500.0f));
     }
 
-    SECTION("finishing the shape removes the band") {
+    SECTION("finishing the shape replaces the band with real geometry") {
         REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
         REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
         REQUIRE(controller.sketchClickAt(700.0f, 500.0f));
 
-        // The committed line replaces the preview rather than joining it: one segment, not two.
         CHECK(controller.activeSketch()->geometry().size() == committed + 1);
         CHECK(controller.sketchOverlayVertices().size() == settled + 6);
+        CHECK(controller.sketchPreviewVertices().empty());
         CHECK_FALSE(controller.sketchPending().has_value());
     }
 
@@ -377,7 +405,28 @@ TEST_CASE("a half-drawn shape follows the pointer", "[sketch][viewport]") {
         REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
         REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
         controller.setSketchTool(app::Controller::SketchTool::Select);
+        CHECK(controller.sketchPreviewVertices().empty());
         CHECK(controller.sketchOverlayVertices().size() == settled);
+    }
+
+    SECTION("the dashes keep their size on screen as the view zooms") {
+        REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+        REQUIRE(controller.sketchHoverAt(700.0f, 500.0f));
+        const std::size_t atRest = controller.sketchPreviewVertices().size();
+
+        // The invariant, stated without depending on which way zoom's sign runs: dash COUNT moves
+        // inversely with world-units-per-pixel. Zoom in and the band covers more pixels, so it
+        // takes more dashes; a dash measured in world units would hold the count fixed and turn
+        // into a solid line at one end of the range and a row of dots at the other.
+        const render::Viewport vp{1000, 800, 1.0f};
+        const float before = controller.camera().worldPerPixel(vp);
+        controller.camera().zoom(6.0f);
+        const float after = controller.camera().worldPerPixel(vp);
+        REQUIRE(after != before);
+
+        controller.sketchHoverAt(700.0f, 500.0f);
+        const std::size_t zoomed = controller.sketchPreviewVertices().size();
+        CHECK((after < before) == (zoomed > atRest));
     }
 }
 

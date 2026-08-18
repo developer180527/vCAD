@@ -1347,28 +1347,6 @@ std::vector<float> Controller::sketchOverlayVertices() const {
         out.insert(out.end(), b.begin(), b.end());
     };
 
-    // The rubber band first, so the committed geometry draws over it where they overlap: what is
-    // real should win over what is merely proposed.
-    if (sketchPending_ && sketchHover_) {
-        if (sketchTool_ == SketchTool::Circle) {
-            const double dx = (*sketchHover_)[0] - (*sketchPending_)[0];
-            const double dy = (*sketchHover_)[1] - (*sketchPending_)[1];
-            const double radius = std::sqrt(dx * dx + dy * dy);
-            constexpr int kSegments = 64;
-            for (int i = 0; i < kSegments; ++i) {
-                const double a0 = 2.0 * std::numbers::pi * i / kSegments;
-                const double a1 = 2.0 * std::numbers::pi * (i + 1) / kSegments;
-                segment((*sketchPending_)[0] + radius * std::cos(a0),
-                        (*sketchPending_)[1] + radius * std::sin(a0),
-                        (*sketchPending_)[0] + radius * std::cos(a1),
-                        (*sketchPending_)[1] + radius * std::sin(a1));
-            }
-        } else {
-            segment((*sketchPending_)[0], (*sketchPending_)[1],
-                    (*sketchHover_)[0], (*sketchHover_)[1]);
-        }
-    }
-
     for (const auto& g : active->geometry()) {
         switch (g.kind) {
             case sketch::GeoKind::Line:
@@ -1405,6 +1383,71 @@ std::vector<float> Controller::sketchOverlayVertices() const {
     return out;
 }
 
+std::vector<float> Controller::sketchPreviewVertices() const {
+    std::vector<float> out;
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr || !sketchPending_ || !sketchHover_) return out;
+
+    // DASHED, and dashed in screen terms. A preview must be distinguishable from committed
+    // geometry at a glance -- otherwise the user cannot tell what is real -- and a dash measured in
+    // world units becomes a solid line when zoomed in and a row of dots when zoomed out, which is
+    // when it is least readable.
+    const float perPixel = camera_.worldPerPixel(viewport_);
+    const double dash = std::max(1e-6f, perPixel) * 6.0;   // ~6 px on, 6 px off
+    const auto emit = [&](double u1, double v1, double u2, double v2) {
+        const double dx = u2 - u1;
+        const double dy = v2 - v1;
+        const double length = std::sqrt(dx * dx + dy * dy);
+        if (length < 1e-12) return;
+        // Cap the count so a wildly zoomed-out view cannot ask for a million tiny segments while
+        // the user drags -- past that density the dashes are sub-pixel and read as a line anyway.
+        const int steps = static_cast<int>(std::min(2000.0, std::ceil(length / (dash * 2.0))));
+        for (int i = 0; i < steps; ++i) {
+            const double t0 = std::min(1.0, (i * 2.0 * dash) / length);
+            const double t1 = std::min(1.0, (i * 2.0 * dash + dash) / length);
+            const auto a3 = active->to3d(u1 + dx * t0, v1 + dy * t0);
+            const auto b3 = active->to3d(u1 + dx * t1, v1 + dy * t1);
+            out.insert(out.end(), {static_cast<float>(a3[0]), static_cast<float>(a3[1]),
+                                   static_cast<float>(a3[2]), static_cast<float>(b3[0]),
+                                   static_cast<float>(b3[1]), static_cast<float>(b3[2])});
+        }
+    };
+
+    if (sketchTool_ == SketchTool::Circle) {
+        const double dx = (*sketchHover_)[0] - (*sketchPending_)[0];
+        const double dy = (*sketchHover_)[1] - (*sketchPending_)[1];
+        const double radius = std::sqrt(dx * dx + dy * dy);
+        constexpr int kSegments = 64;
+        for (int i = 0; i < kSegments; ++i) {
+            const double a0 = 2.0 * std::numbers::pi * i / kSegments;
+            const double a1 = 2.0 * std::numbers::pi * (i + 1) / kSegments;
+            emit((*sketchPending_)[0] + radius * std::cos(a0),
+                 (*sketchPending_)[1] + radius * std::sin(a0),
+                 (*sketchPending_)[0] + radius * std::cos(a1),
+                 (*sketchPending_)[1] + radius * std::sin(a1));
+        }
+    } else {
+        emit((*sketchPending_)[0], (*sketchPending_)[1], (*sketchHover_)[0], (*sketchHover_)[1]);
+    }
+    return out;
+}
+
+std::uint64_t Controller::sketchPreviewRevision() const {
+    // Includes the DASH SIZE by construction, because the vertices are the dashes: a zoom changes
+    // them and the buffer is re-sent, which is correct and is the only case where a camera move
+    // must re-upload anything.
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const float f : sketchPreviewVertices()) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        for (int i = 0; i < 4; ++i) {
+            hash ^= (bits >> (i * 8)) & 0xffu;
+            hash *= 1099511628211ull;
+        }
+    }
+    return hash;
+}
+
 std::uint64_t Controller::sketchOverlayRevision() const {
     // FNV-1a over the vertices. A digest rather than a counter, for the same reason the instance
     // buffers use one: an edit that does not change the geometry must not re-upload it, and a
@@ -1427,6 +1470,8 @@ void Controller::pushSketchOverlay() {
     // overlay and once as the feature's own edges, at slightly different depths.
     const auto lines = sketchOverlayVertices();
     scene_->setSketchOverlay(lines, sketchOverlayRevision());
+    const auto preview = sketchPreviewVertices();
+    scene_->setSketchPreview(preview, sketchPreviewRevision());
 }
 
 void Controller::alignCameraToSketch() {

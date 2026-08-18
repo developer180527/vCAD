@@ -91,6 +91,13 @@ public:
     /// re-uploads the sketch every frame. Pass an empty span to clear.
     void setSketchOverlay(std::span<const float> lineVertices, std::uint64_t revision);
 
+    /// The half-drawn shape, drawn dimmer and thinner than the committed sketch.
+    ///
+    /// Its own batch because the edge shader takes its colour from a per-batch uniform, so one
+    /// batch cannot hold two colours. The dashes are geometry — the caller sends short segments —
+    /// which keeps the shader free of a stipple pattern that every backend would have to agree on.
+    void setSketchPreview(std::span<const float> lineVertices, std::uint64_t revision);
+
     void setHighlight(const naming::ElementName&, Highlight);
 
     /// By absolute element SLOT, as returned by a pick. O(1), and the only one hover should use
@@ -208,6 +215,11 @@ private:
     BufferId sketchInstance_ = BufferId::None;
     std::uint32_t sketchVertexCount_ = 0;
     std::vector<DrawRange> sketchRange_;
+    /// Uploads the shared identity instance the two sketch batches ride on, once.
+    void ensureSketchInstance();
+
+    BufferId previewVertices_ = BufferId::None;
+    std::uint32_t previewVertexCount_ = 0;
     /// Batch index -> group index, because a group contributes a shaded batch, an edge batch,
     /// both or neither, so the three vectors are not parallel.
     std::vector<std::uint32_t> batchGroup_;
