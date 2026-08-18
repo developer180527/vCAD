@@ -142,6 +142,17 @@ struct EdgeBatch {
     std::span<const DrawRange> ranges;
     std::uint8_t colour[4]{38, 41, 46, 255};
     float widthPx = 1.5f;
+
+    /// Draw regardless of what is in front of it.
+    ///
+    /// For the sketch being edited. A sketch lies ON the face it is drawn on and often INSIDE the
+    /// body — a profile on the top of a block sits at the same depth as the block's own face, and
+    /// one drawn to be cut away is behind solid material. Depth-tested, it disappears into the
+    /// part, and the user is drawing lines they cannot see.
+    ///
+    /// Every other edge batch stays depth-tested: model edges hidden behind the model SHOULD be
+    /// hidden, which is what makes a shaded view readable.
+    bool onTop = false;
 };
 
 /// A half-space that clips geometry, for section views. CAD-specific and above the seam,

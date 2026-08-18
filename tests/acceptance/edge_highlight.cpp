@@ -150,3 +150,31 @@ TEST_CASE("a camera move keeps the overlays alive", "[render][highlight]") {
 
     CHECK(s.scene->frame().edgeBatches.size() == withOverlay);
 }
+
+TEST_CASE("the sketch overlay draws on top and nothing else does", "[render][sketch]") {
+    Scene s;
+
+    // Two segments in world space, as Controller::sketchOverlayVertices produces them.
+    const float lines[]{0.0f, 0.0f, 0.0f, 40.0f, 0.0f, 0.0f,
+                        40.0f, 0.0f, 0.0f, 40.0f, 25.0f, 0.0f};
+    const std::size_t before = s.scene->frame().edgeBatches.size();
+    s.scene->setSketchOverlay(lines, 1u);
+
+    const auto& batches = s.scene->frame().edgeBatches;
+    REQUIRE(batches.size() == before + 1);
+
+    // LAST, so it draws over the model and over any highlight: it is the thing being edited.
+    const render::EdgeBatch& overlay = batches.back();
+    CHECK(overlay.onTop);
+    CHECK(overlay.vertexCount == 4);
+
+    // And ONLY it. Model edges hidden behind the model should stay hidden — that is what makes a
+    // shaded view readable, and an on-top flag leaking onto them turns the part into a wireframe.
+    for (std::size_t i = 0; i < batches.size() - 1; ++i) {
+        CHECK_FALSE(batches[i].onTop);
+    }
+
+    // Clearing removes it rather than leaving a stale sketch over the model after Finish Sketch.
+    s.scene->setSketchOverlay({}, 2u);
+    CHECK(s.scene->frame().edgeBatches.size() == before);
+}

@@ -712,9 +712,14 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
                 // Depth-test but no depth-write: edges must not occlude each other, and writing
                 // depth from a biased primitive corrupts the depth buffer for anything drawn
                 // after.
+                //
+                // ALWAYS for an on-top batch: the sketch being edited lies on the face it is drawn
+                // on and is often inside the body, so depth-testing it makes the user's own strokes
+                // vanish into the part.
                 bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
-                               | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES
-                               | BGFX_STATE_MSAA);
+                               | (batch.onTop ? BGFX_STATE_DEPTH_TEST_ALWAYS
+                                              : BGFX_STATE_DEPTH_TEST_LEQUAL)
+                               | BGFX_STATE_PT_LINES | BGFX_STATE_MSAA);
                 bgfx::submit(kViewShaded, impl_.edge);
                 ++impl_.stats.drawCalls;
                 impl_.stats.lines += (batch.vertexCount / 2) * range.instanceCount;

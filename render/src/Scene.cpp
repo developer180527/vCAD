@@ -311,6 +311,7 @@ void SceneBuilder::refreshEdgeHighlights() {
         sketch.colour[2] = 200;
         sketch.colour[3] = 255;
         sketch.widthPx = 2.0f;
+        sketch.onTop = true;
         edgeBatches_.push_back(sketch);
         edgeBatchGroup_.push_back(0);
     }
