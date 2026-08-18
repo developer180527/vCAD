@@ -1242,9 +1242,14 @@ void MainWindow::drawSketchForShot(int lines) {
         c->sketchClickAt(w * 0.65f, h * 0.60f);
     }
     if (lines > 1) {
-        // Mid-chain, pointer moved: this is the state the rubber band and the dimension field
-        // exist in, and the only one a screenshot can catch.
+        // Mid-chain, pointer moved: the state the rubber band and the dimension field exist in.
         c->sketchHoverAt(w * 0.40f, h * 0.62f);
+        // Locked, so the shot catches the padlock and a band held at a fixed length while the
+        // pointer aims elsewhere — the whole point of Tab, and invisible in any other state.
+        c->typeSketchDimension('6');
+        c->typeSketchDimension('0');
+        c->lockSketchDimension();
+        c->sketchHoverAt(w * 0.34f, h * 0.70f);
     }
     view->syncDimensionFieldForShot();
     view->markDirty();

@@ -302,12 +302,36 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
                                         event->modifiers().testFlag(Qt::AltModifier));
 }
 
+bool Viewport::focusNextPrevChild(bool next) {
+    if (controller_.environment() == cad::app::Environment::Sketch
+        && controller_.sketchPending()) {
+        return false;   // Tab belongs to the dimension field while a shape is half-drawn
+    }
+    return QWidget::focusNextPrevChild(next);
+}
+
+void Viewport::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && controller_.leftPressDraws()) {
+        controller_.endSketchChain();
+        syncDimensionField();
+        markDirty();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+}
+
 void Viewport::keyPressEvent(QKeyEvent* event) {
     // Only while something is half-drawn. Outside that a digit is a shortcut, and swallowing it
     // here would make the keyboard feel dead — the Controller decides, so both shells agree.
     if (controller_.environment() == cad::app::Environment::Sketch) {
         if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
             if (controller_.commitSketchDimension()) {
+                syncDimensionField();
+                markDirty();
+                return;
+            }
+        } else if (event->key() == Qt::Key_Tab) {
+            if (controller_.lockSketchDimension()) {
                 syncDimensionField();
                 markDirty();
                 return;
@@ -355,11 +379,16 @@ void Viewport::syncDimensionField() {
     }
     const QString caret = controller_.sketchDimensionInput().empty() ? QString()
                                                                      : QStringLiteral("_");
+    // A padlock while the length is fixed, so the user can see WHY the number stopped following
+    // their mouse. Without it a locked field looks like a frozen one.
+    const QString lock = controller_.sketchLockedLength() ? QStringLiteral(" \U0001F512")
+                                                          : QString();
     const QString length = QString::fromStdString(text.length) + caret;
-    dimensionField_->setText(text.angle.empty()
-                                 ? length
-                                 : QStringLiteral("%1   %2").arg(
-                                       length, QString::fromStdString(text.angle)));
+    dimensionField_->setText((text.angle.empty()
+                                  ? length
+                                  : QStringLiteral("%1   %2").arg(
+                                        length, QString::fromStdString(text.angle)))
+                             + lock);
     dimensionField_->adjustSize();
 
     // Offset from the cursor so the pointer never sits on top of the number, and clamped inside

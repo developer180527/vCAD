@@ -84,6 +84,18 @@ protected:
     /// Digits typed while a shape is half-drawn are its dimension, not shortcuts.
     void keyPressEvent(QKeyEvent*) override;
 
+    /// Ends a chain of segments. Qt delivers press, release, then a DOUBLE-CLICK in place of the
+    /// second press — so without this the second click never reaches the controller and a chain
+    /// cannot be ended with the mouse alone.
+    void mouseDoubleClickEvent(QMouseEvent*) override;
+
+    /// Stops Qt stealing Tab for focus navigation while a dimension is being entered.
+    ///
+    /// Qt consumes Tab BEFORE keyPressEvent runs, so a Tab-to-lock handler there never fires — the
+    /// key silently moves focus to the next widget instead, which looks like the shortcut simply
+    /// not working. Refused only while sketching, so Tab still walks the UI everywhere else.
+    bool focusNextPrevChild(bool next) override;
+
 private:
     /// Projects a world point through the frame's view+projection to widget pixels. The same
     /// matrices the GPU uses, so if the camera is wrong here it is wrong there.

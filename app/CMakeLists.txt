@@ -5,6 +5,7 @@
 cad_core_library(cad_app
   # Controller, split by concern. One class, eight files: it reached 2574 lines in one, which is
   # past the point where anyone can hold it in their head. See app/src/controller/.
+  src/SketchDrawing.cpp
   src/controller/Lifetime.cpp
   src/controller/View.cpp
   src/controller/Picking.cpp

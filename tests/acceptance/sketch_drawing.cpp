@@ -135,3 +135,93 @@ TEST_CASE("a roughly horizontal line is made horizontal", "[sketch][drawing]") {
     }
     CHECK(horizontal);
 }
+
+TEST_CASE("Tab locks the length so the mouse only aims", "[sketch][drawing][lock]") {
+    app::Controller c;
+    startSketch(c);
+
+    REQUIRE(c.sketchClickAt(300.0f, 300.0f));
+    REQUIRE(c.sketchHoverAt(700.0f, 300.0f));
+
+    for (const char ch : std::string("40")) REQUIRE(c.typeSketchDimension(ch));
+    REQUIRE(c.lockSketchDimension());
+
+    // Locked, and the typed text is spent — it has become a value, not a half-entered string.
+    REQUIRE(c.sketchLockedLength().has_value());
+    CHECK_THAT(*c.sketchLockedLength(), Catch::Matchers::WithinAbs(40.0, 1e-9));
+    CHECK(c.sketchDimensionInput().empty());
+
+    // The whole point of locking: moving the pointer changes the DIRECTION and not the length.
+    // Without it the value the user just decided tracks the mouse and is immediately lost.
+    REQUIRE(c.sketchHoverAt(500.0f, 600.0f));
+    const auto measure = c.sketchPreviewMeasure();
+    REQUIRE(measure.valid);
+    CHECK_THAT(measure.length, Catch::Matchers::WithinAbs(40.0, 1e-6));
+
+    // Clicking commits at the locked length, in the direction the pointer was aiming.
+    REQUIRE(c.sketchClickAt(500.0f, 600.0f));
+    const auto& line = c.activeSketch()->geometry().back();
+    const double dx = line.p[2] - line.p[0];
+    const double dy = line.p[3] - line.p[1];
+    CHECK_THAT(std::sqrt(dx * dx + dy * dy), Catch::Matchers::WithinAbs(40.0, 1e-6));
+
+    // Driving, like a typed dimension — a locked length that the solver can undo was never locked.
+    bool driven = false;
+    for (const auto& constraint : c.activeSketch()->constraints()) {
+        if (constraint.kind == sketch::ConstraintKind::Distance
+            && std::abs(constraint.value - 40.0) < 1e-9) {
+            driven = true;
+        }
+    }
+    CHECK(driven);
+
+    // Spent on commit. A lock that survived into the next segment would silently force every
+    // following line to 40 mm, which is the opposite of helpful.
+    CHECK_FALSE(c.sketchLockedLength().has_value());
+}
+
+TEST_CASE("what Tab refuses to lock", "[sketch][drawing][lock]") {
+    app::Controller c;
+    startSketch(c);
+
+    // Nothing typed and nothing pending: Tab is a shell shortcut, not a dimension lock.
+    CHECK_FALSE(c.lockSketchDimension());
+
+    REQUIRE(c.sketchClickAt(300.0f, 300.0f));
+    REQUIRE(c.sketchHoverAt(700.0f, 300.0f));
+
+    // Nothing typed, but a shape is pending: locking the CURRENT measured length is a reasonable
+    // reading, and it is the one Fusion offers — Tab with an empty box locks what is shown.
+    REQUIRE(c.lockSketchDimension());
+    REQUIRE(c.sketchLockedLength().has_value());
+
+    c.endSketchChain();
+    // Escape clears the lock with the chain. A lock outliving the run it belonged to would apply
+    // to a segment the user never sized.
+    CHECK_FALSE(c.sketchLockedLength().has_value());
+
+    REQUIRE(c.sketchClickAt(300.0f, 300.0f));
+    REQUIRE(c.sketchHoverAt(700.0f, 300.0f));
+    for (const char ch : std::string("xx")) c.typeSketchDimension(ch);
+    // Unparseable text locks nothing and leaves the text alone, so the user can correct it.
+    CHECK_FALSE(c.lockSketchDimension());
+    CHECK_FALSE(c.sketchLockedLength().has_value());
+    CHECK(c.sketchDimensionInput() == "xx");
+}
+
+TEST_CASE("a double click ends the chain", "[sketch][drawing]") {
+    app::Controller c;
+    startSketch(c);
+
+    REQUIRE(c.sketchClickAt(300.0f, 300.0f));
+    REQUIRE(c.sketchClickAt(500.0f, 300.0f));
+    REQUIRE(c.sketchPending().has_value());
+
+    // Qt delivers press, release, then a DOUBLE-CLICK event in place of the second press — so the
+    // second click never reaches sketchClickAt and the chain cannot end by itself. This is the
+    // event the shell forwards.
+    c.endSketchChain();
+    CHECK_FALSE(c.sketchPending().has_value());
+    CHECK(c.activeSketch()->geometry().size() == 1);
+    CHECK(c.sketchTool() == app::Controller::SketchTool::Line);
+}

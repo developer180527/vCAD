@@ -93,7 +93,16 @@ TEST_CASE("typing a length commits at that length, with a constraint", "[sketch]
 
     // The input is spent, not left to leak into the next shape.
     CHECK(c.sketchDimensionInput().empty());
-    CHECK_FALSE(c.sketchPending().has_value());
+
+    // And the CHAIN CONTINUES from the new endpoint, exactly as a click does. This assertion was
+    // reversed until the drawing was extracted: typing a length ended the run while clicking
+    // continued it, so the same segment behaved differently depending on how its length was given.
+    // Fusion continues the chain in both cases, and one tool with two behaviours is a wart, not a
+    // feature.
+    CHECK(c.sketchPending().has_value());
+    const auto& tip = c.activeSketch()->geometry().back();
+    CHECK_THAT((*c.sketchPending())[0], Catch::Matchers::WithinAbs(tip.p[2], 1e-9));
+    CHECK_THAT((*c.sketchPending())[1], Catch::Matchers::WithinAbs(tip.p[3], 1e-9));
 }
 
 TEST_CASE("a typed radius drives the circle", "[sketch][dimension]") {

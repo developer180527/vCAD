@@ -1,0 +1,362 @@
+#include "cad/app/SketchDrawing.h"
+
+#include <cmath>
+#include <numbers>
+
+namespace cad::app {
+
+void SketchDrawing::setTool(Tool next) {
+    if (tool_ == next) return;
+    tool_ = next;
+    endChain();
+}
+
+void SketchDrawing::endChain() {
+    pending_.reset();
+    hover_.reset();
+    input_.clear();
+    // The lock belonged to the run that just ended. Carried over, it would size a segment the user
+    // never asked about.
+    locked_.reset();
+}
+
+void SketchDrawing::clear(const Context& ctx) {
+    if (ctx.sketch == nullptr) return;
+    *ctx.sketch = sketch::Sketch(ctx.sketch->plane());
+    endChain();
+}
+
+std::optional<SketchDrawing::Point> SketchDrawing::aimed() const {
+    if (!pending_ || !hover_) return std::nullopt;
+    const double dx = (*hover_)[0] - (*pending_)[0];
+    const double dy = (*hover_)[1] - (*pending_)[1];
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (!locked_ || length < 1e-9) return hover_;
+    const double scale = *locked_ / length;
+    return Point{(*pending_)[0] + dx * scale, (*pending_)[1] + dy * scale};
+}
+
+std::optional<SketchDrawing::Point> SketchDrawing::snap(const Context& ctx, Point at) const {
+    if (ctx.sketch == nullptr) return std::nullopt;
+
+    // A tolerance in PIXELS converted to sketch units. A fixed millimetre tolerance snaps from
+    // across the screen when zoomed out and never snaps when zoomed in.
+    const double tolerance = ctx.worldPerPixel * kSnapPixels;
+
+    std::optional<Point> best;
+    double nearest = tolerance;
+    const auto consider = [&](double u, double v) {
+        const double dx = u - at[0];
+        const double dy = v - at[1];
+        const double distance = std::sqrt(dx * dx + dy * dy);
+        if (distance <= nearest) {
+            nearest = distance;
+            best = Point{u, v};
+        }
+    };
+
+    for (const auto& g : ctx.sketch->geometry()) {
+        switch (g.kind) {
+            case sketch::GeoKind::Line:
+                consider(g.p[0], g.p[1]);
+                consider(g.p[2], g.p[3]);
+                break;
+            case sketch::GeoKind::Circle:
+            case sketch::GeoKind::Arc:
+                consider(g.p[0], g.p[1]);   // the centre
+                break;
+            case sketch::GeoKind::Point:
+                consider(g.p[0], g.p[1]);
+                break;
+        }
+    }
+    // The sketch origin, which is what a user aims at to anchor a shape.
+    consider(0.0, 0.0);
+    return best;
+}
+
+bool SketchDrawing::closesLoop(const Context& ctx, Point at) const {
+    if (ctx.sketch == nullptr) return false;
+    // Exact, because the point has already been snapped: a loop closes when the click landed ON an
+    // existing endpoint, not merely near one.
+    int touching = 0;
+    for (const auto& g : ctx.sketch->geometry()) {
+        if (g.kind != sketch::GeoKind::Line) continue;
+        if (std::abs(g.p[0] - at[0]) < 1e-9 && std::abs(g.p[1] - at[1]) < 1e-9) ++touching;
+        if (std::abs(g.p[2] - at[0]) < 1e-9 && std::abs(g.p[3] - at[1]) < 1e-9) ++touching;
+    }
+    // Two segments meeting here means the run has come back on itself. One is just the segment that
+    // was only this moment drawn.
+    return touching >= 2;
+}
+
+void SketchDrawing::infer(const Context& ctx, sketch::GeoId id, Point from, Point to) const {
+    if (ctx.sketch == nullptr) return;
+
+    // Horizontal and vertical only. They are the two a hand aims at constantly, and the two whose
+    // absence leaves an otherwise careful sketch under-constrained — which is the difference between
+    // a parametric sketch and a drawing.
+    const double dx = std::abs(to[0] - from[0]);
+    const double dy = std::abs(to[1] - from[1]);
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) return;
+
+    // A few degrees of tolerance: a user aiming at horizontal misses by a pixel or two, and a rule
+    // that only fires on an exact match never fires at all.
+    constexpr double kTolerance = 0.05;   // sin of ~3 degrees
+    if (dy / length < kTolerance) {
+        ctx.sketch->horizontal(id);
+    } else if (dx / length < kTolerance) {
+        ctx.sketch->vertical(id);
+    }
+}
+
+SketchDrawing::Outcome SketchDrawing::click(const Context& ctx, Point at) {
+    Outcome out;
+    if (ctx.sketch == nullptr || tool_ == Tool::Select) return out;
+
+    // Snapped BEFORE anything else uses it, so the point that starts a segment and the point that
+    // ends one are the same point when they should be.
+    if (const auto snapped = snap(ctx, at)) at = *snapped;
+
+    out.used = true;
+
+    if (!pending_) {
+        pending_ = at;
+        hover_ = at;
+        out.status = tool_ == Tool::Line ? "Line: click the next point, Escape to finish"
+                                        : "Circle: click to set the radius";
+        return out;
+    }
+
+    const Point first = *pending_;
+    double dx = at[0] - first[0];
+    double dy = at[1] - first[1];
+    double length = std::sqrt(dx * dx + dy * dy);
+
+    // A locked length moves the click along the direction it was aiming: the pointer chose the
+    // heading, Tab chose the size.
+    if (locked_ && length > 1e-9) {
+        const double scale = *locked_ / length;
+        at = Point{first[0] + dx * scale, first[1] + dy * scale};
+        dx *= scale;
+        dy *= scale;
+        length = *locked_;
+    }
+
+    if (length < 1e-9) {
+        // A second click on the same point is how a user says "done" with the mouse alone.
+        endChain();
+        return out;
+    }
+
+    if (tool_ == Tool::Circle) {
+        ctx.sketch->addCircle(first[0], first[1], length);
+        endChain();
+    } else {
+        const auto id = ctx.sketch->addLine(first[0], first[1], at[0], at[1]);
+        infer(ctx, id, first, at);
+        if (locked_) {
+            // DRIVING, like a typed dimension. A locked length the solver may undo was never
+            // locked — it was a coincidence that held until something moved.
+            ctx.sketch->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End, *locked_);
+            locked_.reset();
+        }
+
+        // CHAINING: the endpoint becomes the next segment's start. Click, click, click draws a
+        // connected run, which is the whole behaviour of a CAD line tool.
+        pending_ = at;
+        hover_ = at;
+        input_.clear();
+
+        // Back onto a point the chain already used: the loop is closed and the run is over. Checked
+        // after the segment is added, so the closing segment itself is drawn.
+        if (closesLoop(ctx, at)) endChain();
+    }
+
+    out.geometryChanged = true;
+    return out;
+}
+
+bool SketchDrawing::hover(const Context& ctx, Point at) {
+    // Only while a shape is half-drawn. Before the first click the pointer says nothing about what
+    // is being made, and following it anyway would draw a band from the origin to the mouse.
+    if (!pending_ || ctx.sketch == nullptr) return false;
+    if (hover_ && std::abs((*hover_)[0] - at[0]) < 1e-9 && std::abs((*hover_)[1] - at[1]) < 1e-9) {
+        return false;   // no movement worth a repaint
+    }
+    hover_ = at;
+    return true;
+}
+
+bool SketchDrawing::type(char c) {
+    // Only while something is pending: a digit typed with nothing half-drawn is a shortcut, not a
+    // dimension, and swallowing it would make the keyboard feel dead.
+    if (!pending_) return false;
+    const bool digit = c >= '0' && c <= '9';
+    const bool separator = c == '.' || c == ',';
+    // Unit letters are accepted so "12mm" parses; units::parseLength decides what is actually
+    // valid, and it is the one place that knows.
+    const bool unit = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    if (!digit && !separator && !unit) return false;
+    input_.push_back(c);
+    return true;
+}
+
+void SketchDrawing::backspace() {
+    if (!input_.empty()) input_.pop_back();
+}
+
+void SketchDrawing::clearInput() { input_.clear(); }
+
+bool SketchDrawing::lock(const Context& ctx) {
+    if (!pending_ || !hover_) return false;
+
+    if (!input_.empty()) {
+        auto parsed = units::parseLength(input_, ctx.displayUnits);
+        // Text left alone rather than cleared, so the user can fix a typo instead of retyping.
+        if (!parsed || !(parsed.value().base() > 0.0)) return false;
+        locked_ = parsed.value().base();
+        input_.clear();
+        return true;
+    }
+
+    // Tab on an empty field locks what is currently SHOWN, which is what a user means when they
+    // have dragged to roughly the right size and want it to stop moving.
+    const Measure current = measure();
+    if (!current.valid || !(current.length > 0.0)) return false;
+    locked_ = current.length;
+    return true;
+}
+
+SketchDrawing::Outcome SketchDrawing::commitTyped(const Context& ctx) {
+    Outcome out;
+    if (!pending_ || !hover_ || input_.empty() || ctx.sketch == nullptr) return out;
+
+    auto parsed = units::parseLength(input_, ctx.displayUnits);
+    if (!parsed) {
+        out.status = parsed.error().message;
+        return out;
+    }
+    const double value = parsed.value().base();
+    if (!(value > 0.0)) {
+        out.status = "A dimension has to be greater than zero.";
+        return out;
+    }
+
+    // The DIRECTION comes from the pointer and the SIZE from the number. That is what makes typing
+    // feel like drawing: you aim with the mouse and say how far with the keyboard.
+    const double dx = (*hover_)[0] - (*pending_)[0];
+    const double dy = (*hover_)[1] - (*pending_)[1];
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) {
+        out.status = "Point the cursor in the direction first.";
+        return out;
+    }
+
+    const Point first = *pending_;
+    const Point at{first[0] + dx / length * value, first[1] + dy / length * value};
+
+    if (tool_ == Tool::Circle) {
+        const auto id = ctx.sketch->addCircle(first[0], first[1], value);
+        // A DRIVING dimension, not merely geometry that happens to be this size. Without the
+        // constraint the number is forgotten the instant anything else moves.
+        ctx.sketch->radius(id, value);
+        endChain();
+    } else {
+        const auto id = ctx.sketch->addLine(first[0], first[1], at[0], at[1]);
+        infer(ctx, id, first, at);
+        ctx.sketch->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End, value);
+        // Typing a length ends the segment but CONTINUES the chain, exactly as a click does.
+        pending_ = at;
+        hover_ = at;
+        input_.clear();
+        locked_.reset();
+        if (closesLoop(ctx, at)) endChain();
+    }
+
+    out.used = true;
+    out.geometryChanged = true;
+    return out;
+}
+
+SketchDrawing::Measure SketchDrawing::measure() const {
+    Measure out;
+    if (!pending_ || !hover_) return out;
+
+    const double dx = (*hover_)[0] - (*pending_)[0];
+    const double dy = (*hover_)[1] - (*pending_)[1];
+    // The lock wins: that is what locking means, and the rubber band has to show the same or the
+    // preview and the result would disagree.
+    out.length = locked_ ? *locked_ : std::sqrt(dx * dx + dy * dy);
+    out.circle = tool_ == Tool::Circle;
+    // Degrees from the sketch's own +u axis, not the world's X. The number has to mean something in
+    // the plane being drawn on, or it is nonsense on a tilted face.
+    out.angle = out.circle ? 0.0 : std::atan2(dy, dx) * 180.0 / std::numbers::pi;
+    out.valid = true;
+    return out;
+}
+
+SketchDrawing::Text SketchDrawing::text(units::UnitSystem display) const {
+    Text out;
+    const Measure current = measure();
+    if (!current.valid) return out;
+
+    // What the user TYPED wins, because that is the value that will be used — showing the measured
+    // length beside a number being typed to replace it is showing two answers to one question.
+    out.length = input_.empty() ? units::format(units::millimetres(current.length), display, 2)
+                                : input_;
+    if (current.circle) {
+        out.length = "R " + out.length;
+    } else {
+        out.angle = units::format(units::degrees(current.angle), 1);
+    }
+    out.valid = true;
+    return out;
+}
+
+std::vector<SketchDrawing::Point> SketchDrawing::previewSegments(const Context& ctx) const {
+    std::vector<Point> out;
+    const auto end = aimed();
+    if (!pending_ || !end) return out;
+
+    // DASHED, and dashed in screen terms. A preview must be distinguishable from committed geometry
+    // at a glance, and a dash measured in world units becomes a solid line zoomed in and a row of
+    // dots zoomed out — which is when it is least readable.
+    const double dash = std::max(1e-6, ctx.worldPerPixel) * 6.0;   // ~6 px on, 6 px off
+    const auto emit = [&](Point a, Point b) {
+        const double dx = b[0] - a[0];
+        const double dy = b[1] - a[1];
+        const double length = std::sqrt(dx * dx + dy * dy);
+        if (length < 1e-12) return;
+        // Capped so a wildly zoomed-out view cannot ask for a million sub-pixel segments mid-drag,
+        // where the dashes read as a solid line anyway.
+        const int steps = static_cast<int>(std::min(2000.0, std::ceil(length / (dash * 2.0))));
+        for (int i = 0; i < steps; ++i) {
+            const double t0 = std::min(1.0, (i * 2.0 * dash) / length);
+            const double t1 = std::min(1.0, (i * 2.0 * dash + dash) / length);
+            out.push_back(Point{a[0] + dx * t0, a[1] + dy * t0});
+            out.push_back(Point{a[0] + dx * t1, a[1] + dy * t1});
+        }
+    };
+
+    if (tool_ == Tool::Circle) {
+        const double dx = (*end)[0] - (*pending_)[0];
+        const double dy = (*end)[1] - (*pending_)[1];
+        const double radius = std::sqrt(dx * dx + dy * dy);
+        constexpr int kSegments = 64;
+        for (int i = 0; i < kSegments; ++i) {
+            const double a0 = 2.0 * std::numbers::pi * i / kSegments;
+            const double a1 = 2.0 * std::numbers::pi * (i + 1) / kSegments;
+            emit(Point{(*pending_)[0] + radius * std::cos(a0),
+                       (*pending_)[1] + radius * std::sin(a0)},
+                 Point{(*pending_)[0] + radius * std::cos(a1),
+                       (*pending_)[1] + radius * std::sin(a1)});
+        }
+    } else {
+        emit(*pending_, *end);
+    }
+    return out;
+}
+
+}  // namespace cad::app

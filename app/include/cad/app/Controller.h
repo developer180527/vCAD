@@ -10,6 +10,7 @@
 // implement them. tools/check_layering.py enforces the no-Qt half.
 
 #include "cad/app/Model.h"
+#include "cad/app/SketchDrawing.h"
 #include "cad/document/Document.h"
 #include "cad/recompute/DdcCache.h"
 #include "cad/features/Builtins.h"
@@ -446,9 +447,11 @@ public:
     /// Model state rather than shell state, for the same reason the pick is: two shells must agree
     /// on what a click does, and a tool that lived in one shell's canvas would have to be
     /// reimplemented — and re-debugged — in the next one.
-    enum class SketchTool { Select, Line, Circle };
+    /// Kept as an alias so `Controller::SketchTool::Line` still names the same thing for the two
+    /// shells and every test. The tool itself belongs to SketchDrawing now.
+    using SketchTool = SketchDrawing::Tool;
 
-    [[nodiscard]] SketchTool sketchTool() const noexcept { return sketchTool_; }
+    [[nodiscard]] SketchTool sketchTool() const noexcept { return drawing_.tool(); }
 
     /// Switching tools ABANDONS a half-drawn shape. A line waiting for its second point is not
     /// something to carry into the circle tool, and silently keeping it is how a stray segment
@@ -511,7 +514,7 @@ public:
     /// pointer happens to be, and gains a driving dimension. That is a modelling rule, and a shell
     /// holding it would have to reimplement the same rule to behave the same way.
     [[nodiscard]] const std::string& sketchDimensionInput() const noexcept {
-        return sketchInput_;
+        return drawing_.input();
     }
 
     /// Appends a character, ignoring anything that cannot appear in a length. Returns whether it
@@ -520,6 +523,21 @@ public:
     void backspaceSketchDimension();
     void clearSketchDimension();
 
+    /// Locks the length, so the pointer only chooses the DIRECTION from here on.
+    ///
+    /// Tab, in every CAD sketcher. Without it a value the user has just decided keeps tracking the
+    /// mouse and is lost the moment they move to aim — which is why the number is worth typing at
+    /// all. Locks the typed text when there is any, and otherwise the length currently shown.
+    ///
+    /// Spent when the segment commits: a lock that survived would silently force every following
+    /// line to the same length.
+    bool lockSketchDimension();
+
+    /// The locked length in millimetres, or nothing. A shell shows a lock beside the field.
+    [[nodiscard]] const std::optional<double>& sketchLockedLength() const noexcept {
+        return drawing_.lockedLength();
+    }
+
     /// Commits the half-drawn shape at the typed size, as if the user had clicked at exactly that
     /// distance. False when nothing is pending or the text will not parse.
     bool commitSketchDimension();
@@ -527,7 +545,7 @@ public:
     /// The pending first point of a two-click tool, for drawing a rubber band. Empty when the next
     /// click starts a shape rather than finishing one.
     [[nodiscard]] const std::optional<std::array<double, 2>>& sketchPending() const noexcept {
-        return sketchPending_;
+        return drawing_.pending();
     }
 
     /// The sketch being edited, as world-space line segments: x,y,z per endpoint, two endpoints
@@ -576,19 +594,9 @@ public:
     /// successful `toFace()` IS the test — and until now spent the answer on a red ERR afterwards.
     void pushSketchProfile();
 
-    /// The nearest snappable point within a few PIXELS of `at`, or nothing.
-    [[nodiscard]] std::optional<std::array<double, 2>> snapSketchPoint(
-        const std::array<double, 2>& at) const;
+    /// The outside facts SketchDrawing needs, gathered fresh for each call.
+    [[nodiscard]] SketchDrawing::Context drawingContext() const;
 
-    /// Whether a click here brings the chain back onto itself.
-    [[nodiscard]] bool closesSketchLoop(const std::array<double, 2>& at) const;
-
-    /// Applies the constraint a hand was obviously aiming for — horizontal or vertical.
-    void inferSketchConstraint(std::uint32_t id, const std::array<double, 2>& from,
-                               const std::array<double, 2>& to);
-
-    /// How close, in pixels, a click has to be to snap. A hand is steady in pixels, not millimetres.
-    static constexpr double kSnapPixels = 10.0;
 
     /// Whether a plain left drag orbits instead of selecting.
     ///
@@ -613,7 +621,7 @@ public:
     /// whatever else happens to be active is not a mode.
     [[nodiscard]] bool leftPressDraws() const noexcept {
         return !orbitMode_ && environment_ == Environment::Sketch
-               && sketchTool_ != SketchTool::Select;
+               && drawing_.tool() != SketchTool::Select;
     }
     void setOrbitMode(bool);
 
@@ -831,15 +839,12 @@ private:
     /// somewhere they never were, which is worse than not restoring at all.
     std::optional<render::CameraController> cameraBeforeSketch_;
 
+    /// The line and circle tools: tool, chain, snapping, inference and dimension entry. Owns every
+    /// piece of sketch-drawing state that used to be loose members of this class.
+    SketchDrawing drawing_;
+
     bool slice_ = false;
     bool orbitMode_ = false;
-    SketchTool sketchTool_ = SketchTool::Select;
-    /// First point of a two-click tool, in sketch coordinates.
-    std::optional<std::array<double, 2>> sketchPending_;
-    /// Where the pointer is, while `sketchPending_` is set. The rubber band's far end.
-    std::optional<std::array<double, 2>> sketchHover_;
-    /// Digits typed to fix the pending shape's size exactly.
-    std::string sketchInput_;
 
     render::CameraController camera_;
     render::Viewport viewport_;

@@ -207,10 +207,8 @@ void Controller::finishSketch() {
     restoreCameraAfterSketch();
     // Cleared BEFORE the refresh rebuilds the scene: leaving it up would draw the finished sketch
     // twice, once as the overlay and once as the feature's own edges, fighting for the same pixels.
-    sketchPending_.reset();
-    sketchHover_.reset();
-    sketchInput_.clear();
-    sketchTool_ = SketchTool::Select;
+    drawing_.endChain();
+    drawing_.setTool(SketchTool::Select);
     pushSketchOverlay();
     refresh();
     status("Finished sketch");
@@ -222,10 +220,8 @@ void Controller::cancelSketch() {
     // Restored on cancel as well as on finish: abandoning a sketch must cost nothing, and putting
     // the view back only when the user commits would punish them for changing their mind.
     restoreCameraAfterSketch();
-    sketchPending_.reset();
-    sketchHover_.reset();
-    sketchInput_.clear();
-    sketchTool_ = SketchTool::Select;
+    drawing_.endChain();
+    drawing_.setTool(SketchTool::Select);
     pushSketchOverlay();
     notifyDocument();
     notifyView();
