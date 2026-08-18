@@ -74,7 +74,7 @@ public:
     /// Here because "the sketch is drawn in the 3D viewport" is a claim about PIXELS. It was
     /// previously true that sketching swapped to a different widget entirely, and no test noticed
     /// — the only thing that can tell the difference is a picture.
-    void drawSketchForShot();
+    void drawSketchForShot(int lines = 2);
 
     /// Selects a row of the model browser, for `--shot --select N`.
     ///

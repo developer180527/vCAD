@@ -178,3 +178,56 @@ TEST_CASE("the sketch overlay draws on top and nothing else does", "[render][ske
     s.scene->setSketchOverlay({}, 2u);
     CHECK(s.scene->frame().edgeBatches.size() == before);
 }
+
+TEST_CASE("the sketch profile shades only when the curves close", "[render][sketch]") {
+    Scene s;
+    const std::size_t before = s.scene->frame().batches.size();
+
+    // A triangle: three vertices, one face.
+    const render::CadVertex verts[]{
+        {{0, 0, 0}, {0, 0, 1}, 0}, {{10, 0, 0}, {0, 0, 1}, 0}, {{0, 10, 0}, {0, 0, 1}, 0}};
+    const std::uint32_t idx[]{0, 1, 2};
+
+    s.scene->setSketchProfile(verts, idx, 1u);
+    const auto& batches = s.scene->frame().batches;
+    REQUIRE(batches.size() == before + 1);
+
+    const render::Batch& profile = batches.back();
+    CHECK(profile.indexCount == 3);
+    // Blended, double-sided and on top. On top is the load-bearing one: the body being sketched
+    // against usually sits between the sketch plane and the camera, so a depth-tested fill is
+    // hidden inside the solid and the user sees edges enclosing nothing.
+    CHECK(profile.blended);
+    CHECK(profile.doubleSided);
+    CHECK(profile.onTop);
+
+    // And ONLY it. A model batch drawing on top would turn the part into a wireframe.
+    for (std::size_t i = 0; i < batches.size() - 1; ++i) {
+        CHECK_FALSE(batches[i].blended);
+        CHECK_FALSE(batches[i].onTop);
+    }
+
+    // An OPEN profile clears the shading. This is the signal: shading appears exactly when the
+    // curves close, so its absence is the answer to "why will this not extrude".
+    s.scene->setSketchProfile({}, {}, 2u);
+    CHECK(s.scene->frame().batches.size() == before);
+}
+
+TEST_CASE("culling does not drop the sketch profile", "[render][sketch]") {
+    Scene s;
+    const std::size_t before = s.scene->frame().batches.size();
+    const render::CadVertex verts[]{
+        {{0, 0, 0}, {0, 0, 1}, 0}, {{10, 0, 0}, {0, 0, 1}, 0}, {{0, 10, 0}, {0, 0, 1}, 0}};
+    const std::uint32_t idx[]{0, 1, 2};
+    s.scene->setSketchProfile(verts, idx, 1u);
+    REQUIRE(s.scene->frame().batches.size() == before + 1);
+
+    // Culling rewrites frame_.batches from its own list, which is exactly how an appended batch
+    // gets silently dropped — on the next camera move, not on the frame that added it.
+    render::CameraController camera;
+    camera.orbit(20.0f, 15.0f);
+    s.scene->setCamera(camera.matrices(render::Viewport{1280, 800, 1.0f}));
+
+    CHECK(s.scene->frame().batches.size() == before + 1);
+    CHECK(s.scene->frame().batches.back().blended);
+}

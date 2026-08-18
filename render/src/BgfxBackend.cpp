@@ -249,6 +249,40 @@ public:
         return slot.id;
     }
 
+    BufferId uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,
+                                   std::span<const CadVertex> v) override {
+        if (v.empty()) return BufferId::None;
+        return uploadDynamic(dynamicVertexBuffers_, key, revision, v.data(), v.size_bytes(),
+                             cadVertexLayout(), Kind::DynamicVertex);
+    }
+
+    BufferId uploadDynamicIndices(std::uint64_t key, std::uint64_t revision,
+                                  std::span<const std::uint32_t> i) override {
+        if (i.empty()) return BufferId::None;
+        auto& slot = dynamicIndexBuffers_[key];
+        if (slot.id != BufferId::None && slot.revision == revision) return slot.id;
+        const bgfx::Memory* mem = bgfx::copy(i.data(), static_cast<std::uint32_t>(i.size_bytes()));
+        if (slot.id == BufferId::None) {
+            // INDEX32 and ALLOW_RESIZE, for the same reasons the static index path gives: 16-bit
+            // truncation renders convincing garbage, and a growing sketch must not be trimmed.
+            const auto h = bgfx::createDynamicIndexBuffer(
+                mem, BGFX_BUFFER_INDEX32 | BGFX_BUFFER_ALLOW_RESIZE);
+            if (!bgfx::isValid(h)) return BufferId::None;
+            slot.id = BufferId{next_++};
+            entries_.emplace(static_cast<std::uint64_t>(slot.id),
+                             Entry{h.idx, Kind::DynamicIndex, i.size_bytes()});
+            resident_ += i.size_bytes();
+        } else {
+            Entry& entry = entries_.at(static_cast<std::uint64_t>(slot.id));
+            bgfx::update(bgfx::DynamicIndexBufferHandle{entry.idx}, 0, mem);
+            resident_ -= entry.bytes;
+            entry.bytes = i.size_bytes();
+            resident_ += entry.bytes;
+        }
+        slot.revision = revision;
+        return slot.id;
+    }
+
     BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
                                        std::span<const float> f) override {
         if (f.empty()) return BufferId::None;
@@ -291,7 +325,11 @@ public:
                 break;
             case Kind::Instance:
             case Kind::DynamicEdge:
+            case Kind::DynamicVertex:
                 bgfx::destroy(bgfx::DynamicVertexBufferHandle{it->second.idx});
+                break;
+            case Kind::DynamicIndex:
+                bgfx::destroy(bgfx::DynamicIndexBufferHandle{it->second.idx});
                 break;
         }
         resident_ -= it->second.bytes;
@@ -309,7 +347,8 @@ public:
 
     [[nodiscard]] std::uint64_t residentBytes() const override { return resident_; }
 
-    enum class Kind : std::uint8_t { Vertex, Index, Edge, Instance, DynamicEdge };
+    enum class Kind : std::uint8_t { Vertex, Index, Edge, Instance, DynamicEdge,
+                                     DynamicVertex, DynamicIndex };
     struct Entry {
         std::uint16_t idx = bgfx::kInvalidHandle;
         Kind kind = Kind::Vertex;
@@ -335,7 +374,11 @@ public:
                     break;
                 case Kind::Instance:
                 case Kind::DynamicEdge:
+                case Kind::DynamicVertex:
                     bgfx::destroy(bgfx::DynamicVertexBufferHandle{entry.idx});
+                    break;
+                case Kind::DynamicIndex:
+                    bgfx::destroy(bgfx::DynamicIndexBufferHandle{entry.idx});
                     break;
             }
         }
@@ -373,10 +416,37 @@ private:
 
     std::unordered_map<std::string, BufferId> byContent_;
     std::unordered_map<std::uint64_t, Entry> entries_;
+    /// The common body of the dynamic vertex uploads: same slot, same resize rule, different
+    /// layout and kind. Written once because the three copies differed only in those two.
+    BufferId uploadDynamic(std::unordered_map<std::uint64_t, InstanceSlot>& slots,
+                           std::uint64_t key, std::uint64_t revision, const void* data,
+                           std::size_t bytes, const bgfx::VertexLayout& layout, Kind kind) {
+        auto& slot = slots[key];
+        if (slot.id != BufferId::None && slot.revision == revision) return slot.id;
+        const bgfx::Memory* mem = bgfx::copy(data, static_cast<std::uint32_t>(bytes));
+        if (slot.id == BufferId::None) {
+            const auto h = bgfx::createDynamicVertexBuffer(mem, layout, BGFX_BUFFER_ALLOW_RESIZE);
+            if (!bgfx::isValid(h)) return BufferId::None;
+            slot.id = BufferId{next_++};
+            entries_.emplace(static_cast<std::uint64_t>(slot.id), Entry{h.idx, kind, bytes});
+            resident_ += bytes;
+        } else {
+            Entry& entry = entries_.at(static_cast<std::uint64_t>(slot.id));
+            bgfx::update(bgfx::DynamicVertexBufferHandle{entry.idx}, 0, mem);
+            resident_ -= entry.bytes;
+            entry.bytes = bytes;
+            resident_ += entry.bytes;
+        }
+        slot.revision = revision;
+        return slot.id;
+    }
+
     std::unordered_map<std::uint64_t, InstanceSlot> instanceBuffers_;
     /// Same slot shape as the instance buffers, and keyed the same way: one buffer per owner for
     /// the life of an editing session rather than one per edit.
     std::unordered_map<std::uint64_t, InstanceSlot> dynamicEdgeBuffers_;
+    std::unordered_map<std::uint64_t, InstanceSlot> dynamicVertexBuffers_;
+    std::unordered_map<std::uint64_t, InstanceSlot> dynamicIndexBuffers_;
     std::uint64_t next_ = 1;
     std::uint64_t resident_ = 0;
 };
@@ -581,9 +651,22 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
             if (range.instanceCount == 0) continue;
             stats.instancesRequested += range.instanceCount;
 
-            bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx});
-            bgfx::setIndexBuffer(bgfx::IndexBufferHandle{ib->idx}, batch.indexOffset,
-                                 batch.indexCount);
+            // Handle TYPE has to match how the buffer was made. bgfx handles are bare indices
+            // over separate pools, so binding a dynamic buffer through a static handle is not a
+            // type error — it reaches the driver as an attribute with no stride and asserts. The
+            // sketch profile is the only dynamic mesh, and this is where it enters.
+            if (vb->kind == BgfxResources::Kind::DynamicVertex) {
+                bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx});
+            } else {
+                bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx});
+            }
+            if (ib->kind == BgfxResources::Kind::DynamicIndex) {
+                bgfx::setIndexBuffer(bgfx::DynamicIndexBufferHandle{ib->idx}, batch.indexOffset,
+                                     batch.indexCount);
+            } else {
+                bgfx::setIndexBuffer(bgfx::IndexBufferHandle{ib->idx}, batch.indexOffset,
+                                     batch.indexCount);
+            }
             // From the PERSISTENT buffer, at an offset. No copy, no per-frame budget, and
             // therefore no silent truncation.
             bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},
@@ -594,7 +677,18 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
             // already lights both sides. Culling would buy nothing except a second silent way
             // to render an empty frame. Revisit only with a measurement showing overdraw
             // actually costs us.
-            bgfx::setState(state);
+            // A translucent batch blends and does NOT write depth. Writing depth would occlude
+            // the model in the depth buffer while still showing it through the colour buffer, so
+            // edges drawn afterwards would disappear for no visible reason.
+            std::uint64_t drawState = state;
+            if (batch.blended) {
+                drawState = (drawState & ~BGFX_STATE_WRITE_Z) | BGFX_STATE_BLEND_ALPHA;
+            }
+            if (batch.onTop) {
+                drawState = (drawState & ~BGFX_STATE_DEPTH_TEST_MASK)
+                            | BGFX_STATE_DEPTH_TEST_ALWAYS;
+            }
+            bgfx::setState(drawState);
             bgfx::submit(view, program);
 
             ++calls;

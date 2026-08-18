@@ -1137,7 +1137,7 @@ void MainWindow::showPluginManager() {
 
 void MainWindow::openPluginManagerForShot() { showPluginManager(); }
 
-void MainWindow::drawSketchForShot() {
+void MainWindow::drawSketchForShot(int lines) {
     auto* c = controller();
     if (c == nullptr) return;
     c->beginSketch();
@@ -1150,14 +1150,21 @@ void MainWindow::drawSketchForShot() {
     const float dpr = static_cast<float>(view->devicePixelRatioF());
     const float w = static_cast<float>(view->width()) * dpr;
     const float h = static_cast<float>(view->height()) * dpr;
-    c->sketchClickAt(w * 0.35f, h * 0.35f);
-    c->sketchClickAt(w * 0.65f, h * 0.40f);
-    c->sketchClickAt(w * 0.65f, h * 0.40f);
-    c->sketchClickAt(w * 0.55f, h * 0.65f);
-    // A third click with no partner, then a hover: this leaves the rubber band on screen, which is
-    // the state a screenshot has to capture because it exists only between two clicks.
-    c->sketchClickAt(w * 0.30f, h * 0.55f);
-    c->sketchHoverAt(w * 0.50f, h * 0.80f);
+    // `lines` is how many segments to draw. ZERO leaves the seeded rectangle closed, which is the
+    // only way to photograph the shaded profile — adding any stray line opens it, and an open
+    // profile deliberately shades nothing.
+    if (lines > 0) {
+        c->sketchClickAt(w * 0.35f, h * 0.35f);
+        c->sketchClickAt(w * 0.65f, h * 0.40f);
+    }
+    if (lines > 1) {
+        c->sketchClickAt(w * 0.65f, h * 0.40f);
+        c->sketchClickAt(w * 0.55f, h * 0.65f);
+        // A third click with no partner, then a hover: this leaves the rubber band on screen,
+        // which a screenshot can only catch because it exists between two clicks.
+        c->sketchClickAt(w * 0.30f, h * 0.55f);
+        c->sketchHoverAt(w * 0.50f, h * 0.80f);
+    }
     view->markDirty();
 }
 

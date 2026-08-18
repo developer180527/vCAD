@@ -25,6 +25,10 @@ public:
     BufferId uploadEdgeVertices(const kernel::ShapeHash&, std::span<const float>) override;
     BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
                                        std::span<const float>) override;
+    BufferId uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,
+                                   std::span<const CadVertex>) override;
+    BufferId uploadDynamicIndices(std::uint64_t key, std::uint64_t revision,
+                                  std::span<const std::uint32_t>) override;
     BufferId uploadInstances(std::uint64_t key, std::uint64_t revision,
                              std::span<const Instance>) override;
     void release(BufferId) override;
@@ -62,6 +66,7 @@ private:
     std::unordered_map<std::string, BufferId> byContent_;
     std::unordered_map<std::uint64_t, InstanceBuffer> instanceBuffers_;   ///< keyed by batch key
     std::unordered_map<std::uint64_t, InstanceBuffer> dynamicEdgeBuffers_;  ///< keyed by owner
+    std::unordered_map<std::uint64_t, InstanceBuffer> dynamicMeshBuffers_;  ///< vertices and indices
     std::unordered_map<std::uint64_t, std::uint64_t> sizes_;
     std::uint64_t next_ = 1;
     std::uint64_t residentBytes_ = 0;

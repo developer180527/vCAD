@@ -204,6 +204,7 @@ void SceneBuilder::setHighlight(std::uint32_t element, Highlight h) {
 /// derived from mesh content hashes, so a small constant cannot collide with one.
 constexpr std::uint64_t kSketchOverlayKey = 0x5E7C4000000001ull;
 constexpr std::uint64_t kSketchPreviewKey = 0x5E7C4000000002ull;
+constexpr std::uint64_t kSketchProfileKey = 0x5E7C4000000003ull;
 
 void SceneBuilder::setSketchOverlay(std::span<const float> lineVertices, std::uint64_t revision) {
     if (lineVertices.empty()) {
@@ -241,6 +242,61 @@ void SceneBuilder::ensureSketchInstance() {
     sketchInstance_ = gpu_.uploadInstances(kSketchOverlayKey, 1u,
                                            std::span<const Instance>(&identity, 1));
     sketchRange_.assign(1, DrawRange{0, 1});
+}
+
+void SceneBuilder::setSketchProfile(std::span<const CadVertex> vertices,
+                                    std::span<const std::uint32_t> indices,
+                                    std::uint64_t revision) {
+    if (vertices.empty() || indices.empty()) {
+        profileIndexCount_ = 0;
+        refreshProfileBatch();
+        return;
+    }
+    profileVertices_ = gpu_.uploadDynamicVertices(kSketchProfileKey, revision, vertices);
+    profileIndices_ = gpu_.uploadDynamicIndices(kSketchProfileKey, revision, indices);
+    if (profileVertices_ == BufferId::None || profileIndices_ == BufferId::None) {
+        profileIndexCount_ = 0;
+        refreshProfileBatch();
+        return;
+    }
+    profileIndexCount_ = static_cast<std::uint32_t>(indices.size());
+
+    // Its own instance, because the shaded shader takes its colour from the instance and this one
+    // is blue. Uploaded once; the revision never changes.
+    Instance fill;
+    static constexpr float kIdentity[12]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    std::copy(std::begin(kIdentity), std::end(kIdentity), fill.transform);
+    fill.colour[0] = 0.36f;
+    fill.colour[1] = 0.60f;
+    fill.colour[2] = 0.86f;
+    profileInstance_ = gpu_.uploadInstances(kSketchProfileKey, 1u,
+                                            std::span<const Instance>(&fill, 1));
+    profileRange_.assign(1, DrawRange{0, 1});
+    refreshProfileBatch();
+}
+
+void SceneBuilder::refreshProfileBatch() {
+    // The profile rides on the END of the batch list, rebuilt from the culled batches each time.
+    // Appending to frame_.batches directly would be lost on the next cull, which rewrites it.
+    batchesWithProfile_.assign(batches_.begin(), batches_.end());
+    if (profileIndexCount_ > 0 && profileVertices_ != BufferId::None
+        && profileIndices_ != BufferId::None && profileInstance_ != BufferId::None) {
+        Batch profile;
+        profile.vertices = profileVertices_;
+        profile.indices = profileIndices_;
+        profile.indexOffset = 0;
+        profile.indexCount = profileIndexCount_;
+        profile.instances = profileInstance_;
+        profile.instanceCount = 1;
+        profile.ranges = profileRange_;
+        // Both, and for different reasons: a sketch profile has no meaningful winding, and an
+        // opaque fill would hide the face the user is lining it up against.
+        profile.doubleSided = true;
+        profile.blended = true;
+        profile.onTop = true;
+        batchesWithProfile_.push_back(profile);
+    }
+    frame_.batches = batchesWithProfile_;
 }
 
 void SceneBuilder::setSketchPreview(std::span<const float> lineVertices, std::uint64_t revision) {
@@ -729,6 +785,7 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
     highlights_.assign(elementCount_, Highlight::None);
 
     frame_.batches = batches_;
+    refreshProfileBatch();
     frame_.edgeBatches = edgeBatches_;
     frame_.highlights = highlights_;
     frame_.sections = sections_;
@@ -836,6 +893,9 @@ void SceneBuilder::cull() noexcept {
     // AFTER the ranges are assigned: an overlay copies its base batch's draw ranges, so it has to
     // be rebuilt whenever those change. Culling changes them on every camera move.
     refreshEdgeHighlights();
+    // Same reason: cull rewrites frame_.batches from batches_, which drops the profile appended to
+    // it. Rebuilding here is what keeps the shading on screen while the camera moves.
+    refreshProfileBatch();
 
     cullStats_.ranges = ranges_.size();
     cullStats_.lastCullMs =

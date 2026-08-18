@@ -129,7 +129,7 @@ std::string startLogging(const char* argv0) {
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
                bool home, bool plugins, int select, const QString& settingsPage,
-               bool settings, bool sketch) {
+               bool settings, int sketch) {
     window.show();
 
     // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
@@ -148,7 +148,7 @@ int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path
         if (plugins) window.openPluginManagerForShot();
         // After the document exists, so there is something to select.
         if (select >= 0) window.selectBrowserRowForShot(select);
-        if (sketch) window.drawSketchForShot();
+        if (sketch >= 0) window.drawSketchForShot(sketch);
 
         QTimer::singleShot(0, &app, [&app, &window, path, plugins, settingsPage, settings] {
             const QPixmap shot = settings   ? window.grabSettingsForShot(settingsPage)
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
     bool shotHome = false;
     bool shotPlugins = false;
     bool shotSettings = false;
-    bool shotSketch = false;
+    int shotSketch = -1;
     QString shotSettingsPage;
     int shotSelect = -1;
     for (int i = 1; i < argc; ++i) {
@@ -216,7 +216,11 @@ int main(int argc, char** argv) {
         } else if (arg == QStringLiteral("--home")) {
             shotHome = true;
         } else if (arg == QStringLiteral("--sketch")) {
-            shotSketch = true;
+            shotSketch = 2;
+            // An optional count of lines to draw. 0 keeps the seeded profile closed.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                shotSketch = QString::fromUtf8(argv[++i]).toInt();
+            }
         } else if (arg == QStringLiteral("--plugins")) {
             shotPlugins = true;
         } else if (arg == QStringLiteral("--settings")) {

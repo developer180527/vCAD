@@ -46,6 +46,30 @@ BufferId NullGpuResources::uploadEdgeVertices(const kernel::ShapeHash& hash,
     return intern(hash, 2, f.size() * sizeof(float));
 }
 
+BufferId NullGpuResources::uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,
+                                                 std::span<const CadVertex> data) {
+    if (data.empty()) return BufferId::None;
+    // Keyed on the caller's key XORed with a tag, so vertices and indices for the same owner do
+    // not collide in one map -- they are two buffers with one key.
+    auto& buffer = dynamicMeshBuffers_[key ^ 0x1ull];
+    if (buffer.id != BufferId::None && buffer.revision == revision) return buffer.id;
+    if (buffer.id == BufferId::None) buffer.id = BufferId{next_++};
+    buffer.revision = revision;
+    buffer.bytes = data.size_bytes();
+    return buffer.id;
+}
+
+BufferId NullGpuResources::uploadDynamicIndices(std::uint64_t key, std::uint64_t revision,
+                                                std::span<const std::uint32_t> data) {
+    if (data.empty()) return BufferId::None;
+    auto& buffer = dynamicMeshBuffers_[key ^ 0x2ull];
+    if (buffer.id != BufferId::None && buffer.revision == revision) return buffer.id;
+    if (buffer.id == BufferId::None) buffer.id = BufferId{next_++};
+    buffer.revision = revision;
+    buffer.bytes = data.size_bytes();
+    return buffer.id;
+}
+
 BufferId NullGpuResources::uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
                                                      std::span<const float> data) {
     if (data.empty()) return BufferId::None;

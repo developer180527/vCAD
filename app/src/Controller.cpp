@@ -1585,6 +1585,46 @@ std::uint64_t Controller::sketchOverlayRevision() const {
     return hash;
 }
 
+void Controller::pushSketchProfile() {
+    if (!scene_) return;
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) {
+        scene_->setSketchProfile({}, {}, 0);
+        return;
+    }
+
+    // toFace() refusing is the whole signal: an open profile shades nothing. No error is raised
+    // and none is wanted -- an open sketch is a perfectly good sketch that is not finished yet.
+    auto face = active->toFace();
+    if (!face) {
+        scene_->setSketchProfile({}, {}, 0);
+        return;
+    }
+
+    // NAMED before tessellating. The tessellator assigns every vertex an element index and builds
+    // the element table from the map, so a bare face with an empty map produces no mesh at all --
+    // it fails, silently as far as the viewport is concerned, and the profile simply never appears.
+    naming::NamingContext naming(0, 0);
+    auto map = naming.nameprimitive(face.value(), {});
+    if (!map) {
+        scene_->setSketchProfile({}, {}, 0);
+        return;
+    }
+
+    document::Output out;
+    out.shape = face.value();
+    out.map = std::move(map.value());
+    const auto mesh = render::tessellate(out, render::TessellationSettings{});
+    if (!mesh || mesh.value()->vertices.empty()) {
+        scene_->setSketchProfile({}, {}, 0);
+        return;
+    }
+    // The overlay's revision covers the same geometry, so reusing it means the profile re-uploads
+    // exactly when the curves move and not when the camera does.
+    scene_->setSketchProfile(mesh.value()->vertices, mesh.value()->indices,
+                             sketchOverlayRevision());
+}
+
 void Controller::pushSketchOverlay() {
     if (!scene_) return;
     // Cleared when leaving the sketch, or the finished sketch would be drawn twice: once as the
@@ -1593,6 +1633,7 @@ void Controller::pushSketchOverlay() {
     scene_->setSketchOverlay(lines, sketchOverlayRevision());
     const auto preview = sketchPreviewVertices();
     scene_->setSketchPreview(preview, sketchPreviewRevision());
+    pushSketchProfile();
 }
 
 void Controller::restoreCameraAfterSketch() {

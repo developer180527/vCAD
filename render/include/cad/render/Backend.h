@@ -126,6 +126,27 @@ struct Batch {
     std::span<const DrawRange> ranges;
 
     bool doubleSided = false;
+
+    /// Draw regardless of what is in front of it, exactly as EdgeBatch::onTop does.
+    ///
+    /// For the sketch profile. A sketch lies ON the plane it is drawn on and the body it is being
+    /// drawn against usually sits between that plane and the camera — so a depth-tested fill is
+    /// hidden inside the solid, and the user sees the sketch's edges (which already draw on top)
+    /// enclosing nothing. The shading is meant to answer "is this closed", and an answer that only
+    /// appears when nothing is in the way is not an answer.
+    bool onTop = false;
+
+    /// Alpha-blended, and not writing depth.
+    ///
+    /// **This does not yet make the fill see-through.** The shaded fragment shader emits alpha 1,
+    /// so blending against it is opaque; per-instance alpha needs a uniform, because i_data3.w
+    /// already carries the element-id base. The sketch profile is therefore an opaque fill today.
+    /// It is named for what it sets, not for the look it is aiming at.
+    ///
+    /// The depth-write suppression is doing real work regardless: a surface drawn over the model
+    /// that wrote depth would occlude it in the depth buffer while showing it through the colour
+    /// buffer, so edges drawn afterwards would vanish for no visible reason.
+    bool blended = false;
 };
 
 /// Edge batch. Separate stream: line primitives, own pass, own depth bias (ADR 0007
@@ -229,6 +250,15 @@ public:
     /// long it runs, and a frame where nothing changed re-uploads nothing.
     virtual BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
                                                std::span<const float>) = 0;
+
+    /// Triangle geometry that CHANGES, keyed and revisioned like the dynamic edges.
+    ///
+    /// For the shaded profile of the sketch being edited: it is re-triangulated whenever a curve
+    /// moves, so content hashing it would mint a mesh per stroke and keep every one.
+    virtual BufferId uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,
+                                           std::span<const CadVertex>) = 0;
+    virtual BufferId uploadDynamicIndices(std::uint64_t key, std::uint64_t revision,
+                                          std::span<const std::uint32_t>) = 0;
 
     virtual void release(BufferId) = 0;
 

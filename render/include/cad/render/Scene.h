@@ -98,6 +98,17 @@ public:
     /// which keeps the shader free of a stipple pattern that every backend would have to agree on.
     void setSketchPreview(std::span<const float> lineVertices, std::uint64_t revision);
 
+    /// Shades the closed region of the sketch being edited.
+    ///
+    /// This is how a user learns their curves form a profile BEFORE pressing Extrude. Without it
+    /// the same information arrives as a failed feature afterwards — the identical fact, delivered
+    /// later and as an error. Fusion, SolidWorks and Inventor all shade it live; see
+    /// docs/design/MODELLING_UX.md.
+    ///
+    /// Empty spans clear it, which is what an open profile looks like: nothing shaded.
+    void setSketchProfile(std::span<const CadVertex> vertices,
+                          std::span<const std::uint32_t> indices, std::uint64_t revision);
+
     void setHighlight(const naming::ElementName&, Highlight);
 
     /// By absolute element SLOT, as returned by a pick. O(1), and the only one hover should use
@@ -218,8 +229,17 @@ private:
     /// Uploads the shared identity instance the two sketch batches ride on, once.
     void ensureSketchInstance();
 
+    /// Rebuilds frame_.batches as the culled batches plus the profile, if there is one.
+    void refreshProfileBatch();
+
     BufferId previewVertices_ = BufferId::None;
     std::uint32_t previewVertexCount_ = 0;
+    BufferId profileVertices_ = BufferId::None;
+    BufferId profileIndices_ = BufferId::None;
+    BufferId profileInstance_ = BufferId::None;
+    std::uint32_t profileIndexCount_ = 0;
+    std::vector<DrawRange> profileRange_;
+    std::vector<Batch> batchesWithProfile_;
     /// Batch index -> group index, because a group contributes a shaded batch, an edge batch,
     /// both or neither, so the three vectors are not parallel.
     std::vector<std::uint32_t> batchGroup_;

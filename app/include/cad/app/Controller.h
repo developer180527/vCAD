@@ -586,6 +586,13 @@ public:
     [[nodiscard]] std::vector<float> sketchPreviewVertices() const;
     [[nodiscard]] std::uint64_t sketchPreviewRevision() const;
 
+    /// Hands the closed region of the sketch being edited to the scene, shaded.
+    ///
+    /// The signal a user needs BEFORE pressing Extrude: shading appears exactly when the curves
+    /// form a profile and disappears the moment they do not. vCAD already computed this — a
+    /// successful `toFace()` IS the test — and until now spent the answer on a red ERR afterwards.
+    void pushSketchProfile();
+
     /// Whether a plain left drag orbits instead of selecting.
     ///
     /// A discoverable way to rotate the view. Orbit is otherwise on the middle button or on Alt,
