@@ -1,0 +1,134 @@
+/// Start Sketch, draw, Finish Sketch — the shape of the whole interaction.
+///
+/// These are workflow tests rather than unit tests, and they exist because every bug reported
+/// against in-place sketching so far has been a WORKFLOW bug that the piecewise tests could not
+/// see: the pixels drew correctly, the mapping was right, the overlay was right, and finishing the
+/// sketch still failed. A test that never finishes a sketch never touches the code that failed.
+
+#include "cad/app/Controller.h"
+#include "cad/kernel/Shape.h"
+
+#include <cmath>
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+
+using namespace cad;
+
+namespace {
+
+/// How closely the camera looks along `axis`. 1.0 is dead-on.
+double alignmentWith(app::Controller& c, const std::array<double, 3>& axis) {
+    const auto basis = c.camera().basis();
+    return std::abs(basis.forward[0] * axis[0] + basis.forward[1] * axis[1] +
+                    basis.forward[2] * axis[2]);
+}
+
+}  // namespace
+
+TEST_CASE("Start Sketch uses the selected face, and Finish gives the view back", "[sketch][flow]") {
+    app::Controller controller;
+    controller.setViewportSize(1200, 800);
+
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+    const auto tree = controller.tree();
+    REQUIRE_FALSE(tree.empty());
+    const document::ObjectId boxId = tree.front().id;
+
+    // An off-axis view the user arranged for themselves. Finishing must give exactly this back —
+    // a sketch that quietly re-aims the camera makes every sketch cost a re-orbit.
+    controller.camera().orbit(34.0f, 21.0f);
+    const auto arranged = controller.camera().basis();
+
+    // Select a side face, the way a click does.
+    const auto box = controller.document().find(boxId);
+    REQUIRE(box != nullptr);
+    REQUIRE(box->output() != nullptr);
+    std::array<double, 3> faceNormal{};
+    bool selected = false;
+    for (const auto& name : box->output()->map.allNames()) {
+        const auto shape = box->output()->map.resolve(name);
+        if (!shape) continue;
+        const auto plane = kernel::planeOf(*shape);
+        if (!plane) continue;
+        const auto& f = plane.value();
+        const double nx = f.u[1] * f.v[2] - f.u[2] * f.v[1];
+        const double ny = f.u[2] * f.v[0] - f.u[0] * f.v[2];
+        const double nz = f.u[0] * f.v[1] - f.u[1] * f.v[0];
+        // A face looking along X: NOT the XY plane a default sketch would land on, so an
+        // implementation that ignored the selection gives a visibly different answer.
+        if (std::abs(nx) > 0.9) {
+            controller.setSelectionLevel(app::Controller::SelectionLevel::Face);
+            REQUIRE(controller.selectElement(boxId, name));
+            faceNormal = {nx, ny, nz};
+            selected = true;
+            break;
+        }
+    }
+    REQUIRE(selected);
+
+    const document::ObjectId sketchId = controller.beginSketch();
+    REQUIRE(sketchId != document::ObjectId{});
+    REQUIRE(controller.environment() == app::Environment::Sketch);
+
+    // The camera went to the SELECTED face, not to XY.
+    CHECK_THAT(alignmentWith(controller, faceNormal),
+               Catch::Matchers::WithinAbs(1.0, 1e-3));
+
+    // And a click lands on that sketch, which is the point of aiming the camera at it.
+    CHECK(controller.sketchPointAt(600.0f, 400.0f).has_value());
+
+    controller.setSketchTool(app::Controller::SketchTool::Line);
+    REQUIRE(controller.sketchClickAt(500.0f, 350.0f));
+    REQUIRE(controller.sketchClickAt(700.0f, 450.0f));
+    controller.finishSketch();
+
+    REQUIRE(controller.environment() == app::Environment::Model);
+
+    // The arranged view is BACK, to the same three axes it had before the sketch opened.
+    const auto after = controller.camera().basis();
+    for (int i = 0; i < 3; ++i) {
+        CHECK_THAT(static_cast<double>(after.forward[i]),
+                   Catch::Matchers::WithinAbs(static_cast<double>(arranged.forward[i]), 1e-4));
+        CHECK_THAT(static_cast<double>(after.up[i]),
+                   Catch::Matchers::WithinAbs(static_cast<double>(arranged.up[i]), 1e-4));
+    }
+
+    // And the sketch itself computed — no ERR on the thing the user just drew.
+    const auto sketch = controller.document().find(sketchId);
+    REQUIRE(sketch != nullptr);
+    CHECK(sketch->state() == document::ObjectState::Clean);
+}
+
+TEST_CASE("cancelling a sketch also gives the view back", "[sketch][flow]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    controller.camera().orbit(12.0f, 40.0f);
+    const auto arranged = controller.camera().basis();
+
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    controller.cancelSketch();
+
+    // Abandoning a sketch must cost nothing, including the view. Restoring only on Finish would
+    // punish the user for changing their mind.
+    const auto after = controller.camera().basis();
+    for (int i = 0; i < 3; ++i) {
+        CHECK_THAT(static_cast<double>(after.forward[i]),
+                   Catch::Matchers::WithinAbs(static_cast<double>(arranged.forward[i]), 1e-4));
+    }
+}
+
+TEST_CASE("entering a sketch turns orbit mode off", "[sketch][flow]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    controller.setOrbitMode(true);
+
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    controller.setSketchTool(app::Controller::SketchTool::Line);
+
+    // Orbit left on means the first stroke rotates the model instead of drawing, which reads as
+    // the sketch tools being broken. Entering a sketch is the moment the user asked to DRAW.
+    CHECK_FALSE(controller.orbitMode());
+    CHECK(controller.leftPressDraws());
+}

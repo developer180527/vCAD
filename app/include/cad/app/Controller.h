@@ -273,6 +273,13 @@ public:
     /// something the user cannot see is selected.
     void setSelectionLevel(SelectionLevel);
 
+    /// Selects one named element directly, without going through a pick.
+    ///
+    /// The GPU pick is how a CLICK selects; this is how anything else does — a model tree that
+    /// lists faces, a command that acts on a named edge, a test that must not need a GPU. Refuses
+    /// a name the object's map does not know, so a stale reference cannot enter the selection.
+    bool selectElement(document::ObjectId, const naming::ElementName&, bool additive = false);
+
     /// One picked piece of geometry, below the level of a document object.
     struct ElementSelection {
         document::ObjectId object{};
@@ -457,6 +464,12 @@ public:
     bool editSketch(document::ObjectId);
 
     /// Creates a Sketch feature and immediately edits it — what Start Sketch does.
+    ///
+    /// Sketches on the SELECTED planar face when there is one, and on XY otherwise. That is the
+    /// order every CAD application uses: you pick the surface you want to draw on, then draw. The
+    /// camera goes to that plane on entry and comes back to where it was when the sketch is
+    /// finished — leaving the user looking at the plane afterwards means every sketch quietly
+    /// changes the view they had arranged.
     document::ObjectId beginSketch();
 
     /// Creates a sketch placed on a named face of `body`, and selects it.
@@ -590,6 +603,9 @@ public:
     /// as the model" means in practice: the camera moves to the plane, rather than the model being
     /// replaced by a 2D surface that shares none of its coordinates.
     void alignCameraToSketch();
+
+    /// Puts the camera back where it was before the sketch opened. A no-op if nothing was saved.
+    void restoreCameraAfterSketch();
 
     /// Hands the sketch being edited to the scene as an overlay, so it is visible while drawn.
     void pushSketchOverlay();
@@ -748,6 +764,13 @@ private:
     double viewportScale_ = 1.0;   ///< device pixel ratio, kept for layer resizes
 
     std::unique_ptr<render::SceneBuilder> scene_;
+    /// The camera as it was before entering the sketch, restored on finish or cancel.
+    ///
+    /// A whole CameraController rather than a few angles: alignment, ortho height, target and the
+    /// turntable angles all move when a sketch opens, and restoring a subset puts the user
+    /// somewhere they never were, which is worse than not restoring at all.
+    std::optional<render::CameraController> cameraBeforeSketch_;
+
     bool orbitMode_ = false;
     SketchTool sketchTool_ = SketchTool::Select;
     /// First point of a two-click tool, in sketch coordinates.

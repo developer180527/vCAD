@@ -678,6 +678,26 @@ std::optional<kernel::ShapeType> topologyFor(Controller::SelectionLevel level) {
 
 }  // namespace
 
+bool Controller::selectElement(ObjectId id, const naming::ElementName& element, bool additive) {
+    const auto object = history_.current().find(id);
+    if (!object || object->output() == nullptr) return false;
+    // Checked against the map rather than taken on trust: a name that does not resolve would sit
+    // in the selection looking valid and fail later, far from here.
+    if (!object->output()->map.resolve(element)) return false;
+
+    if (!additive) {
+        elementSelection_.clear();
+        selection_.clear();
+    }
+    elementSelection_.push_back(ElementSelection{id, element, 0});
+    if (std::find(selection_.begin(), selection_.end(), id) == selection_.end()) {
+        selection_.push_back(id);
+    }
+    refreshHighlights();
+    notifyDocument();
+    return true;
+}
+
 void Controller::setSelectionLevel(SelectionLevel level) {
     if (level == selectionLevel_) return;
     selectionLevel_ = level;
@@ -890,6 +910,17 @@ bool Controller::editSketch(ObjectId id) {
     }
 
     environment_ = Environment::Sketch;
+
+    // Remembered BEFORE the camera moves, so finishing puts the user back where they were rather
+    // than leaving them staring at the sketch plane. Only on the way IN: re-entering a sketch
+    // twice must not overwrite the original 3D view with the first sketch's view.
+    if (!cameraBeforeSketch_) cameraBeforeSketch_ = camera_;
+
+    // Orbit is a navigation mode and this is the moment the user asked to DRAW. Left on, the first
+    // stroke rotates the model instead, which reads as the sketch tools not working -- and the mode
+    // is one toggle away when they do want to turn the part around.
+    orbitMode_ = false;
+
     alignCameraToSketch();
     pushSketchOverlay();
     lastSketchSolve_ = editing_->solve();
@@ -900,6 +931,28 @@ bool Controller::editSketch(ObjectId id) {
 }
 
 ObjectId Controller::beginSketch() {
+    // A selected planar face wins. This is the order the user expects and the order every CAD
+    // application uses -- pick the surface, then draw on it -- and it is what makes "sketch on the
+    // model" reachable at all: before this, Start Sketch always made an XY sketch no matter what
+    // was selected, so a face could be picked and then silently ignored.
+    for (const ElementSelection& picked : elementSelection_) {
+        const auto owner = history_.current().find(picked.object);
+        if (!owner || owner->output() == nullptr) continue;
+        const auto shape = owner->output()->map.resolve(picked.element);
+        if (!shape) continue;
+        // Planar only. A cylindrical face has no single plane to draw on, and refusing here with a
+        // reason beats accepting and producing a sketch somewhere arbitrary.
+        if (!kernel::planeOf(*shape)) {
+            status("A sketch needs a flat face. That one is curved.");
+            continue;
+        }
+        const ObjectId onFace = addSketchOnFace(picked.object, picked.element.toString());
+        if (onFace != ObjectId{}) {
+            editSketch(onFace);
+            return onFace;
+        }
+    }
+
     const ObjectId id = addSketch();
     editSketch(id);
     return id;
@@ -918,6 +971,7 @@ void Controller::finishSketch() {
     }
     editing_.reset();
     environment_ = Environment::Model;
+    restoreCameraAfterSketch();
     // Cleared BEFORE the refresh rebuilds the scene: leaving it up would draw the finished sketch
     // twice, once as the overlay and once as the feature's own edges, fighting for the same pixels.
     sketchPending_.reset();
@@ -931,6 +985,9 @@ void Controller::finishSketch() {
 void Controller::cancelSketch() {
     editing_.reset();
     environment_ = Environment::Model;
+    // Restored on cancel as well as on finish: abandoning a sketch must cost nothing, and putting
+    // the view back only when the user commits would punish them for changing their mind.
+    restoreCameraAfterSketch();
     sketchPending_.reset();
     sketchHover_.reset();
     sketchTool_ = SketchTool::Select;
@@ -1472,6 +1529,13 @@ void Controller::pushSketchOverlay() {
     scene_->setSketchOverlay(lines, sketchOverlayRevision());
     const auto preview = sketchPreviewVertices();
     scene_->setSketchPreview(preview, sketchPreviewRevision());
+}
+
+void Controller::restoreCameraAfterSketch() {
+    if (!cameraBeforeSketch_) return;
+    camera_ = *cameraBeforeSketch_;
+    cameraBeforeSketch_.reset();
+    notifyView();
 }
 
 void Controller::alignCameraToSketch() {
