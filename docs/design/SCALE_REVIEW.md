@@ -300,6 +300,28 @@ Three things worth carrying forward:
 The 20,000-part run also confirms §P2 item 9 with a number: the no-op placement digest costs
 **19.4 ms** at 20k, against 1.8 ms at 2k. Linear, and it is paid on every idle frame.
 
+### P1 item 6 as built, 19 Aug: tessellation in parallel
+
+`MeshCache::warm` tessellates every missing mesh across all cores before the scene walks placements
+serially. Measured on this machine:
+
+| Unique parts | Scene build before | After |
+|---|---|---|
+| 2,000 | 4,255 ms | **1,935 ms** |
+| 8,000 | 17,221 ms | **7,980 ms** |
+
+Draw calls and triangle counts are byte-identical either way, which is the point: `tessellate` is a
+pure function of a shape and its settings, and that claim is what already justified caching it.
+
+**2.2x, not 8x**, and the gap is the honest part of this result. Tessellation is now off the critical
+path but the rest of the scene build is not: content-hashing every shape for its cache key, encoding
+meshes into the DDC, and the GPU uploads all remain serial on the calling thread. Those are the next
+thing to measure, and the measurement should come before any more threading.
+
+The cache is never touched concurrently — missing keys are found on the calling thread, meshes are
+built into a local vector by the workers, and results are published after the join. Concurrency is
+confined to `tessellate` itself.
+
 ### P1 — the 100k path
 
 4. **Indirect drawing.** With meshes sharing buffers, a bind serves many draws — but each visible

@@ -141,6 +141,10 @@ public:
         std::size_t instances = 0;
         std::size_t elementSlots = 0;
         std::size_t tessellationFailures = 0;
+
+        /// Meshes built by the parallel warm-up during the last rebuild. Zero on a rebuild that
+        /// changed no geometry, which is what makes an orbit free.
+        std::size_t tessellationsWarmed = 0;
     };
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
     void resetStats() noexcept { stats_ = Stats{}; }

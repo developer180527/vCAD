@@ -1,5 +1,7 @@
 #include "cad/render/Scene.h"
 
+#include <unordered_set>
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -548,6 +550,29 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
     // 3.8 s — the entire scene-build cost, and nothing to do with the meshes themselves.
     // A document is immutable for the duration of a rebuild, so one lookup per object is exact.
     std::unordered_map<std::uint64_t, RenderMeshPtr> meshOfObject;
+
+    // Tessellate everything missing, in parallel, BEFORE the loop below walks it serially.
+    //
+    // Opening a document was dominated by this: roughly 2.2 ms per mesh, so 20,000 unique parts
+    // cost 44.7 s of blocking work before a single frame appeared. The loop that follows is
+    // unchanged — after this it finds every mesh already cached, and its job is the placement
+    // bookkeeping it was always for.
+    //
+    // Gathered here rather than inside MeshCache because only the scene knows which objects are
+    // actually PLACED. An invisible part, or one no placement refers to, should not be tessellated
+    // at all.
+    {
+        std::vector<const document::Output*> pending;
+        pending.reserve(placements.size());
+        std::unordered_set<std::uint64_t> seen;
+        for (const Placement& p : placements) {
+            if (!p.visible) continue;
+            if (!seen.insert(p.object.value).second) continue;
+            const auto object = doc.find(p.object);
+            if (object && object->output() != nullptr) pending.push_back(object->output());
+        }
+        stats_.tessellationsWarmed = meshes_.warm(pending, settings);
+    }
 
     for (std::size_t pi = 0; pi < placements.size(); ++pi) {
         const Placement& p = placements[pi];

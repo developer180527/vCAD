@@ -1,4 +1,8 @@
 #include "cad/render/Tessellate.h"
+#include <vector>
+#include <unordered_set>
+#include <thread>
+#include <atomic>
 
 #include <cstring>
 #include "cad/kernel/Guard.h"
@@ -150,6 +154,59 @@ std::uint64_t cacheKey(const document::Output& output, const TessellationSetting
 }  // namespace
 
 MeshCache::MeshCache(recompute::BlobStore& blobs) : blobs_(blobs) {}
+
+std::size_t MeshCache::warm(std::span<const document::Output* const> outputs,
+                            const TessellationSettings& settings) {
+    // Phase 1, THIS thread: which keys are missing, deduplicated. Two placements of the same part
+    // share a key, and tessellating it twice in parallel would be worse than doing it once here.
+    struct Job {
+        std::uint64_t key = 0;
+        const document::Output* output = nullptr;
+    };
+    std::vector<Job> jobs;
+    std::unordered_set<std::uint64_t> queued;
+    for (const document::Output* output : outputs) {
+        if (output == nullptr) continue;
+        const std::uint64_t key = cacheKey(*output, settings);
+        if (live_.find(key) != live_.end()) continue;
+        if (!queued.insert(key).second) continue;
+        jobs.push_back(Job{key, output});
+    }
+    if (jobs.empty()) return 0;
+
+    // Phase 2, WORKERS: pure tessellation into a preallocated slot each. No shared mutable state,
+    // no allocation of the vector itself, and therefore no lock on the hot path.
+    std::vector<RenderMeshPtr> built(jobs.size());
+    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    const std::size_t workers = std::min<std::size_t>(cores, jobs.size());
+
+    std::atomic<std::size_t> next{0};
+    const auto run = [&] {
+        for (;;) {
+            const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= jobs.size()) return;
+            // A failure leaves the slot null. One unrenderable part must not take the assembly
+            // with it — the same rule the serial path follows.
+            if (auto mesh = tessellate(*jobs[i].output, settings)) built[i] = mesh.value();
+        }
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(workers - 1);
+    for (std::size_t w = 1; w < workers; ++w) pool.emplace_back(run);
+    run();   // this thread takes a share rather than waiting
+    for (std::thread& t : pool) t.join();
+
+    // Phase 3, THIS thread again: publish. The cache has been single-threaded throughout.
+    std::size_t made = 0;
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        if (!built[i]) continue;
+        live_.emplace(jobs[i].key, built[i]);
+        blobs_.put(jobs[i].key, encode(*built[i]));
+        ++made;
+    }
+    return made;
+}
 
 kernel::Result<RenderMeshPtr> MeshCache::get(const document::Output& output,
                                              const TessellationSettings& settings) {

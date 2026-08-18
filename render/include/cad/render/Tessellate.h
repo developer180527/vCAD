@@ -1,6 +1,8 @@
 #pragma once
 
 #include "cad/document/Document.h"
+
+#include <span>
 #include "cad/kernel/Result.h"
 #include "cad/recompute/DdcCache.h"
 #include "cad/render/RenderMesh.h"
@@ -36,6 +38,22 @@ public:
     explicit MeshCache(recompute::BlobStore& blobs);
 
     kernel::Result<RenderMeshPtr> get(const document::Output&, const TessellationSettings&);
+
+    /// Tessellates everything in `outputs` that is not already cached, in parallel.
+    ///
+    /// Tessellation dominates opening a document: measured at roughly 2.2 ms per mesh, so 20,000
+    /// unique parts cost 44.7 s of blocking work before anything appeared, and 100,000 would be
+    /// over three minutes. It is also the one part of the pipeline that parallelises cleanly —
+    /// `tessellate` is a pure function of a shape and the settings, which is what ADR 0007 means by
+    /// calling it cacheable.
+    ///
+    /// The CACHE is never touched concurrently. Missing keys are found on this thread, the meshes
+    /// are built on worker threads into a local vector, and the results are inserted here after the
+    /// workers have joined. Concurrency is therefore confined to `tessellate` itself, and the
+    /// cache's own invariants cannot be raced.
+    ///
+    /// Returns the number of meshes actually built. Calling `get` afterwards is a hit for each.
+    std::size_t warm(std::span<const document::Output* const>, const TessellationSettings&);
 
     [[nodiscard]] std::size_t hits() const noexcept { return hits_; }
     [[nodiscard]] std::size_t misses() const noexcept { return misses_; }
