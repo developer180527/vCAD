@@ -1040,6 +1040,7 @@ void Controller::finishSketch() {
     // twice, once as the overlay and once as the feature's own edges, fighting for the same pixels.
     sketchPending_.reset();
     sketchHover_.reset();
+    sketchInput_.clear();
     sketchTool_ = SketchTool::Select;
     pushSketchOverlay();
     refresh();
@@ -1054,6 +1055,7 @@ void Controller::cancelSketch() {
     restoreCameraAfterSketch();
     sketchPending_.reset();
     sketchHover_.reset();
+    sketchInput_.clear();
     sketchTool_ = SketchTool::Select;
     pushSketchOverlay();
     notifyDocument();
@@ -1368,7 +1370,102 @@ void Controller::setSketchTool(SketchTool tool) {
     // circle tool, and keeping it is how a stray segment appears from a click made a minute ago.
     sketchPending_.reset();
     sketchHover_.reset();
+    sketchInput_.clear();
     notifyView();
+}
+
+Controller::PreviewMeasure Controller::sketchPreviewMeasure() const {
+    PreviewMeasure out;
+    if (!sketchPending_ || !sketchHover_) return out;
+
+    const double dx = (*sketchHover_)[0] - (*sketchPending_)[0];
+    const double dy = (*sketchHover_)[1] - (*sketchPending_)[1];
+    out.length = std::sqrt(dx * dx + dy * dy);
+    out.circle = sketchTool_ == SketchTool::Circle;
+    // Degrees from the sketch's own +u axis, not from the world's X. The number has to mean
+    // something in the plane the user is drawing on, or it is nonsense on a tilted face.
+    out.angle = out.circle ? 0.0 : std::atan2(dy, dx) * 180.0 / std::numbers::pi;
+    out.valid = true;
+    return out;
+}
+
+bool Controller::typeSketchDimension(char c) {
+    // Only while something is pending: a digit typed with nothing half-drawn is a shortcut, not a
+    // dimension, and swallowing it would make the keyboard feel dead.
+    if (!sketchPending_) return false;
+    const bool digit = c >= '0' && c <= '9';
+    const bool separator = c == '.' || c == ',';
+    // Unit letters are accepted so "12mm" and "0.5in" parse; units::parseLength decides what is
+    // actually valid, and it is the one place that knows.
+    const bool unit = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    if (!digit && !separator && !unit) return false;
+    sketchInput_.push_back(c);
+    notifyView();
+    return true;
+}
+
+void Controller::backspaceSketchDimension() {
+    if (sketchInput_.empty()) return;
+    sketchInput_.pop_back();
+    notifyView();
+}
+
+void Controller::clearSketchDimension() {
+    if (sketchInput_.empty()) return;
+    sketchInput_.clear();
+    notifyView();
+}
+
+bool Controller::commitSketchDimension() {
+    if (!sketchPending_ || !sketchHover_ || sketchInput_.empty()) return false;
+
+    auto parsed = units::parseLength(sketchInput_, preferences_.displayUnits);
+    if (!parsed) {
+        status(parsed.error().message);
+        return false;
+    }
+    const double value = parsed.value().base();
+    if (!(value > 0.0)) {
+        status("A dimension has to be greater than zero.");
+        return false;
+    }
+
+    // The DIRECTION comes from the pointer and the SIZE from the number. That is what makes typing
+    // feel like drawing: you aim with the mouse and say how far with the keyboard.
+    const double dx = (*sketchHover_)[0] - (*sketchPending_)[0];
+    const double dy = (*sketchHover_)[1] - (*sketchPending_)[1];
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) {
+        status("Point the cursor in the direction first.");
+        return false;
+    }
+    const std::array<double, 2> at{(*sketchPending_)[0] + dx / length * value,
+                                   (*sketchPending_)[1] + dy / length * value};
+
+    const std::array<double, 2> first = *sketchPending_;
+    sketchPending_.reset();
+    sketchHover_.reset();
+    sketchInput_.clear();
+
+    if (!editing_.has_value()) return false;
+
+    if (sketchTool_ == SketchTool::Circle) {
+        const auto id = editing_->addCircle(first[0], first[1], value);
+        // A DRIVING dimension, not merely geometry that happens to be this size. Without the
+        // constraint the number the user typed is forgotten the instant anything else moves —
+        // which is the difference between a sketch and a drawing.
+        editing_->radius(id, value);
+    } else {
+        const auto id = editing_->addLine(first[0], first[1], at[0], at[1]);
+        editing_->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End, value);
+    }
+
+    lastSketchSolve_ = editing_->solve();
+    status(lastSketchSolve_.message);
+    pushSketchOverlay();
+    notifyDocument();
+    notifyView();
+    return true;
 }
 
 bool Controller::sketchHoverAt(float x, float y) {
@@ -1414,6 +1511,7 @@ bool Controller::sketchClickAt(float x, float y) {
     const std::array<double, 2> first = *sketchPending_;
     sketchPending_.reset();
     sketchHover_.reset();
+    sketchInput_.clear();
 
     if (sketchTool_ == SketchTool::Line) {
         const double dx = (*point)[0] - first[0];

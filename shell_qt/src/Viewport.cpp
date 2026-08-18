@@ -1,6 +1,8 @@
 #include "Viewport.h"
 
 #include <QImage>
+#include <QKeyEvent>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
@@ -27,6 +29,12 @@ Viewport::Viewport(cad::app::Controller& controller, QWidget* parent)
     : QWidget(parent), controller_(controller) {
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+
+    // Created up front and hidden, rather than made on demand: a widget constructed during a mouse
+    // move is a widget constructed sixty times a second.
+    dimensionField_ = new QLabel(this);
+    dimensionField_->setObjectName(QStringLiteral("sketchDimension"));
+    dimensionField_->hide();
     setAutoFillBackground(false);
     setMinimumSize(320, 240);
 }
@@ -262,11 +270,13 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && controller_.leftPressDraws()
         && !event->modifiers().testFlag(Qt::AltModifier)) {
         const auto dpr = devicePixelRatioF();
+        lastMouse_ = event->pos();
         if (controller_.sketchClickAt(static_cast<float>(event->position().x() * dpr),
                                       static_cast<float>(event->position().y() * dpr))) {
             markDirty();
             update();
         }
+        syncDimensionField();
         drag_ = cad::render::Drag::None;
         return;
     }
@@ -292,6 +302,64 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
                                         event->modifiers().testFlag(Qt::AltModifier));
 }
 
+void Viewport::keyPressEvent(QKeyEvent* event) {
+    // Only while something is half-drawn. Outside that a digit is a shortcut, and swallowing it
+    // here would make the keyboard feel dead — the Controller decides, so both shells agree.
+    if (controller_.environment() == cad::app::Environment::Sketch) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            if (controller_.commitSketchDimension()) {
+                syncDimensionField();
+                markDirty();
+                return;
+            }
+        } else if (event->key() == Qt::Key_Backspace) {
+            controller_.backspaceSketchDimension();
+            syncDimensionField();
+            return;
+        } else if (event->key() == Qt::Key_Escape) {
+            controller_.clearSketchDimension();
+            syncDimensionField();
+            return;
+        } else if (!event->text().isEmpty()
+                   && controller_.typeSketchDimension(event->text().at(0).toLatin1())) {
+            syncDimensionField();
+            return;
+        }
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void Viewport::syncDimensionField() {
+    if (dimensionField_ == nullptr) return;
+
+    const auto measure = controller_.sketchPreviewMeasure();
+    if (!measure.valid) {
+        dimensionField_->hide();
+        return;
+    }
+
+    const QString typed = QString::fromStdString(controller_.sketchDimensionInput());
+    // What the user TYPED wins the display, because that is the value that will be used. Showing
+    // the measured length while a different number is being typed would be showing them a size
+    // they are in the middle of replacing.
+    const QString size = typed.isEmpty()
+                             ? QStringLiteral("%1").arg(measure.length, 0, 'f', 2)
+                             : typed + QStringLiteral("_");
+    dimensionField_->setText(measure.circle
+                                 ? tr("R %1").arg(size)
+                                 : tr("%1   %2°").arg(size).arg(measure.angle, 0, 'f', 1));
+    dimensionField_->adjustSize();
+
+    // Offset from the cursor so the pointer never sits on top of the number, and clamped inside
+    // the viewport so it cannot be pushed off-screen near an edge.
+    const QPoint at = lastMouse_ + QPoint(16, 16);
+    const int x = std::min(at.x(), width() - dimensionField_->width() - 4);
+    const int y = std::min(at.y(), height() - dimensionField_->height() - 4);
+    dimensionField_->move(std::max(4, x), std::max(4, y));
+    dimensionField_->show();
+    dimensionField_->raise();
+}
+
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
     // The rubber band, before the drag check: a half-drawn shape follows the pointer with no button
     // held, which is the whole point of it.
@@ -299,11 +367,13 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
         && controller_.environment() == cad::app::Environment::Sketch
         && controller_.sketchPending()) {
         const auto dpr = devicePixelRatioF();
+        lastMouse_ = event->pos();
         if (controller_.sketchHoverAt(static_cast<float>(event->position().x() * dpr),
                                       static_cast<float>(event->position().y() * dpr))) {
             markDirty();
             update();
         }
+        syncDimensionField();
         return;
     }
     if (drag_ == cad::render::Drag::None) return;

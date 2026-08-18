@@ -156,6 +156,13 @@ void applyTheme(QApplication& app, Theme theme) {
         }
         QCheckBox::indicator:disabled { border-color: #c3c1bd; background: #eceae7; }
         QCheckBox::indicator:checked:disabled { background: #b3b1ad; border-color: #b3b1ad; }
+        /* The live dimension readout that follows the cursor while sketching. Styled here with
+           everything else so it goes through recolour() and the dark themes get it free. */
+        #sketchDimension {
+            background: #ffffff; color: #1f2124;
+            border: 1px solid #0a70c8; border-radius: 3px;
+            padding: 2px 6px; font-size: 12px;
+        }
         QMainWindow::separator { background: #cfcdc9; width: 1px; height: 1px; }
         QMainWindow::separator:hover { background: #0a6cc4; }
         QWidget { font-size: 12px; color: #1f2124; }

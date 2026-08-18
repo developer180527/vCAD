@@ -556,6 +556,38 @@ public:
     /// not move far enough to matter.
     bool sketchHoverAt(float x, float y);
 
+    /// What the half-drawn shape currently measures.
+    ///
+    /// Shown live while drawing, the way every CAD sketcher does it, so a user sees the size they
+    /// are making rather than eyeballing it and dimensioning afterwards.
+    struct PreviewMeasure {
+        bool valid = false;
+        bool circle = false;   ///< `length` is a radius rather than a length
+        double length = 0.0;   ///< millimetres
+        double angle = 0.0;    ///< degrees from the sketch's +u axis; meaningless for a circle
+    };
+    [[nodiscard]] PreviewMeasure sketchPreviewMeasure() const;
+
+    /// The number the user is typing to fix that measurement exactly.
+    ///
+    /// Kept on the model, not in a shell's text field, because it CHANGES WHAT THE NEXT CLICK
+    /// MEANS: with a value typed, the shape is committed at that size rather than wherever the
+    /// pointer happens to be, and gains a driving dimension. That is a modelling rule, and a shell
+    /// holding it would have to reimplement the same rule to behave the same way.
+    [[nodiscard]] const std::string& sketchDimensionInput() const noexcept {
+        return sketchInput_;
+    }
+
+    /// Appends a character, ignoring anything that cannot appear in a length. Returns whether it
+    /// was taken, so a shell knows whether to swallow the keystroke or let it act as a shortcut.
+    bool typeSketchDimension(char c);
+    void backspaceSketchDimension();
+    void clearSketchDimension();
+
+    /// Commits the half-drawn shape at the typed size, as if the user had clicked at exactly that
+    /// distance. False when nothing is pending or the text will not parse.
+    bool commitSketchDimension();
+
     /// The pending first point of a two-click tool, for drawing a rubber band. Empty when the next
     /// click starts a shape rather than finishing one.
     [[nodiscard]] const std::optional<std::array<double, 2>>& sketchPending() const noexcept {
@@ -803,6 +835,8 @@ private:
     std::optional<std::array<double, 2>> sketchPending_;
     /// Where the pointer is, while `sketchPending_` is set. The rubber band's far end.
     std::optional<std::array<double, 2>> sketchHover_;
+    /// Digits typed to fix the pending shape's size exactly.
+    std::string sketchInput_;
 
     render::CameraController camera_;
     render::Viewport viewport_;

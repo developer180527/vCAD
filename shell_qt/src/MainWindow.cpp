@@ -1164,7 +1164,12 @@ void MainWindow::drawSketchForShot(int lines) {
         // which a screenshot can only catch because it exists between two clicks.
         c->sketchClickAt(w * 0.30f, h * 0.55f);
         c->sketchHoverAt(w * 0.50f, h * 0.80f);
+        // A couple of typed digits, so the shot catches the dimension field mid-entry — the state
+        // it spends almost all of its life in and the only one worth photographing.
+        c->typeSketchDimension('3');
+        c->typeSketchDimension('5');
     }
+    view->syncDimensionFieldForShot();
     view->markDirty();
 }
 

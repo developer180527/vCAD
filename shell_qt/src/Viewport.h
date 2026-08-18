@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <vector>
 
+class QLabel;
 class QPainter;
 class QPaintEngine;
 
@@ -55,6 +56,9 @@ public:
     /// each of those is most of what made the viewport feel slow.
     void markDirty();
 
+    /// Places the dimension field for `--shot`, which has no pointer to follow.
+    void syncDimensionFieldForShot() { syncDimensionField(); }
+
 signals:
     /// Why a click did not select, when there is a reason worth saying — a curved face, geometry
     /// with no name, empty space. Emitted rather than swallowed: a click that does nothing and
@@ -77,6 +81,8 @@ protected:
     void mouseMoveEvent(QMouseEvent*) override;
     void mouseReleaseEvent(QMouseEvent*) override;
     void wheelEvent(QWheelEvent*) override;
+    /// Digits typed while a shape is half-drawn are its dimension, not shortcuts.
+    void keyPressEvent(QKeyEvent*) override;
 
 private:
     /// Projects a world point through the frame's view+projection to widget pixels. The same
@@ -105,6 +111,18 @@ private:
     /// Presenting straight to a native surface, rather than blitting a read-back image.
     bool native_ = false;
     QString rendererError_;
+
+    /// Moves the live dimension field to the cursor and fills it in, or hides it.
+    void syncDimensionField();
+
+    /// The live dimension readout, a CHILD of the viewport rather than something painted into the
+    /// frame.
+    ///
+    /// Painting it would need a text renderer on the GPU: while presenting to a native surface the
+    /// widget owns its pixels and Qt does not draw into them, which is the same constraint that
+    /// keeps the sketch overlay in the scene rather than in a QPainter pass. A child widget
+    /// composites over the surface instead, and costs no font atlas.
+    QLabel* dimensionField_ = nullptr;
 
     /// The last rendered frame, reused until something actually changes it.
     QImage frame_;
