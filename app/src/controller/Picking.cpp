@@ -1,0 +1,359 @@
+/// Turning pixels into selection: the GPU pick, what a click resolves to at each selection
+/// level, hover, and the highlight set that follows from both.
+///
+/// Split out of Controller.cpp, which had reached 2574 lines. The class is unchanged --
+/// these are the same methods in the same order, moved verbatim into a file named for what
+/// they do, so the system can be read one concern at a time.
+
+#include "Internal.h"
+
+#include "cad/io/Format.h"
+#include "cad/kernel/Primitives.h"
+
+#include "cad/render/MetalSurface.h"
+
+#include "cad/io/DocumentStore.h"
+#include "cad/sketch/Sketch.h"
+
+#include "cad/units/Units.h"
+
+#include <sstream>
+#include <tuple>
+
+#include <algorithm>
+#include <chrono>
+
+
+namespace cad::app {
+
+ObjectId Controller::addPrimitive(const std::string& type,
+                                  const std::vector<std::pair<std::string, double>>& lengths) {
+    auto [next, id] = history_.current().add(type);
+    auto object = next.find(id);
+    auto updated = *object;
+    for (const auto& [name, mm] : lengths) {
+        updated = updated.withProperty(name, units::millimetres(mm));
+    }
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Add " + type);
+
+    selection_.clear();
+    selection_.push_back(id);
+    refresh();
+    // Framing on the first object is the difference between "it worked" and "nothing happened":
+    // a new box outside the current view looks like a no-op.
+    if (history_.current().size() == 1) fitView();
+    status("Added " + type);
+    return id;
+}
+
+Controller::Pick Controller::pickAt(std::uint32_t x, std::uint32_t y) {
+    Pick out;
+    if (active_.picker == nullptr) return out;
+
+    const auto raw = active_.picker->pick(scene_->frame(), x, y);
+    if (!raw.valid) return out;
+
+    out.hit = true;
+    out.slot = raw.element;
+    out.depth = raw.depth;
+    if (const auto name = scene_->resolve(raw)) out.element = *name;
+    if (const auto owner = scene_->objectOf(raw.element)) out.object = *owner;
+    return out;
+}
+
+kernel::Result<Controller::FacePick> Controller::pickSketchFace(std::uint32_t x, std::uint32_t y) {
+    const Pick pick = pickAt(x, y);
+    if (!pick.hit) {
+        return kernel::Error{kernel::ErrorCode::NotDone,
+                             "Click a flat face to sketch on it."};
+    }
+    if (pick.element.isNull()) {
+        // A slot with no name is a real state, not a bug: the mesh carries a name per element and
+        // an element the naming layer never named comes back null. Saying "nothing there" would be
+        // a lie about a place the user can see geometry.
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "That geometry cannot be referred to, so a sketch cannot be attached "
+                             "to it."};
+    }
+
+    const auto object = history_.current().find(pick.object);
+    if (!object || object->output() == nullptr) {
+        return kernel::Error{kernel::ErrorCode::NotDone,
+                             "That body has not been computed yet."};
+    }
+
+    const auto shape = object->output()->map.resolve(pick.element);
+    if (!shape) {
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "That face no longer exists in the model.",
+                             "could not resolve element '" + pick.element.toString() + "'"};
+    }
+    if (shape->type() != kernel::ShapeType::Face) {
+        // Checked by resolved TOPOLOGY, not by anything in the name -- the same reason edgesOf
+        // gives. An edge and the face bounding it can share a feature and an operation, so the
+        // name cannot tell them apart and only the shape can.
+        return kernel::Error{kernel::ErrorCode::InvalidInput,
+                            "A sketch needs a face. That is an edge or a vertex."};
+    }
+
+    // The refusal that matters, and it is not ours: kernel::planeOf measures the surface and
+    // refuses a cylinder or a sphere with its own message. Surfaced rather than swallowed, because
+    // a click on the round side of a cylinder that quietly does nothing is indistinguishable from
+    // a broken picker.
+    const auto measured = kernel::planeOf(*shape);
+    if (!measured) return measured.error();
+
+    FacePick out;
+    out.object = pick.object;
+    out.face = pick.element;
+    // Two structurally identical types kept apart so core/sketch need not know the kernel, exactly
+    // as the Sketch feature does when the recompute resolves the same reference. This layer sees
+    // both, so the copy is legitimate here.
+    for (int i = 0; i < 3; ++i) {
+        out.frame.origin[i] = measured.value().origin[i];
+        out.frame.u[i] = measured.value().u[i];
+        out.frame.v[i] = measured.value().v[i];
+    }
+    return out;
+}
+
+void Controller::alignViewTo(const sketch::SketchFrame& frame) {
+    // Narrowed to float here rather than anywhere lower: the document and the kernel work in
+    // doubles, the GPU pipeline in floats, and this is the boundary between them.
+    const float origin[3]{static_cast<float>(frame.origin[0]), static_cast<float>(frame.origin[1]),
+                          static_cast<float>(frame.origin[2])};
+    const auto n = frame.normal();
+    const float normal[3]{static_cast<float>(n[0]), static_cast<float>(n[1]),
+                          static_cast<float>(n[2])};
+    const float up[3]{static_cast<float>(frame.v[0]), static_cast<float>(frame.v[1]),
+                      static_cast<float>(frame.v[2])};
+
+    camera_.alignTo(origin, normal, up);
+    cameraChanged();
+}
+
+const char* toString(Controller::SelectionLevel level) noexcept {
+    switch (level) {
+        case Controller::SelectionLevel::Body:   return "Body";
+        case Controller::SelectionLevel::Face:   return "Face";
+        case Controller::SelectionLevel::Edge:   return "Edge";
+        case Controller::SelectionLevel::Vertex: return "Vertex";
+    }
+    return "Body";
+}
+
+namespace {
+
+/// The topology a selection level resolves to. Body has none: it selects a document object, not a
+/// piece of geometry, which is why it is handled separately everywhere below.
+std::optional<kernel::ShapeType> topologyFor(Controller::SelectionLevel level) {
+    switch (level) {
+        case Controller::SelectionLevel::Face:   return kernel::ShapeType::Face;
+        case Controller::SelectionLevel::Edge:   return kernel::ShapeType::Edge;
+        case Controller::SelectionLevel::Vertex: return kernel::ShapeType::Vertex;
+        case Controller::SelectionLevel::Body:   return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+bool Controller::selectElement(ObjectId id, const naming::ElementName& element, bool additive) {
+    const auto object = history_.current().find(id);
+    if (!object || object->output() == nullptr) return false;
+    // Checked against the map rather than taken on trust: a name that does not resolve would sit
+    // in the selection looking valid and fail later, far from here.
+    if (!object->output()->map.resolve(element)) return false;
+
+    if (!additive) {
+        elementSelection_.clear();
+        selection_.clear();
+    }
+    elementSelection_.push_back(ElementSelection{id, element, 0});
+    if (std::find(selection_.begin(), selection_.end(), id) == selection_.end()) {
+        selection_.push_back(id);
+    }
+    refreshHighlights();
+    notifyDocument();
+    return true;
+}
+
+void Controller::setSelectionLevel(SelectionLevel level) {
+    if (level == selectionLevel_) return;
+    selectionLevel_ = level;
+    // Dropped rather than converted. There is no honest mapping from "this face" to "this edge", and
+    // keeping a face selected while the level reads Edge is how a command acts on something the user
+    // cannot see is selected.
+    elementSelection_.clear();
+    refreshHighlights();
+    notifyDocument();
+}
+
+std::vector<std::uint32_t> Controller::slotsOf(ObjectId id) const {
+    std::vector<std::uint32_t> slots;
+    if (id.isNull()) return slots;
+    // Walked rather than looked up: the scene maps slot -> object, not the reverse. Only ever run on
+    // a selection change, which is a human-speed event, so a reverse index would be memory spent to
+    // speed up something nobody is waiting for.
+    for (std::uint32_t slot = 0; slot < scene_->frame().elementCount; ++slot) {
+        const auto owner = scene_->objectOf(slot);
+        if (owner && *owner == id) slots.push_back(slot);
+    }
+    return slots;
+}
+
+void Controller::refreshHighlights() {
+    scene_->clearHighlights();
+
+    // Selection first, hover second, so hovering something already selected reads as hovered. The
+    // opposite order makes the pointer appear to do nothing over a selected face.
+    if (selectionLevel_ == SelectionLevel::Body) {
+        for (const ObjectId id : selection_) {
+            for (const std::uint32_t slot : slotsOf(id)) {
+                scene_->setHighlight(slot, render::Highlight::Selected);
+            }
+        }
+    } else {
+        for (const ElementSelection& picked : elementSelection_) {
+            scene_->setHighlight(picked.slot, render::Highlight::Selected);
+        }
+    }
+
+    if (hoveredSlot_) scene_->setHighlight(*hoveredSlot_, render::Highlight::Hovered);
+
+    // A view change, not a document change: nothing about the model moved, but the pixels differ.
+    // Without this, selecting in the model tree updated the highlight table and never asked anyone
+    // to repaint, so the viewport kept showing the previous frame -- which looks exactly like
+    // selection not working.
+    notifyView();
+}
+
+Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bool additive) {
+    ClickResult out;
+    const Pick pick = pickAt(x, y);
+
+    if (!pick.hit) {
+        // Empty space. Clearing is what every CAD application does, and it is what keeps the tree
+        // and the viewport agreeing about what is selected.
+        if (additive) return out;
+        const bool had = !selection_.empty() || !elementSelection_.empty();
+        selection_.clear();
+        elementSelection_.clear();
+        out.changed = had;
+        if (had) {
+            refreshHighlights();
+            notifyDocument();
+        }
+        return out;
+    }
+
+    out.hit = true;
+
+    if (selectionLevel_ == SelectionLevel::Body) {
+        if (pick.object.isNull()) {
+            out.message = "That geometry does not belong to a feature.";
+            return out;
+        }
+        select(pick.object, additive);       // notifies on its own
+        refreshHighlights();
+        out.changed = true;
+        const auto object = history_.current().find(pick.object);
+        out.message = object ? "Selected " + object->label() : "Selected";
+        return out;
+    }
+
+    // Below Body: resolve the picked element's TOPOLOGY and refuse anything of the wrong kind. By
+    // resolved shape, not by the name -- an edge and the face bounding it can come from the same
+    // feature and the same operation, so the name cannot tell them apart.
+    if (pick.element.isNull()) {
+        out.message = "That geometry cannot be referred to, so it cannot be selected.";
+        return out;
+    }
+    const auto object = history_.current().find(pick.object);
+    if (!object || object->output() == nullptr) {
+        out.message = "That body has not been computed yet.";
+        return out;
+    }
+    const auto shape = object->output()->map.resolve(pick.element);
+    const auto wanted = topologyFor(selectionLevel_);
+    if (!shape || !wanted) {
+        out.message = "That element no longer exists in the model.";
+        return out;
+    }
+    if (shape->type() != *wanted) {
+        // Honest about the common case rather than silent: the mesh carries faces and edges, so at
+        // Vertex level there is nothing to hit at all, and a click that does nothing without saying
+        // why is the exact complaint this seam exists to answer.
+        out.message = std::string("Nothing to select at ") + toString(selectionLevel_) +
+                      " level here.";
+        return out;
+    }
+
+    if (!additive) elementSelection_.clear();
+    const auto same = [&](const ElementSelection& e) { return e.element == pick.element; };
+    const auto it = std::find_if(elementSelection_.begin(), elementSelection_.end(), same);
+    if (it != elementSelection_.end()) {
+        elementSelection_.erase(it);        // clicking a selected element again deselects it
+        out.message = "Deselected";
+    } else {
+        elementSelection_.push_back({pick.object, pick.element, pick.slot});
+        out.message = std::string("Selected ") + toString(selectionLevel_) + " " +
+                      pick.element.toString();
+    }
+    out.changed = true;
+    refreshHighlights();
+    notifyDocument();
+    return out;
+}
+
+bool Controller::hoverAt(std::uint32_t x, std::uint32_t y) {
+    const Pick pick = pickAt(x, y);
+    const std::optional<std::uint32_t> now =
+        pick.hit ? std::optional<std::uint32_t>{pick.slot} : std::nullopt;
+    if (now == hoveredSlot_) return false;   // the shell repaints on the return value, not per event
+    hoveredSlot_ = now;
+    refreshHighlights();
+    return true;
+}
+
+bool Controller::clearHover() {
+    if (!hoveredSlot_) return false;
+    hoveredSlot_.reset();
+    refreshHighlights();
+    return true;
+}
+
+void Controller::scriptNextPick(std::uint32_t elementSlot, bool valid) {
+    if (gpu_ != nullptr) return;
+    render::IPicker::Hit hit;
+    hit.element = elementSlot;
+    hit.valid = valid;
+    backend_.picker.setNextHit(hit);
+}
+
+std::vector<naming::ElementName> Controller::edgesOf(ObjectId id) const {
+    std::vector<naming::ElementName> edges;
+    const auto object = history_.current().find(id);
+    if (!object || object->output() == nullptr) return edges;
+    const auto& output = *object->output();
+
+    // Filter by resolved shape type rather than by anything in the name. A name records
+    // provenance, not topology — an edge and the face that bounds it can both come from the same
+    // feature and the same operation, so only the shape it resolves to tells them apart.
+    for (const auto& name : output.map.allNames()) {
+        const auto shape = output.map.resolve(name);
+        if (shape && shape->type() == kernel::ShapeType::Edge) edges.push_back(name);
+    }
+    return edges;
+}
+
+const char* toString(Environment e) noexcept {
+    switch (e) {
+        case Environment::Model:  return "Model";
+        case Environment::Sketch: return "Sketch";
+    }
+    return "Model";
+}
+
+}  // namespace cad::app
