@@ -82,6 +82,10 @@ std::vector<TreeItem> Controller::tree() const {
                                     [&](const render::Placement& p) {
                                         return p.object == id && !p.visible;
                                     });
+        // Decided by TYPE here rather than by the shell, so a second shell cannot put the datums
+        // somewhere else. When work planes and axes arrive they join this list and nothing else
+        // has to change.
+        if (object->type() == "Plane") item.group = TreeGroup::Origin;
         out.push_back(std::move(item));
     }
     return out;
@@ -990,6 +994,26 @@ ObjectId Controller::beginSketch() {
         if (onFace != ObjectId{}) {
             editSketch(onFace);
             return onFace;
+        }
+    }
+
+    // A datum selected in the TREE, which is how a user picks a plane before any geometry exists.
+    // The tree selects OBJECTS, not elements, so the element loop above never sees it — and without
+    // this, choosing "XZ Plane" and pressing Start Sketch silently produced an XY sketch.
+    for (const ObjectId candidate : selection_) {
+        const auto object = history_.current().find(candidate);
+        if (!object || object->type() != "Plane" || object->output() == nullptr) continue;
+        // A datum has exactly one face; find it by measuring rather than by assuming a position in
+        // the map, whose order is not defined.
+        for (const auto& name : object->output()->map.allNames()) {
+            const auto shape = object->output()->map.resolve(name);
+            if (!shape || !kernel::planeOf(*shape)) continue;
+            const ObjectId onPlane = addSketchOnFace(candidate, name.toString());
+            if (onPlane != ObjectId{}) {
+                editSketch(onPlane);
+                return onPlane;
+            }
+            break;
         }
     }
 

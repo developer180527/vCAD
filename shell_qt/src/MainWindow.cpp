@@ -1559,8 +1559,29 @@ void MainWindow::refreshTree() {
         root->setText(0, QString::fromStdString(session_.documents()[index].title));
         root->setExpanded(true);
 
+        // The Origin folder, created only when there is something to put in it, and COLLAPSED.
+        //
+        // Datums are reference geometry, not history. Left loose in the list they sit between the
+        // features as three steps the user does not remember performing — which is exactly how they
+        // were first reported. Collapsed by default for the same reason Fusion collapses its Origin
+        // folder: they are always there and rarely the thing you came to the tree for.
+        QTreeWidgetItem* originFolder = nullptr;
+        const auto parentFor = [&](const cad::app::TreeItem& item) -> QTreeWidgetItem* {
+            if (item.group != cad::app::TreeGroup::Origin) return root;
+            if (originFolder == nullptr) {
+                originFolder = new QTreeWidgetItem(root);
+                originFolder->setText(0, tr("Origin"));
+                originFolder->setIcon(0, icon(QStringLiteral("origin"), 16));
+                originFolder->setExpanded(false);
+                // No object id: the folder is a grouping, not a thing that can be selected,
+                // renamed or deleted. Without this a click on it would carry a stale id.
+                originFolder->setData(0, Qt::UserRole, QVariant());
+            }
+            return originFolder;
+        };
+
         for (const auto& item : c->tree()) {
-            auto* node = new QTreeWidgetItem(root);
+            auto* node = new QTreeWidgetItem(parentFor(item));
             node->setText(0, QString::fromStdString(item.label));
             node->setData(0, Qt::UserRole, QVariant::fromValue<qulonglong>(item.id.value));
             node->setIcon(0, icon(iconNameFor(item.type), 16));

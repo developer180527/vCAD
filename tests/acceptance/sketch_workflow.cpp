@@ -208,3 +208,53 @@ TEST_CASE("origin planes are reference geometry, not bodies", "[sketch][flow][da
     // for the tip-body rule that decides what a feature consumed.
     CHECK(controller.stats().instances == 1);
 }
+
+TEST_CASE("datums are reference geometry, not history", "[sketch][flow][datum]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+
+    int origin = 0;
+    int history = 0;
+    for (const auto& item : controller.tree()) {
+        const auto object = controller.document().find(item.id);
+        REQUIRE(object != nullptr);
+        if (item.group == app::TreeGroup::Origin) {
+            ++origin;
+            // Only datums. A body landing in the Origin group would vanish from the history a
+            // user scrubs, which is worse than the flat list this replaces.
+            CHECK(object->type() == "Plane");
+        } else {
+            ++history;
+            CHECK(object->type() != "Plane");
+        }
+    }
+    CHECK(origin == 3);
+    CHECK(history == 1);   // the box, and nothing else pretending to be a modelling step
+}
+
+TEST_CASE("a plane picked in the tree is the plane you sketch on", "[sketch][flow][datum]") {
+    // The tree selects OBJECTS; the viewport selects ELEMENTS. Start Sketch has to honour both, or
+    // choosing "XZ Plane" in the browser and pressing Start Sketch gives an XY sketch — silently,
+    // and only visibly wrong once you have drawn on it.
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+
+    document::ObjectId xz{};
+    for (const auto& item : controller.tree()) {
+        const auto object = controller.document().find(item.id);
+        if (object && object->type() == "Plane" &&
+            object->label().find("XZ") != std::string::npos) {
+            xz = item.id;
+        }
+    }
+    REQUIRE(xz != document::ObjectId{});
+
+    controller.select(xz, false);          // exactly what clicking the tree row does
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+
+    // XZ's normal is Y. The XY fallback would look along Z, so the two answers disagree.
+    CHECK_THAT(alignmentWith(controller, {0.0, 1.0, 0.0}),
+               Catch::Matchers::WithinAbs(1.0, 1e-3));
+}

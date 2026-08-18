@@ -31,6 +31,21 @@ namespace cad::app {
 
 /// One row of the model browser. Flat and copyable: the shell rebuilds its tree from these
 /// rather than holding pointers into the document, so a recompute cannot dangle a widget.
+/// Where an object belongs in the browser.
+///
+/// A parametric modeller shows two different things: what EXISTS, by kind, and what HAPPENED, in
+/// order. A flat list conflates them, which is how three origin datums ended up sitting in the
+/// feature history between a Box and a Sketch — reading as three modelling steps the user did not
+/// perform. Reference geometry is not history and does not belong in it.
+///
+/// SolidWorks and Inventor keep one ordered tree and separate the two with FOLDERS; Fusion splits
+/// them across a browser and a timeline. vCAD follows the first, because its tree is already one
+/// ordered list — see docs/design/MODELLING_UX.md §1.
+enum class TreeGroup : std::uint8_t {
+    History,    ///< features, in the order they were applied
+    Origin,     ///< datum planes, and later axes and the origin point
+};
+
 struct TreeItem {
     document::ObjectId id;
     std::string label;
@@ -39,6 +54,7 @@ struct TreeItem {
     std::string error;              ///< empty unless state is Failed or Blocked
     bool selected = false;
     bool visible = true;
+    TreeGroup group = TreeGroup::History;
 };
 
 /// What a command needs to know before offering itself. A ribbon button that is enabled and then
