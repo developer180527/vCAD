@@ -317,8 +317,15 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
             syncDimensionField();
             return;
         } else if (event->key() == Qt::Key_Escape) {
-            controller_.clearSketchDimension();
+            // Clears a half-typed number first, and only ENDS THE CHAIN when there is none —
+            // otherwise one keystroke would throw away both the digits and the run being drawn.
+            if (!controller_.sketchDimensionInput().empty()) {
+                controller_.clearSketchDimension();
+            } else {
+                controller_.endSketchChain();
+            }
             syncDimensionField();
+            markDirty();
             return;
         } else if (!event->text().isEmpty()
                    && controller_.typeSketchDimension(event->text().at(0).toLatin1())) {
@@ -338,16 +345,21 @@ void Viewport::syncDimensionField() {
         return;
     }
 
-    const QString typed = QString::fromStdString(controller_.sketchDimensionInput());
-    // What the user TYPED wins the display, because that is the value that will be used. Showing
-    // the measured length while a different number is being typed would be showing them a size
-    // they are in the middle of replacing.
-    const QString size = typed.isEmpty()
-                             ? QStringLiteral("%1").arg(measure.length, 0, 'f', 2)
-                             : typed + QStringLiteral("_");
-    dimensionField_->setText(measure.circle
-                                 ? tr("R %1").arg(size)
-                                 : tr("%1   %2°").arg(size).arg(measure.angle, 0, 'f', 1));
+    // Formatted by the CONTROLLER, in the document's display units. A shell printing raw
+    // millimetres would show a number the rest of the application does not use — and the units
+    // preference is not the shell's to know about.
+    const auto text = controller_.sketchPreviewText();
+    if (!text.valid) {
+        dimensionField_->hide();
+        return;
+    }
+    const QString caret = controller_.sketchDimensionInput().empty() ? QString()
+                                                                     : QStringLiteral("_");
+    const QString length = QString::fromStdString(text.length) + caret;
+    dimensionField_->setText(text.angle.empty()
+                                 ? length
+                                 : QStringLiteral("%1   %2").arg(
+                                       length, QString::fromStdString(text.angle)));
     dimensionField_->adjustSize();
 
     // Offset from the cursor so the pointer never sits on top of the number, and clamped inside

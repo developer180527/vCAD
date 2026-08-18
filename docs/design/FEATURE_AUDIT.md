@@ -69,13 +69,26 @@ It is wired, not finished. It has been described in use as "VERY buggy", and the
 click/drag split is the likeliest cause: 4 px at device resolution is tight on a trackpad. Worth
 re-measuring against a real session before adding more on top of it.
 
-### There is no way to get geometry out
+### There is no way to get geometry out — **CLOSED 18 Aug**
 
-`core/io` implements STEP, IGES and STL **writers** — `OcctProvider.cpp` has all three, plus
-`exportFile` in `Format.h`. The string `exportFile` does not appear anywhere in `shell_qt` or `app`.
+File → Export writes the visible bodies, with the format chosen by extension and the filter list
+built from the io registry rather than hard-coded — so a format compiled in conditionally appears
+exactly when it is available, instead of being offered in a dialog and refused on write.
 
-A modeller you cannot export from cannot be used for anything, however good the model is. This is one
-command and one file dialog away from working, against an implementation that is already tested.
+Two decisions were the actual work, and neither was in the writers:
+
+- **What to export.** The VISIBLE bodies, by the same tip-body rule that decides what to draw, so
+  the file matches the screen. A Box consumed by a Fillet is still in the document; writing both
+  would put the un-filleted block in the file beside the real part, and the user would find out in
+  whatever opened it. The test fillets a box and asserts the imported volume is the FILLETED one —
+  the two differ, which is what lets the test tell which was written.
+- **Refusing before writing.** An empty document and an unhandled extension both refuse without
+  creating a file. A zero-byte STEP that opens as nothing is worse than being told there is nothing
+  to export.
+
+The tests read every export back through the IMPORTER rather than trusting the writer's return
+value. `core/io` had tested writers for weeks and export was still the cheapest disqualifying gap,
+because nothing called them — so "the writer succeeded" was never the question worth asking.
 
 ### A sketch on a side face extruded to nothing — **found and FIXED 18 Aug**
 

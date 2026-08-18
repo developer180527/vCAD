@@ -1,5 +1,8 @@
 #include "cad/app/Controller.h"
 
+#include "cad/io/Format.h"
+#include "cad/kernel/Primitives.h"
+
 #include "cad/render/MetalSurface.h"
 
 #include "cad/io/DocumentStore.h"
@@ -64,6 +67,63 @@ void Controller::notifyView() { if (viewChanged_) viewChanged_(); }
 void Controller::status(const std::string& text) { if (statusFn_) statusFn_(text); }
 
 // ── document ────────────────────────────────────────────────────────────────────────────
+
+std::vector<Controller::ExportFormat> Controller::exportFormats() {
+    static const io::FormatRegistry registry = io::FormatRegistry::builtins();
+    std::vector<ExportFormat> out;
+    for (const io::IFormatProvider* provider : registry.all()) {
+        const auto caps = provider->capabilities();
+        if (!caps.write) continue;
+        out.push_back(ExportFormat{provider->id(), provider->displayName(),
+                                   provider->extensions(), caps.solids});
+    }
+    return out;
+}
+
+bool Controller::exportDocument(const std::string& path) {
+    if (path.empty()) {
+        status("No file name given.");
+        return false;
+    }
+
+    // The VISIBLE bodies, so the file matches the screen. A Box consumed by a Fillet is still in
+    // the document; writing it too would put the un-filleted block in the file beside the real
+    // part, and the user would find out in whatever opened it.
+    std::vector<kernel::Shape> shapes;
+    const auto& doc = history_.current();
+    for (const render::Placement& placement : placements_) {
+        if (!placement.visible) continue;
+        const auto object = doc.find(placement.object);
+        if (!object || object->output() == nullptr) continue;
+        shapes.push_back(object->output()->shape);
+    }
+
+    if (shapes.empty()) {
+        status("There is nothing to export.");
+        return false;
+    }
+
+    static const io::FormatRegistry registry = io::FormatRegistry::builtins();
+    if (registry.forPath(path) == nullptr) {
+        status("No exporter handles that file type.");
+        return false;
+    }
+
+    auto combined = shapes.size() == 1 ? kernel::Result<kernel::Shape>{shapes.front()}
+                                       : kernel::compound(shapes);
+    if (!combined) {
+        status(combined.error().message);
+        return false;
+    }
+
+    auto written = io::exportFile(registry, path, combined.value());
+    if (!written) {
+        status(written.error().message);
+        return false;
+    }
+    status("Exported " + path);
+    return true;
+}
 
 std::vector<TreeItem> Controller::tree() const {
     std::vector<TreeItem> out;
@@ -1396,6 +1456,27 @@ Controller::PreviewMeasure Controller::sketchPreviewMeasure() const {
     return out;
 }
 
+Controller::PreviewText Controller::sketchPreviewText() const {
+    PreviewText out;
+    const PreviewMeasure measure = sketchPreviewMeasure();
+    if (!measure.valid) return out;
+
+    // What the user TYPED wins, because that is the value that will be used — showing the measured
+    // length beside a number being typed to replace it is showing two answers to one question.
+    const std::string typed = sketchInput_;
+    out.length = typed.empty()
+                     ? units::format(units::millimetres(measure.length),
+                                     preferences_.displayUnits, 2)
+                     : typed;
+    if (measure.circle) {
+        out.length = "R " + out.length;
+    } else {
+        out.angle = units::format(units::degrees(measure.angle), 1);
+    }
+    out.valid = true;
+    return out;
+}
+
 bool Controller::typeSketchDimension(char c) {
     // Only while something is pending: a digit typed with nothing half-drawn is a shortcut, not a
     // dimension, and swallowing it would make the keyboard feel dead.
@@ -1491,64 +1572,166 @@ bool Controller::sketchHoverAt(float x, float y) {
     return true;
 }
 
+void Controller::endSketchChain() {
+    if (!sketchPending_ && sketchInput_.empty()) return;
+    sketchPending_.reset();
+    sketchHover_.reset();
+    sketchInput_.clear();
+    pushSketchOverlay();
+    notifyView();
+}
+
+void Controller::clearSketch() {
+    if (!editing_.has_value()) return;
+    *editing_ = sketch::Sketch(editing_->plane());
+    editing_->setPlacement(editing_->placement());
+    endSketchChain();
+    pushSketchOverlay();
+    notifyDocument();
+}
+
+std::optional<std::array<double, 2>> Controller::snapSketchPoint(
+    const std::array<double, 2>& at) const {
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) return std::nullopt;
+
+    // A tolerance in PIXELS, converted to sketch units. A fixed millimetre tolerance snaps from
+    // across the screen when zoomed out and never snaps at all when zoomed in -- the user's hand is
+    // steady in pixels, not in millimetres.
+    const double tolerance = camera_.worldPerPixel(viewport_) * kSnapPixels;
+
+    std::optional<std::array<double, 2>> best;
+    double nearest = tolerance;
+    const auto consider = [&](double u, double v) {
+        const double dx = u - at[0];
+        const double dy = v - at[1];
+        const double distance = std::sqrt(dx * dx + dy * dy);
+        if (distance <= nearest) {
+            nearest = distance;
+            best = std::array<double, 2>{u, v};
+        }
+    };
+
+    for (const auto& g : active->geometry()) {
+        switch (g.kind) {
+            case sketch::GeoKind::Line:
+                consider(g.p[0], g.p[1]);
+                consider(g.p[2], g.p[3]);
+                break;
+            case sketch::GeoKind::Circle:
+            case sketch::GeoKind::Arc:
+                consider(g.p[0], g.p[1]);   // the centre
+                break;
+            case sketch::GeoKind::Point:
+                consider(g.p[0], g.p[1]);
+                break;
+        }
+    }
+    // The sketch origin, which is what a user aims at when they want a shape anchored.
+    consider(0.0, 0.0);
+    return best;
+}
+
 bool Controller::sketchClickAt(float x, float y) {
     if (environment_ != Environment::Sketch || !editing_.has_value()) return false;
     if (sketchTool_ == SketchTool::Select) return false;
 
-    const auto point = sketchPointAt(x, y);
-    // Refused rather than snapped to something arbitrary. A click that missed the plane -- edge-on,
-    // or a grazing angle -- has no sketch coordinate, and inventing one puts geometry where the
-    // user cannot see it.
+    auto point = sketchPointAt(x, y);
     if (!point) {
         status("That click did not land on the sketch plane.");
         return false;
     }
+    // Snapped BEFORE anything else uses it, so the point that starts a segment and the point that
+    // ends one are the same point when they should be. Without this a click lands NEAR the previous
+    // endpoint, the two segments do not meet, and no amount of careful aiming closes the profile.
+    if (const auto snapped = snapSketchPoint(*point)) point = snapped;
 
     if (!sketchPending_) {
         sketchPending_ = *point;
-        // Starts at the click, so the band has zero length until the pointer moves rather than
-        // flicking from wherever the last shape ended.
         sketchHover_ = *point;
-        status(sketchTool_ == SketchTool::Line ? "Line: click the end point"
+        status(sketchTool_ == SketchTool::Line ? "Line: click the next point, Escape to finish"
                                                : "Circle: click to set the radius");
+        pushSketchOverlay();
         notifyView();
         return true;
     }
 
     const std::array<double, 2> first = *sketchPending_;
-    sketchPending_.reset();
-    sketchHover_.reset();
-    sketchInput_.clear();
-
-    if (sketchTool_ == SketchTool::Line) {
-        const double dx = (*point)[0] - first[0];
-        const double dy = (*point)[1] - first[1];
-        // A zero-length line is a double-click, not a request. It would be refused by addLine
-        // anyway on the next solve, but silently: better to say nothing was drawn.
-        if (std::abs(dx) < 1e-9 && std::abs(dy) < 1e-9) {
-            status("A line needs two different points.");
-            return false;
-        }
-        editing_->addLine(first[0], first[1], (*point)[0], (*point)[1]);
-    } else {
-        const double dx = (*point)[0] - first[0];
-        const double dy = (*point)[1] - first[1];
-        const double radius = std::sqrt(dx * dx + dy * dy);
-        if (radius < 1e-9) {
-            status("A circle needs a radius.");
-            return false;
-        }
-        editing_->addCircle(first[0], first[1], radius);
+    const double dx = (*point)[0] - first[0];
+    const double dy = (*point)[1] - first[1];
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) {
+        // A second click on the first point is how a user says "done" with the mouse alone.
+        endSketchChain();
+        return true;
     }
 
-    // Every mutation is followed by a solve, because a sketch that does not follow its constraints
-    // while you draw is not a sketch -- it is a drawing that will jump when you finally solve it.
+    if (sketchTool_ == SketchTool::Circle) {
+        const auto id = editing_->addCircle(first[0], first[1], length);
+        sketchPending_.reset();
+        sketchHover_.reset();
+        sketchInput_.clear();
+        (void)id;
+    } else {
+        const auto id = editing_->addLine(first[0], first[1], (*point)[0], (*point)[1]);
+        inferSketchConstraint(id, first, *point);
+
+        // CHAINING: the endpoint becomes the next segment's start. This is the whole behaviour of
+        // a CAD line tool -- click, click, click draws a connected run -- and its absence is why a
+        // closed rectangle was impossible to draw.
+        sketchPending_ = *point;
+        sketchHover_ = *point;
+        sketchInput_.clear();
+
+        // Back onto a point the chain already used: the loop is closed and the run is over.
+        // Checked after the segment is added, so the closing segment itself is drawn.
+        if (closesSketchLoop(*point)) endSketchChain();
+    }
+
     lastSketchSolve_ = editing_->solve();
     status(lastSketchSolve_.message);
     pushSketchOverlay();
     notifyDocument();
     notifyView();
     return true;
+}
+
+bool Controller::closesSketchLoop(const std::array<double, 2>& at) const {
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) return false;
+    // Exact, because the point has already been snapped: a loop closes when the click landed ON an
+    // existing endpoint, not merely near one.
+    int touching = 0;
+    for (const auto& g : active->geometry()) {
+        if (g.kind != sketch::GeoKind::Line) continue;
+        if (std::abs(g.p[0] - at[0]) < 1e-9 && std::abs(g.p[1] - at[1]) < 1e-9) ++touching;
+        if (std::abs(g.p[2] - at[0]) < 1e-9 && std::abs(g.p[3] - at[1]) < 1e-9) ++touching;
+    }
+    // Two segments meeting here means the run has come back on itself. One is just the segment
+    // that was only this moment drawn.
+    return touching >= 2;
+}
+
+void Controller::inferSketchConstraint(std::uint32_t id, const std::array<double, 2>& from,
+                                       const std::array<double, 2>& to) {
+    if (!editing_.has_value()) return;
+
+    // Horizontal and vertical only, for now. They are the two a hand aims at constantly and the two
+    // whose absence leaves an otherwise careful sketch under-constrained -- which is the difference
+    // between a parametric sketch and a drawing.
+    const double dx = std::abs(to[0] - from[0]);
+    const double dy = std::abs(to[1] - from[1]);
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1e-9) return;
+
+    // A few degrees of tolerance: a user aiming at horizontal misses by a pixel or two, and a rule
+    // that only fires on an exact match never fires at all.
+    constexpr double kTolerance = 0.05;   // sin of ~3 degrees
+    if (dy / length < kTolerance) {
+        editing_->horizontal(id);
+    } else if (dx / length < kTolerance) {
+        editing_->vertical(id);
+    }
 }
 
 std::vector<float> Controller::sketchOverlayVertices() const {
@@ -1674,6 +1857,68 @@ std::uint64_t Controller::sketchPreviewRevision() const {
     return hash;
 }
 
+Controller::CurveMesh Controller::sketchCurveMesh(double widthPixels) const {
+    CurveMesh mesh;
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) return mesh;
+
+    const auto lines = sketchOverlayVertices();
+    if (lines.size() < 6) return mesh;
+
+    // Half-width in world units, so the ribbon is `widthPixels` across on screen whatever the zoom.
+    const double half = camera_.worldPerPixel(viewport_) * widthPixels * 0.5;
+
+    // Offset within the SKETCH PLANE rather than towards the camera. A sketch is drawn face-on, so
+    // in-plane widening looks right there and merely foreshortens when the view is orbited — which
+    // is the correct behaviour anyway: the ribbon is geometry on the plane, not a screen decal.
+    std::array<double, 3> planeNormal{0.0, 0.0, 1.0};
+    if (const auto& frame = active->resolvedFrame()) {
+        const auto n = frame->normal();
+        planeNormal = {n[0], n[1], n[2]};
+    } else {
+        switch (active->plane()) {
+            case sketch::Plane::XY: planeNormal = {0, 0, 1}; break;
+            case sketch::Plane::XZ: planeNormal = {0, -1, 0}; break;
+            case sketch::Plane::YZ: planeNormal = {1, 0, 0}; break;
+        }
+    }
+
+    for (std::size_t i = 0; i + 5 < lines.size(); i += 6) {
+        const std::array<double, 3> a{lines[i], lines[i + 1], lines[i + 2]};
+        const std::array<double, 3> b{lines[i + 3], lines[i + 4], lines[i + 5]};
+        std::array<double, 3> along{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double length =
+            std::sqrt(along[0] * along[0] + along[1] * along[1] + along[2] * along[2]);
+        if (length < 1e-12) continue;
+        for (double& v : along) v /= length;
+
+        // side = along x normal: perpendicular to the segment, in the plane.
+        const std::array<double, 3> side{along[1] * planeNormal[2] - along[2] * planeNormal[1],
+                                         along[2] * planeNormal[0] - along[0] * planeNormal[2],
+                                         along[0] * planeNormal[1] - along[1] * planeNormal[0]};
+
+        const auto push = [&](const std::array<double, 3>& p, double sign) {
+            render::CadVertex vertex{};
+            for (int k = 0; k < 3; ++k) {
+                vertex.position[k] = static_cast<float>(p[k] + side[k] * half * sign);
+                vertex.normal[k] = static_cast<float>(planeNormal[k]);
+            }
+            vertex.element = 0;
+            mesh.vertices.push_back(vertex);
+        };
+
+        const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
+        push(a, +1.0);
+        push(a, -1.0);
+        push(b, -1.0);
+        push(b, +1.0);
+        for (const std::uint32_t offset : {0u, 1u, 2u, 0u, 2u, 3u}) {
+            mesh.indices.push_back(base + offset);
+        }
+    }
+    return mesh;
+}
+
 std::uint64_t Controller::sketchOverlayRevision() const {
     // FNV-1a over the vertices. A digest rather than a counter, for the same reason the instance
     // buffers use one: an edit that does not change the geometry must not re-upload it, and a
@@ -1734,8 +1979,20 @@ void Controller::pushSketchOverlay() {
     if (!scene_) return;
     // Cleared when leaving the sketch, or the finished sketch would be drawn twice: once as the
     // overlay and once as the feature's own edges, at slightly different depths.
-    const auto lines = sketchOverlayVertices();
-    scene_->setSketchOverlay(lines, sketchOverlayRevision());
+    // Ribbons rather than lines: bgfx draws lines one physical pixel wide, which on a Retina
+    // display is a hairline. The revision folds in the camera scale, because the ribbon's width is
+    // in world units derived from it — a zoom really does change the geometry here.
+    // DEVICE pixels, because the viewport is measured in them. 2.5 device pixels is barely one
+    // logical pixel on a Retina display, which is the hairline this replaced; 4 gives a sketch line
+    // about as heavy as the model's own edges.
+    const auto curves = sketchCurveMesh(4.0);
+    const std::uint64_t scale =
+        static_cast<std::uint64_t>(camera_.worldPerPixel(viewport_) * 1e6);
+    scene_->setSketchCurves(curves.vertices, curves.indices, sketchOverlayRevision() ^ scale);
+
+    // The line overlay is kept for the PREVIEW only, which is dashed and thin by design — a
+    // proposal should not look as solid as committed geometry.
+    scene_->setSketchOverlay({}, 0);
     const auto preview = sketchPreviewVertices();
     scene_->setSketchPreview(preview, sketchPreviewRevision());
     pushSketchProfile();

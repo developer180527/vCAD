@@ -205,6 +205,7 @@ void SceneBuilder::setHighlight(std::uint32_t element, Highlight h) {
 constexpr std::uint64_t kSketchOverlayKey = 0x5E7C4000000001ull;
 constexpr std::uint64_t kSketchPreviewKey = 0x5E7C4000000002ull;
 constexpr std::uint64_t kSketchProfileKey = 0x5E7C4000000003ull;
+constexpr std::uint64_t kSketchCurveKey = 0x5E7C4000000004ull;
 
 void SceneBuilder::setSketchOverlay(std::span<const float> lineVertices, std::uint64_t revision) {
     if (lineVertices.empty()) {
@@ -242,6 +243,34 @@ void SceneBuilder::ensureSketchInstance() {
     sketchInstance_ = gpu_.uploadInstances(kSketchOverlayKey, 1u,
                                            std::span<const Instance>(&identity, 1));
     sketchRange_.assign(1, DrawRange{0, 1});
+}
+
+void SceneBuilder::setSketchCurves(std::span<const CadVertex> vertices,
+                                   std::span<const std::uint32_t> indices,
+                                   std::uint64_t revision) {
+    if (vertices.empty() || indices.empty()) {
+        curveIndexCount_ = 0;
+        refreshProfileBatch();
+        return;
+    }
+    curveVertices_ = gpu_.uploadDynamicVertices(kSketchCurveKey, revision, vertices);
+    curveIndices_ = gpu_.uploadDynamicIndices(kSketchCurveKey, revision, indices);
+    if (curveVertices_ == BufferId::None || curveIndices_ == BufferId::None) {
+        curveIndexCount_ = 0;
+        refreshProfileBatch();
+        return;
+    }
+    curveIndexCount_ = static_cast<std::uint32_t>(indices.size());
+
+    Instance ink;
+    static constexpr float kIdentity[12]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    std::copy(std::begin(kIdentity), std::end(kIdentity), ink.transform);
+    // The sketch's own blue, stronger than the profile shading it sits on.
+    ink.colour[0] = 0.04f;
+    ink.colour[1] = 0.44f;
+    ink.colour[2] = 0.78f;
+    curveInstance_ = gpu_.uploadInstances(kSketchCurveKey, 1u, std::span<const Instance>(&ink, 1));
+    refreshProfileBatch();
 }
 
 void SceneBuilder::setSketchProfile(std::span<const CadVertex> vertices,
@@ -296,6 +325,22 @@ void SceneBuilder::refreshProfileBatch() {
         profile.onTop = true;
         batchesWithProfile_.push_back(profile);
     }
+    // Curves AFTER the profile shading, so the outline sits on top of its own fill.
+    if (curveIndexCount_ > 0 && curveVertices_ != BufferId::None
+        && curveIndices_ != BufferId::None && curveInstance_ != BufferId::None) {
+        Batch curves;
+        curves.vertices = curveVertices_;
+        curves.indices = curveIndices_;
+        curves.indexOffset = 0;
+        curves.indexCount = curveIndexCount_;
+        curves.instances = curveInstance_;
+        curves.instanceCount = 1;
+        curves.ranges = profileRange_.empty() ? sketchRange_ : profileRange_;
+        curves.doubleSided = true;
+        curves.onTop = true;
+        batchesWithProfile_.push_back(curves);
+    }
+
     frame_.batches = batchesWithProfile_;
 }
 

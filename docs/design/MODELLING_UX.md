@@ -91,6 +91,54 @@ my reading is that Fusion leaves you looking at the plane. vCAD restores the pre
 was an explicit request — recording it here as a *deliberate divergence* rather than a copy, so the
 next person does not "fix" it back.
 
+### 2b. How a line is actually drawn, click by click
+
+The section I should have written first. §2 covers the ENVIRONMENT — which tab, which camera, which
+palette — and none of that is what a person does with their hands. Everything below is behaviour a
+user performs hundreds of times an hour, and getting any of it wrong makes the sketcher unusable
+while every model-level test still passes.
+
+**A line chains.** Click sets the start. Click again ends the first segment *and starts the next
+from that endpoint*. Click, click, click draws a connected run. The command stays active throughout.
+This is the single most important fact about the tool, and vCAD had it wrong: two clicks per
+segment, endpoint discarded. That makes a closed rectangle require four clicks landing on exactly
+coincident pixels — which is why sketches came out open, and why Extrude reported ERR.
+
+Note what Fusion does NOT do: there is no polyline object. Each segment is a separate line; the
+chain is an interaction, not a data structure. vCAD's `Sketch` already stores separate lines, so
+nothing in the model has to change — only the tool.
+
+**A chain ends** on Escape, on a double-click, by clicking the on-screen checkmark, or by starting
+another command. Closing the loop back onto the start point also ends it naturally.
+
+**The pointer snaps** — to existing points, to the origin, and to the grid. This is what makes
+"auto endpoint joining" happen: without it a click lands *near* the previous endpoint and the two
+segments do not meet, so the profile never closes no matter how carefully the user aims. Snapping
+is not a convenience here; it is the mechanism by which a closed profile is possible at all.
+
+**Constraints are inferred as you draw.** A line drawn roughly horizontal receives a horizontal
+constraint automatically. This is why a Fusion sketch ends up nearly fully constrained without a
+separate dimensioning pass, and why vCAD's sketches — which infer nothing — stay under-constrained
+however carefully they are drawn.
+
+**Two dimension fields, not one**: length and angle, both live, both editable. **Tab locks a field**
+— a lock icon appears and the value stops tracking the mouse, so the user can aim the direction
+without disturbing a length they have already decided. vCAD shows one field and the angle read-only.
+
+**Units.** The fields are in the document's display units, not raw millimetres.
+
+#### What this means for vCAD, concretely
+
+| Behaviour | vCAD before this pass |
+|---|---|
+| Chaining | **missing** — two clicks per segment, endpoint dropped |
+| Snap to existing endpoints | **missing** — so profiles could not reliably close |
+| Escape / double-click to end | **missing** — no way to end a chain that did not exist |
+| Inferred horizontal/vertical | **missing** |
+| Length AND angle, both editable | length only; angle read-only |
+| Units in the field | raw millimetres, unlabelled |
+| Line weight | 2 px logical — one physical pixel on a Retina display |
+
 ### The Sketch Palette — the piece vCAD has nothing like
 
 Fusion's palette is a docked panel of sketch-scoped options, not commands:
@@ -208,8 +256,9 @@ way to dimension geometry that already exists.
   and `toWire` already honours it; nothing sets it.
 - **Show Points / Dimensions / Constraints / Projected Geometry toggles**: none, and there is nothing
   to toggle yet — dimensions and constraints are not drawn in the viewport at all.
-- **Export is still zero call sites**, and `measure()` still has none in the shell. Both predate this
-  document and remain the audit's cheapest disqualifying gaps.
+- ~~Export is still zero call sites~~ — **done 18 Aug.** File → Export, formats read from the io
+  registry so a conditionally-compiled one appears exactly when available, mesh-only formats
+  labelled as such in the dialog. `measure()` still has no caller in the shell.
 
 ---
 

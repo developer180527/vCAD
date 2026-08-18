@@ -3,6 +3,8 @@
 #include "cad/kernel/Result.h"
 #include "cad/kernel/Shape.h"
 
+#include <span>
+
 #include <vector>
 
 namespace cad::kernel {
@@ -52,5 +54,13 @@ Result<Operation> makeCylinder(double radius, double height);
 /// `plane`: 0 = XY, 1 = XZ, 2 = YZ — the same encoding a sketch's plane property uses, so the two
 /// cannot drift apart into two spellings of the same three values.
 Result<Shape> makePlane(int plane, double size);
+
+/// Several shapes as one compound, without fusing them.
+///
+/// NOT a boolean union: a union of two touching solids is one solid with the shared faces gone,
+/// which is a modelling decision. A compound keeps each body exactly as it is and simply carries
+/// them together — which is what "export these three bodies to one file" means, and what every
+/// exchange format expects at the top level.
+Result<Shape> compound(std::span<const Shape>);
 
 }  // namespace cad::kernel

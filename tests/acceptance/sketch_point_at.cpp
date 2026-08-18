@@ -231,6 +231,10 @@ TEST_CASE("clicks in the viewport draw into the sketch", "[sketch][viewport]") {
 
         REQUIRE(controller.sketchClickAt(700.0f, 500.0f));
         CHECK(controller.activeSketch()->geometry().size() == before + 1);
+        // The chain CONTINUES from that endpoint — a CAD line tool draws a connected run, so the
+        // second click both ends a segment and starts the next. Escape is what finishes it.
+        CHECK(controller.sketchPending().has_value());
+        controller.endSketchChain();
         CHECK_FALSE(controller.sketchPending().has_value());
     }
 
@@ -402,8 +406,10 @@ TEST_CASE("a half-drawn shape follows the pointer", "[sketch][viewport]") {
 
         CHECK(controller.activeSketch()->geometry().size() == committed + 1);
         CHECK(controller.sketchOverlayVertices().size() == settled + 6);
+        // The band is gone but the CHAIN is not: the pointer has not moved since the click, so
+        // there is nothing to preview yet, and the next move starts a band from the new endpoint.
         CHECK(controller.sketchPreviewVertices().empty());
-        CHECK_FALSE(controller.sketchPending().has_value());
+        CHECK(controller.sketchPending().has_value());
     }
 
     SECTION("switching tools drops the band with the pending point") {

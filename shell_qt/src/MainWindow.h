@@ -117,6 +117,9 @@ private:
     /// Returns false if the save did not happen, which callers must respect — see
     /// confirmDiscardChanges.
     bool saveDocument(bool saveAs);
+
+    /// Writes the visible bodies to a chosen file. The formats come from the io registry.
+    bool exportDocument();
     /// Save / Discard / Cancel prompt. False means the user cancelled and the caller must abort.
     bool confirmDiscardChanges();
     void syncTitle();

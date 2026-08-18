@@ -230,6 +230,9 @@ void MainWindow::buildQuickAccess() {
                     [this] { saveDocument(false); });
     menu->addAction(tr("Save As..."), QKeySequence::SaveAs, this, [this] { saveDocument(true); });
     menu->addSeparator();
+    menu->addAction(icon(QStringLiteral("import"), 16), tr("Export..."),
+                    QKeySequence(QStringLiteral("Ctrl+Shift+E")), this, [this] { exportDocument(); });
+    menu->addSeparator();
     menu->addAction(tr("Home"), this, [this] { session_.activateHome(); });
     menu->addSeparator();
     menu->addAction(tr("Options..."), QKeySequence::Preferences, this, [this] { showOptions(); });
@@ -316,6 +319,53 @@ void MainWindow::openPath(const QString& path) {
     }
     // Session::openDocument fires its changed callback, which rebuilds the tabs and the ribbon.
     setStatusMessage(tr("Opened %1").arg(QFileInfo(path).fileName()));
+}
+
+bool MainWindow::exportDocument() {
+    auto* c = controller();
+    if (session_.homeActive() || c == nullptr) {
+        setStatusMessage(tr("There is no document to export"));
+        return false;
+    }
+
+    // The filter is built from the REGISTRY, so a format compiled in conditionally appears exactly
+    // when it is available rather than being promised in a dialog and refused on write.
+    QStringList filters;
+    for (const auto& format : cad::app::Controller::exportFormats()) {
+        QStringList patterns;
+        for (const std::string& extension : format.extensions) {
+            patterns << QStringLiteral("*%1").arg(QString::fromStdString(extension));
+        }
+        // Mesh-only formats say so in the dialog. Exporting a solid model to STL and discovering
+        // later that the B-rep is gone is a discovery that should happen before the file is
+        // written, not when someone tries to open it in CAD.
+        const QString name = format.solids
+                                 ? QString::fromStdString(format.displayName)
+                                 : tr("%1 — mesh only, no solid geometry")
+                                       .arg(QString::fromStdString(format.displayName));
+        filters << QStringLiteral("%1 (%2)").arg(name, patterns.join(QLatin1Char(' ')));
+    }
+    if (filters.isEmpty()) {
+        setStatusMessage(tr("No export formats are available in this build"));
+        return false;
+    }
+
+    const auto& document = session_.documents()[session_.activeIndex()];
+    const QString suggested = QString::fromStdString(document.title);
+    QString selected = filters.front();
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export"), suggested,
+                                                      filters.join(QStringLiteral(";;")), &selected);
+    if (path.isEmpty()) return false;
+
+    if (!c->exportDocument(path.toStdString())) {
+        // The Controller's own refusal, which reached the status bar through its status callback.
+        // Repeating it in a dialog rather than inventing a second wording: there is one reason the
+        // export failed and the user should see that one.
+        QMessageBox::warning(this, tr("Could not export"), statusMessage(), QMessageBox::Ok);
+        return false;
+    }
+    setStatusMessage(tr("Exported %1").arg(QFileInfo(path).fileName()));
+    return true;
 }
 
 bool MainWindow::saveDocument(bool saveAs) {
@@ -1186,20 +1236,15 @@ void MainWindow::drawSketchForShot(int lines) {
     // only way to photograph the shaded profile — adding any stray line opens it, and an open
     // profile deliberately shades nothing.
     if (lines > 0) {
-        c->sketchClickAt(w * 0.35f, h * 0.35f);
-        c->sketchClickAt(w * 0.65f, h * 0.40f);
+        // A chain, the way a person draws: click, click, click. Not two clicks per segment.
+        c->sketchClickAt(w * 0.30f, h * 0.30f);
+        c->sketchClickAt(w * 0.65f, h * 0.30f);
+        c->sketchClickAt(w * 0.65f, h * 0.60f);
     }
     if (lines > 1) {
-        c->sketchClickAt(w * 0.65f, h * 0.40f);
-        c->sketchClickAt(w * 0.55f, h * 0.65f);
-        // A third click with no partner, then a hover: this leaves the rubber band on screen,
-        // which a screenshot can only catch because it exists between two clicks.
-        c->sketchClickAt(w * 0.30f, h * 0.55f);
-        c->sketchHoverAt(w * 0.50f, h * 0.80f);
-        // A couple of typed digits, so the shot catches the dimension field mid-entry — the state
-        // it spends almost all of its life in and the only one worth photographing.
-        c->typeSketchDimension('3');
-        c->typeSketchDimension('5');
+        // Mid-chain, pointer moved: this is the state the rubber band and the dimension field
+        // exist in, and the only one a screenshot can catch.
+        c->sketchHoverAt(w * 0.40f, h * 0.62f);
     }
     view->syncDimensionFieldForShot();
     view->markDirty();

@@ -5,6 +5,8 @@
 
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 
@@ -91,6 +93,22 @@ Result<Shape> makePlane(int plane, double size) {
         }
         BRepBuilderAPI_MakePolygon polygon(a, b, c, d, /*Close*/ true);
         return wrap(BRepBuilderAPI_MakeFace(polygon.Wire(), /*OnlyPlane*/ true).Face());
+    });
+}
+
+Result<Shape> compound(std::span<const Shape> shapes) {
+    if (shapes.empty()) {
+        return Error{ErrorCode::InvalidInput, "A compound needs at least one shape."};
+    }
+    return guard("build the compound", [&] {
+        TopoDS_Compound result;
+        BRep_Builder builder;
+        builder.MakeCompound(result);
+        for (const Shape& shape : shapes) {
+            if (shape.isNull()) continue;
+            builder.Add(result, occt(const_cast<Shape&>(shape)));
+        }
+        return wrap(result);
     });
 }
 

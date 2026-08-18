@@ -106,6 +106,11 @@ public:
     /// docs/design/MODELLING_UX.md.
     ///
     /// Empty spans clear it, which is what an open profile looks like: nothing shaded.
+    /// The sketch's curves, as ribbon triangles rather than line primitives — see
+    /// Controller::sketchCurveMesh for why lines cannot be made thicker.
+    void setSketchCurves(std::span<const CadVertex> vertices,
+                         std::span<const std::uint32_t> indices, std::uint64_t revision);
+
     void setSketchProfile(std::span<const CadVertex> vertices,
                           std::span<const std::uint32_t> indices, std::uint64_t revision);
 
@@ -239,6 +244,10 @@ private:
     BufferId profileInstance_ = BufferId::None;
     std::uint32_t profileIndexCount_ = 0;
     std::vector<DrawRange> profileRange_;
+    BufferId curveVertices_ = BufferId::None;
+    BufferId curveIndices_ = BufferId::None;
+    BufferId curveInstance_ = BufferId::None;
+    std::uint32_t curveIndexCount_ = 0;
     std::vector<Batch> batchesWithProfile_;
     /// Batch index -> group index, because a group contributes a shaded batch, an edge batch,
     /// both or neither, so the three vectors are not parallel.

@@ -540,6 +540,17 @@ public:
     /// appears from a click the user made a minute ago.
     void setSketchTool(SketchTool);
 
+    /// Ends the run of connected segments without leaving the tool.
+    ///
+    /// Escape, a double-click, or closing the loop. The TOOL stays active: ending a chain means
+    /// "this run is finished", not "I am done drawing", and dropping back to Select would make
+    /// every separate shape cost a trip to the toolbar.
+    void endSketchChain();
+
+    /// Removes all geometry from the sketch being edited. For tests and for a future Delete All;
+    /// the seeded rectangle otherwise makes "is there a closed profile" true before a single click.
+    void clearSketch();
+
     /// What a click at these device pixels does, given the current tool.
     ///
     /// Two-click tools keep their first point here rather than in the shell, so both shells behave
@@ -567,6 +578,16 @@ public:
         double angle = 0.0;    ///< degrees from the sketch's +u axis; meaningless for a circle
     };
     [[nodiscard]] PreviewMeasure sketchPreviewMeasure() const;
+
+    /// The same measurement, formatted for display: length in the document's units, angle in
+    /// degrees. Formatted HERE because the unit preference lives here — a shell printing raw
+    /// millimetres would be showing a number the rest of the application does not use.
+    struct PreviewText {
+        bool valid = false;
+        std::string length;   ///< "40 mm", or "R 12.5 mm" for a circle
+        std::string angle;    ///< "-45.3°"; empty for a circle
+    };
+    [[nodiscard]] PreviewText sketchPreviewText() const;
 
     /// The number the user is typing to fix that measurement exactly.
     ///
@@ -616,6 +637,21 @@ public:
     /// a proposal cannot be mistaken for a fact. Two batches rather than one, since the edge
     /// shader takes its colour per batch.
     [[nodiscard]] std::vector<float> sketchPreviewVertices() const;
+
+    /// The sketch's curves as RIBBONS — triangles a few pixels wide — rather than line primitives.
+    ///
+    /// bgfx draws lines exactly one physical pixel wide and ignores `widthPx` entirely; there is no
+    /// portable line-width control in modern graphics APIs. On a Retina display that makes a sketch
+    /// a hairline that is genuinely hard to see, which is how this was reported.
+    ///
+    /// Width is computed from `worldPerPixel`, so the ribbon stays the same thickness on screen at
+    /// any zoom — and is recomputed when the camera moves, which is why the revision below includes
+    /// the camera scale.
+    struct CurveMesh {
+        std::vector<render::CadVertex> vertices;
+        std::vector<std::uint32_t> indices;
+    };
+    [[nodiscard]] CurveMesh sketchCurveMesh(double widthPixels) const;
     [[nodiscard]] std::uint64_t sketchPreviewRevision() const;
 
     /// Hands the closed region of the sketch being edited to the scene, shaded.
@@ -624,6 +660,20 @@ public:
     /// form a profile and disappears the moment they do not. vCAD already computed this — a
     /// successful `toFace()` IS the test — and until now spent the answer on a red ERR afterwards.
     void pushSketchProfile();
+
+    /// The nearest snappable point within a few PIXELS of `at`, or nothing.
+    [[nodiscard]] std::optional<std::array<double, 2>> snapSketchPoint(
+        const std::array<double, 2>& at) const;
+
+    /// Whether a click here brings the chain back onto itself.
+    [[nodiscard]] bool closesSketchLoop(const std::array<double, 2>& at) const;
+
+    /// Applies the constraint a hand was obviously aiming for — horizontal or vertical.
+    void inferSketchConstraint(std::uint32_t id, const std::array<double, 2>& from,
+                               const std::array<double, 2>& to);
+
+    /// How close, in pixels, a click has to be to snap. A hand is steady in pixels, not millimetres.
+    static constexpr double kSnapPixels = 10.0;
 
     /// Whether a plain left drag orbits instead of selecting.
     ///
@@ -759,6 +809,30 @@ public:
     /// undo stack full of marker moves would bury the edits a user actually wants to undo.
     void setRollback(std::optional<document::ObjectId>);
     [[nodiscard]] std::optional<document::ObjectId> rollback() const;
+
+    /// One exportable format, for a shell's file dialog.
+    struct ExportFormat {
+        std::string id;            ///< "step"
+        std::string displayName;   ///< "STEP (AP203/214/242)"
+        std::vector<std::string> extensions;
+        bool solids = false;       ///< false means the format is mesh-only and B-rep is lost
+    };
+
+    /// Every format that can be WRITTEN. Asked of the registry rather than hard-coded, so a format
+    /// compiled in conditionally (3MF) appears exactly when it is available.
+    [[nodiscard]] static std::vector<ExportFormat> exportFormats();
+
+    /// Writes the visible bodies to `path`, choosing the format by extension.
+    ///
+    /// What gets exported is a MODEL decision, not the shell's: the visible bodies, which is what
+    /// the user is looking at. Not every object — a Box consumed by a Fillet is still in the
+    /// document, and writing both would put the un-filleted block in the file alongside the real
+    /// part. The tip-body rule that decides what to draw decides what to write, so the file matches
+    /// the screen.
+    ///
+    /// Several bodies become one compound, because that is what "export this part" means when a
+    /// part has more than one solid in it.
+    bool exportDocument(const std::string& path);
 
     /// Whether the marker suspends this feature. Delegated to Document rather than left for the
     /// shell to recompute: "everything after the marker" is a model rule, and a shell that
