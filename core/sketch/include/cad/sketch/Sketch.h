@@ -264,6 +264,18 @@ public:
     /// The profile as a planar face, which is what an extrude consumes.
     [[nodiscard]] kernel::Result<kernel::Shape> toFace() const;
 
+    /// Every curve in the sketch, as a compound of edges, whatever shape they are in.
+    ///
+    /// The honest representation of a sketch mid-edit. `toWire` and `toFace` both REFUSE geometry
+    /// that is not closed and connected — correct for building a solid, and wrong as the definition
+    /// of a sketch. A sketch with one line in it is a perfectly good sketch; requiring a closed
+    /// profile made drawing that line an ERROR on the feature, so the model tree showed a failure
+    /// as soon as the user started work.
+    ///
+    /// The closed-profile requirement belongs to whatever CONSUMES the sketch. Extrude asks for a
+    /// face and says so when it does not get one.
+    [[nodiscard]] kernel::Result<kernel::Shape> toEdges() const;
+
     // ── persistence ───────────────────────────────────────────────────────────────────────
 
     /// Line-based text: versioned, diffable, and readable in the sqlite3 CLI. Stored as a Text

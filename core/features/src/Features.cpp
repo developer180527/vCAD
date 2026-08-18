@@ -252,8 +252,26 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
                      "This sketch is over-constrained.", report.message};
     }
 
+    // A face when the curves close, the curves themselves when they do not.
+    //
+    // A sketch is valid geometry on its own. Requiring a closed profile HERE made drawing a single
+    // line an error on the feature: the moment the user drew anything that was not yet a loop, the
+    // model tree showed the sketch as failed and the viewport lost it. The closed-profile
+    // requirement belongs to whatever consumes the sketch, and computeExtrude now states it.
     auto face = sketch.value().toFace();
-    if (!face) return face.error();
+    if (!face) {
+        auto edges = sketch.value().toEdges();
+        // Only an EMPTY sketch fails now — and only because a feature that produced nothing at all
+        // would be indistinguishable from one that had not been computed.
+        if (!edges) return edges.error();
+        naming::NamingContext openNaming(ctx.namingSerial, 0);
+        auto openMap = openNaming.nameprimitive(edges.value(), {});
+        if (!openMap) return openMap.error();
+        Output open;
+        open.shape = edges.value();
+        open.map = std::move(openMap.value());
+        return open;
+    }
 
     // nameprimitive, not propagate: a sketch has no input shape to inherit provenance from, exactly
     // like a Box. Its faces and edges are primitives of this feature.
@@ -275,6 +293,15 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
 kernel::Result<Output> computeExtrude(const ComputeContext& ctx) {
     if (ctx.inputs.size() != 1) {
         return Error{ErrorCode::InvalidInput, "An extrude needs exactly one profile."};
+    }
+    // The requirement lives HERE, not on the sketch. A sketch whose curves do not close is a
+    // perfectly good sketch; it is only this operation that cannot use one, and saying so here
+    // means the user sees the complaint against the extrude they just asked for rather than
+    // against the sketch they were drawing.
+    if (ctx.inputs[0]->shape.type() != kernel::ShapeType::Face) {
+        return Error{ErrorCode::InvalidInput,
+                     "An extrude needs a closed profile. This sketch's curves do not form one.",
+                     "input shape is not a face"};
     }
     auto distance = require<Length>(ctx.object, "distance");
     if (!distance) return distance.error();

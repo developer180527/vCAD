@@ -146,6 +146,16 @@ void MainWindow::buildQuickAccess() {
     addQuickAccessButton(QStringLiteral("save"), tr("Save"), [this] { saveDocument(false); },
                          QKeySequence::Save);
     addQuickAccessSpacing();
+
+    // Orbit lives on the STRIP, not only in the View tab, because the strip is the one surface
+    // visible in every environment. In the sketch environment the ribbon shows the Sketch tab, so
+    // the View tab's copy is a tab-switch away at exactly the moment a user most wants to turn the
+    // part around — which is indistinguishable from the application having no way to orbit.
+    orbitButton_ = addQuickAccessButton(QStringLiteral("ortho"), tr("Orbit (O)"), [this] {
+        if (auto* c = controller()) setOrbitMode(!c->orbitMode());
+    });
+    orbitButton_->setCheckable(true);
+
     addQuickAccessButton(QStringLiteral("undo"), tr("Undo"), [this] {
         if (auto* c = controller()) c->undo();
     }, QKeySequence::Undo);
@@ -712,11 +722,7 @@ void MainWindow::rebuildRibbon() {
     orbitAction_->setCheckable(true);
     orbitAction_->setShortcut(QKeySequence(QStringLiteral("O")));
     orbitAction_->setToolTip(tr("Orbit (O) — drag to rotate. Alt-drag orbits at any time."));
-    connect(orbitAction_, &QAction::toggled, this, [this](bool on) {
-        if (auto* c = controller()) c->setOrbitMode(on);
-        setStatusMessage(on ? tr("Orbit: drag to rotate the view")
-                            : tr("Orbit off — drag selects again"));
-    });
+    connect(orbitAction_, &QAction::triggered, this, [this](bool on) { setOrbitMode(on); });
     navigate->addLarge(orbitAction_);
 
     navigate->addLarge(commandOr("view.fit", tr("Fit"), QStringLiteral("fit")));
@@ -1197,6 +1203,19 @@ void MainWindow::loadPlugins() {
         CAD_WARN(::cad::log::Category::Shell) << detail.toStdString();
         pluginLoadWarning_ = detail;
     }
+}
+
+void MainWindow::setOrbitMode(bool on) {
+    auto* c = controller();
+    if (c == nullptr) return;
+    c->setOrbitMode(on);
+    // Both controls follow the CONTROLLER rather than each other. Two checkable widgets for one
+    // mode is exactly where a UI drifts out of step with itself, and a button showing Orbit while
+    // dragging selects is worse than no button.
+    if (orbitButton_ != nullptr) orbitButton_->setChecked(on);
+    if (orbitAction_ != nullptr) orbitAction_->setChecked(on);
+    setStatusMessage(on ? tr("Orbit: drag to rotate the view")
+                        : tr("Orbit off — drag selects again"));
 }
 
 void MainWindow::refreshSketchToolStates() {

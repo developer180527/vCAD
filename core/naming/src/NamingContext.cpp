@@ -199,6 +199,49 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
 
     if (auto r = impl_->deriveBoundaries(result, map); !r) return r.error();
 
+    // Curve-only geometry: a sketch whose lines do not close has no faces at all, so the loop
+    // above named nothing and deriveBoundaries had nothing to derive FROM. Naming the edges
+    // directly is the same idea one level down — sorted by their own measure, so the names are
+    // deterministic and survive a re-solve that does not change the geometry.
+    //
+    // Without this an open sketch is NamingLost, which is how "draw one line" became an error.
+    if (result.subShapes(kernel::ShapeType::Face).empty()) {
+        std::vector<std::pair<FaceMetric, TopoDS_Shape>> curves;
+        for (const auto& e : result.subShapes(kernel::ShapeType::Edge)) {
+            const TopoDS_Shape& oe = kernel::occt(const_cast<kernel::Shape&>(e));
+            curves.emplace_back(measureFace(oe), oe);
+        }
+        std::sort(curves.begin(), curves.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (std::size_t i = 0; i < curves.size(); ++i) {
+            NameStep step;
+            step.featureSerial = impl_->featureSerial;
+            step.opTag = impl_->opTag;
+            step.provenance = Provenance::Primitive;
+            // Offset past the face discriminators so an edge can never collide with a face name
+            // in a shape that has both.
+            step.discriminator = static_cast<std::uint32_t>(i) + 0x40000000u;
+            map.bind(kernel::wrap(curves[i].second), ElementName({step}));
+        }
+        // Vertices too, and directly: deriveBoundaries walks a face's boundary, so with no faces
+        // it has nothing to walk and every endpoint would stay unnamed.
+        std::vector<std::pair<FaceMetric, TopoDS_Shape>> points;
+        for (const auto& v : result.subShapes(kernel::ShapeType::Vertex)) {
+            const TopoDS_Shape& ov = kernel::occt(const_cast<kernel::Shape&>(v));
+            points.emplace_back(measureFace(ov), ov);
+        }
+        std::sort(points.begin(), points.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            NameStep step;
+            step.featureSerial = impl_->featureSerial;
+            step.opTag = impl_->opTag;
+            step.provenance = Provenance::Primitive;
+            step.discriminator = static_cast<std::uint32_t>(i) + 0x60000000u;
+            map.bind(kernel::wrap(points[i].second), ElementName({step}));
+        }
+    }
+
     if (const auto missing = map.unnamed(result); !missing.empty()) {
         return kernel::Error{kernel::ErrorCode::NamingLost,
                              "Some geometry could not be identified.",

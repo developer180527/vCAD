@@ -259,9 +259,7 @@ void Viewport::mousePressEvent(QMouseEvent* event) {
     // A drawing click, handled before the gesture mapping: while a tool is active the left button
     // draws rather than selects, which is how every CAD sketcher behaves. Navigation still works,
     // because orbit and pan are on the middle button and on Alt.
-    if (event->button() == Qt::LeftButton
-        && controller_.environment() == cad::app::Environment::Sketch
-        && controller_.sketchTool() != cad::app::Controller::SketchTool::Select
+    if (event->button() == Qt::LeftButton && controller_.leftPressDraws()
         && !event->modifiers().testFlag(Qt::AltModifier)) {
         const auto dpr = devicePixelRatioF();
         if (controller_.sketchClickAt(static_cast<float>(event->position().x() * dpr),

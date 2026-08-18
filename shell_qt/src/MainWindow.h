@@ -21,6 +21,7 @@ class QSplitter;
 class QStackedWidget;
 class QTabBar;
 class QTableWidget;
+class QToolButton;
 class QTreeWidget;
 
 namespace proshell {
@@ -201,6 +202,11 @@ private:
 
     /// The Orbit toggle in the View tab, kept so its checked state can follow the controller.
     QAction* orbitAction_ = nullptr;
+    /// The same mode on the always-visible strip, since the View tab is hidden while sketching.
+    QToolButton* orbitButton_ = nullptr;
+
+    /// Sets orbit mode and brings both controls into line with it.
+    void setOrbitMode(bool on);
 
     proshell::Settings* settings_ = nullptr;
     /// Answers proshell's home-page questions from the session. Declared after it, since it

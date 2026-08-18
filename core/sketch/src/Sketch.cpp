@@ -4,6 +4,8 @@
 #include "cad/kernel/internal/Occt.h"
 
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -657,6 +659,77 @@ kernel::Result<kernel::Shape> Sketch::toWire() const {
                          "The sketch profile is open. A closed profile is needed to build a solid."};
         }
         return kernel::wrap(result);
+    });
+    if (!guarded) return guarded.error();
+    return guarded.value();
+}
+
+kernel::Result<kernel::Shape> Sketch::toEdges() const {
+    if (!isPlaced()) {
+        return kernel::Error{kernel::ErrorCode::InvalidInput,
+                             "This sketch is placed on a face that has not been located yet."};
+    }
+    auto guarded = kernel::guard("collect the sketch curves",
+                                 [&]() -> kernel::Result<kernel::Shape> {
+        const auto point = [&](double u, double v) {
+            const auto p = to3d(u, v);
+            return gp_Pnt(p[0], p[1], p[2]);
+        };
+        const gp_Dir normal = [&] {
+            if (resolved_) {
+                const auto n = resolved_->normal();
+                return gp_Dir(n[0], n[1], n[2]);
+            }
+            return placement_.global == Plane::XY   ? gp_Dir(0, 0, 1)
+                   : placement_.global == Plane::XZ ? gp_Dir(0, -1, 0)
+                                                    : gp_Dir(1, 0, 0);
+        }();
+
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        int used = 0;
+        for (const Geometry& g : geometry_) {
+            if (g.construction || g.kind == GeoKind::Point) continue;
+            switch (g.kind) {
+                case GeoKind::Line: {
+                    const gp_Pnt a = point(g.p[0], g.p[1]);
+                    const gp_Pnt b = point(g.p[2], g.p[3]);
+                    if (a.Distance(b) < 1e-9) continue;
+                    builder.Add(compound, BRepBuilderAPI_MakeEdge(a, b).Edge());
+                    ++used;
+                    break;
+                }
+                case GeoKind::Circle: {
+                    const auto c = to3d(g.p[0], g.p[1]);
+                    const gp_Circ circle(gp_Ax2(gp_Pnt(c[0], c[1], c[2]), normal), g.p[2]);
+                    builder.Add(compound, BRepBuilderAPI_MakeEdge(circle).Edge());
+                    ++used;
+                    break;
+                }
+                case GeoKind::Arc: {
+                    const gp_Pnt start = point(g.p[0] + g.p[2] * std::cos(g.p[3]),
+                                               g.p[1] + g.p[2] * std::sin(g.p[3]));
+                    const gp_Pnt end = point(g.p[0] + g.p[2] * std::cos(g.p[4]),
+                                             g.p[1] + g.p[2] * std::sin(g.p[4]));
+                    const double mid = (g.p[3] + g.p[4]) * 0.5;
+                    const gp_Pnt through = point(g.p[0] + g.p[2] * std::cos(mid),
+                                                 g.p[1] + g.p[2] * std::sin(mid));
+                    GC_MakeArcOfCircle arc(start, through, end);
+                    if (!arc.IsDone()) continue;
+                    builder.Add(compound, BRepBuilderAPI_MakeEdge(arc.Value()).Edge());
+                    ++used;
+                    break;
+                }
+                case GeoKind::Point: break;
+            }
+        }
+        if (used == 0) {
+            return kernel::Error{kernel::ErrorCode::InvalidInput,
+                                 "This sketch has no curves yet.",
+                                 "only points or construction geometry"};
+        }
+        return kernel::wrap(compound);
     });
     if (!guarded) return guarded.error();
     return guarded.value();

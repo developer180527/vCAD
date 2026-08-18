@@ -567,6 +567,21 @@ public:
     /// Model state, so both shells share it and a touch front end (which has no modifiers at all)
     /// has the same switch to flip.
     [[nodiscard]] bool orbitMode() const noexcept { return orbitMode_; }
+
+    /// What a plain left press means right now: draw into the sketch, or navigate.
+    ///
+    /// A model rule rather than a chain of conditions in a shell's press handler, because getting
+    /// the ORDER wrong is invisible: the shell checked the drawing tool first, so turning Orbit on
+    /// while the Line tool was active did nothing at all — the press drew a point and the mode was
+    /// never consulted. Stating it once, here, means both shells ask the same question and a test
+    /// can pin the precedence down.
+    ///
+    /// Orbit mode wins. It is a mode the user turned on deliberately, and a mode that loses to
+    /// whatever else happens to be active is not a mode.
+    [[nodiscard]] bool leftPressDraws() const noexcept {
+        return !orbitMode_ && environment_ == Environment::Sketch
+               && sketchTool_ != SketchTool::Select;
+    }
     void setOrbitMode(bool);
 
     /// Points the camera squarely at the sketch being edited, with the sketch's own v axis up.
