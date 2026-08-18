@@ -293,6 +293,17 @@ kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
     // line an error on the feature: the moment the user drew anything that was not yet a loop, the
     // model tree showed the sketch as failed and the viewport lost it. The closed-profile
     // requirement belongs to whatever consumes the sketch, and computeExtrude now states it.
+    // A sketch with nothing drawn on it is not an error — it is the state every sketch starts in,
+    // one keystroke after Start Sketch. Failing here put an ERR badge on a feature the user had
+    // only just created and had no way to fix except by drawing something.
+    if (sketch.value().geometry().empty()) {
+        auto empty = kernel::compound({});
+        if (!empty) return empty.error();
+        Output out;
+        out.shape = empty.value();
+        return out;
+    }
+
     auto face = sketch.value().toFace();
     if (!face) {
         auto edges = sketch.value().toEdges();

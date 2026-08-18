@@ -288,6 +288,14 @@ public:
     /// otherwise a stray call in shipping code would fake a click.
     void scriptNextPick(std::uint32_t elementSlot, bool valid = true);
 
+    /// Records "the user last clicked this element", as a Body-level click does internally.
+    ///
+    /// A test seam, beside `scriptNextPick` and for the same reason: the real path runs through the
+    /// GPU pick buffer, which a headless test has no way to fill. It exercises what CONSUMES the
+    /// last pick — Start Sketch choosing a face — rather than the pick itself, which face_pick.cpp
+    /// covers separately.
+    void scriptPickForTest(document::ObjectId, const naming::ElementName&);
+
     /// Viewport background, 0..255 per channel. The shell passes its theme colour down so the
     /// GPU clears to the same paper the rest of the window is painted on.
     void setViewportBackground(int r, int g, int b);
@@ -863,6 +871,14 @@ private:
 
     SelectionLevel selectionLevel_ = SelectionLevel::Body;
     std::vector<ElementSelection> elementSelection_;
+
+    /// The element under the LAST click, whatever the selection level was.
+    ///
+    /// Body-level clicks select an object and throw the element away — correct for selection, and
+    /// wrong for the question "which face is the user looking at". Start Sketch needs the second
+    /// question answered: in every CAD application you click a face and press Sketch, without first
+    /// telling a filter what kind of thing you are about to click.
+    std::optional<ElementSelection> lastPicked_;
     /// The slot currently hovered, or none. Held so hoverAt can tell "same element as last time"
     /// from "moved to a new one" without rebuilding the highlight table.
     std::optional<std::uint32_t> hoveredSlot_;

@@ -166,6 +166,25 @@ ObjectId Controller::beginSketch() {
         }
     }
 
+    // The face under the LAST CLICK, even if the selection filter was on Body and the click
+    // therefore selected the whole part. Clicking a face and pressing Start Sketch is how every CAD
+    // application works; requiring the filter to be switched to Face first is a trap, and it is why
+    // "it still does not let me choose a face" was reported after the selection path already worked.
+    if (lastPicked_) {
+        const auto owner = history_.current().find(lastPicked_->object);
+        if (owner && owner->output() != nullptr) {
+            const auto shape = owner->output()->map.resolve(lastPicked_->element);
+            if (shape && kernel::planeOf(*shape)) {
+                const ObjectId onFace =
+                    addSketchOnFace(lastPicked_->object, lastPicked_->element.toString());
+                if (onFace != ObjectId{}) {
+                    editSketch(onFace);
+                    return onFace;
+                }
+            }
+        }
+    }
+
     // A datum selected in the TREE, which is how a user picks a plane before any geometry exists.
     // The tree selects OBJECTS, not elements, so the element loop above never sees it — and without
     // this, choosing "XZ Plane" and pressing Start Sketch silently produced an XY sketch.

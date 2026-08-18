@@ -240,6 +240,8 @@ Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bo
         const bool had = !selection_.empty() || !elementSelection_.empty();
         selection_.clear();
         elementSelection_.clear();
+        // A click on empty space is also "I am not pointing at that face any more".
+        lastPicked_.reset();
         out.changed = had;
         if (had) {
             refreshHighlights();
@@ -249,6 +251,13 @@ Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bo
     }
 
     out.hit = true;
+
+    // Remembered BEFORE the level branch, so it is recorded even when the click selects a body and
+    // discards the element. This is what lets "click a face, press Start Sketch" work without the
+    // user first switching the selection filter to Face.
+    if (!pick.object.isNull() && !pick.element.isNull()) {
+        lastPicked_ = ElementSelection{pick.object, pick.element, pick.slot};
+    }
 
     if (selectionLevel_ == SelectionLevel::Body) {
         if (pick.object.isNull()) {
@@ -322,6 +331,10 @@ bool Controller::clearHover() {
     hoveredSlot_.reset();
     refreshHighlights();
     return true;
+}
+
+void Controller::scriptPickForTest(ObjectId id, const naming::ElementName& element) {
+    lastPicked_ = ElementSelection{id, element, 0};
 }
 
 void Controller::scriptNextPick(std::uint32_t elementSlot, bool valid) {

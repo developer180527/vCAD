@@ -123,9 +123,10 @@ Result<Operation> makeCylinderAt(const double base[3], const double axis[3], dou
 }
 
 Result<Shape> compound(std::span<const Shape> shapes) {
-    if (shapes.empty()) {
-        return Error{ErrorCode::InvalidInput, "A compound needs at least one shape."};
-    }
+    // An EMPTY compound is legal and useful: it is what a feature that has produced nothing yet
+    // returns — a sketch with no curves drawn on it. Refusing here made "I just pressed Start
+    // Sketch" an error state in the model tree. A caller that needs at least one shape, such as
+    // export, checks for itself and says something that makes sense in its own terms.
     return guard("build the compound", [&] {
         TopoDS_Compound result;
         BRep_Builder builder;

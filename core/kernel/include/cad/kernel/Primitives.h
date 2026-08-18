@@ -70,6 +70,8 @@ Result<Shape> makePlane(int plane, double size);
 Result<Operation> makeCylinderAt(const double base[3], const double axis[3], double radius,
                                  double height);
 
+/// An empty span gives an empty compound, which is what a feature that has produced nothing yet
+/// returns. Callers that require geometry check for themselves.
 Result<Shape> compound(std::span<const Shape>);
 
 }  // namespace cad::kernel

@@ -295,3 +295,54 @@ TEST_CASE("Slice cuts between the viewer and the sketch plane", "[sketch][flow][
     CHECK_FALSE(controller.sliceEnabled());
     CHECK(controller.frame().sections.empty());
 }
+
+TEST_CASE("clicking a face then Start Sketch uses that face, whatever the filter says",
+          "[sketch][flow][datum]") {
+    // The reported bug: "it STILL does not let me choose face". The selection path worked — but a
+    // Body-level click selects the OBJECT and throws the picked element away, so Start Sketch had
+    // nothing to find and silently fell back to XY. Every CAD lets you click a face and press
+    // Sketch; requiring the filter to be switched to Face first is a trap, not a feature.
+    app::Controller controller;
+    controller.setViewportSize(1200, 800);
+
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+
+    document::ObjectId boxId{};
+    for (const auto& item : controller.tree()) {
+        const auto object = controller.document().find(item.id);
+        if (object && object->type() == "Box") boxId = item.id;
+    }
+    REQUIRE(boxId != document::ObjectId{});
+
+    // A face looking along X — NOT the XY plane a fallback would choose, so the two answers differ.
+    const auto box = controller.document().find(boxId);
+    std::array<double, 3> faceNormal{};
+    naming::ElementName faceName;
+    bool found = false;
+    for (const auto& name : box->output()->map.allNames()) {
+        const auto shape = box->output()->map.resolve(name);
+        if (!shape) continue;
+        const auto plane = kernel::planeOf(*shape);
+        if (!plane) continue;
+        const auto& f = plane.value();
+        const double nx = f.u[1] * f.v[2] - f.u[2] * f.v[1];
+        const double ny = f.u[2] * f.v[0] - f.u[0] * f.v[2];
+        const double nz = f.u[0] * f.v[1] - f.u[1] * f.v[0];
+        if (std::abs(nx) > 0.9) {
+            faceName = name;
+            faceNormal = {nx, ny, nz};
+            found = true;
+            break;
+        }
+    }
+    REQUIRE(found);
+
+    // BODY level, which is the default and what the user had set. The click selects the part; the
+    // face under the cursor is remembered separately.
+    controller.setSelectionLevel(app::Controller::SelectionLevel::Body);
+    controller.scriptPickForTest(boxId, faceName);
+
+    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    CHECK_THAT(alignmentWith(controller, faceNormal), Catch::Matchers::WithinAbs(1.0, 1e-3));
+}

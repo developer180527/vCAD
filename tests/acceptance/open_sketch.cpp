@@ -46,16 +46,47 @@ TEST_CASE("a closed sketch still produces a face", "[sketch][open]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
 
-    // The seeded sketch is a closed 40 x 25 rectangle and must keep giving a FACE — the fallback
-    // to loose curves must not swallow the case that works, or every extrude in the application
-    // would quietly stop building solids.
+    // Drawn, not seeded. Start Sketch gives an EMPTY sketch now — it used to seed a 40 x 25
+    // rectangle that the renderer drew as a square sheet appearing from nowhere. So the closed case
+    // has to be made the way a user makes it, which is a better test regardless.
     const document::ObjectId id = controller.beginSketch();
+    controller.alignCameraToSketch();
+    controller.setSketchTool(app::Controller::SketchTool::Line);
+    REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
+    REQUIRE(controller.sketchClickAt(700.0f, 300.0f));
+    REQUIRE(controller.sketchClickAt(700.0f, 550.0f));
+    REQUIRE(controller.sketchClickAt(300.0f, 550.0f));
+    REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
     controller.finishSketch();
 
     const auto sketch = controller.document().find(id);
     REQUIRE(sketch != nullptr);
     REQUIRE(sketch->output() != nullptr);
+    // A FACE, so an extrude has something to build from. The fallback to loose curves must not
+    // swallow the case that works, or every extrude would quietly stop making solids.
     CHECK(sketch->output()->shape.type() == kernel::ShapeType::Face);
+}
+
+TEST_CASE("Start Sketch creates nothing to delete", "[sketch][open]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+    const document::ObjectId id = controller.beginSketch();
+    REQUIRE(id != document::ObjectId{});
+
+    // No geometry, and therefore no square sheet in the viewport. The old seed meant the first
+    // thing a user did after pressing Start Sketch was delete a rectangle they never asked for.
+    REQUIRE(controller.activeSketch() != nullptr);
+    CHECK(controller.activeSketch()->geometry().empty());
+    CHECK(controller.sketchOverlayVertices().empty());
+
+    // And no ERR badge on it either. An empty sketch is the state every sketch starts in; failing
+    // it put a red marker on a feature the user had just created and could only clear by drawing.
+    controller.finishSketch();
+    const auto sketch = controller.document().find(id);
+    REQUIRE(sketch != nullptr);
+    INFO(sketch->error().message);
+    CHECK(sketch->state() == document::ObjectState::Clean);
+    CHECK(sketch->error().message.empty());
 }
 
 TEST_CASE("extruding open curves fails against the extrude, not the sketch", "[sketch][open]") {

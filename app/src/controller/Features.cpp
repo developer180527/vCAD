@@ -61,28 +61,11 @@ ObjectId Controller::addSketchOnFace(ObjectId body, const std::string& face) {
 }
 
 ObjectId Controller::addSketch() {
-    // A closed, fully constrained 40 x 25 rectangle on XY. Constrained rather than merely drawn:
-    // the point of a sketch is that its dimensions drive it, and a seed with 8 free degrees of
-    // freedom would extrude fine and then behave nothing like a sketch when edited.
+    // EMPTY. It used to seed a fully constrained 40 x 25 rectangle, with a comment saying "until
+    // the sketch editor exists" — and the sketch editor exists now. The seed computed into a face,
+    // so the renderer drew it as a square sheet that appeared from nowhere the moment a user pressed
+    // Start Sketch, and the first thing they had to do was delete geometry they never asked for.
     sketch::Sketch sk(sketch::Plane::XY);
-    const auto bottom = sk.addLine(0, 0, 40, 0);
-    const auto right = sk.addLine(40, 0, 40, 25);
-    const auto top = sk.addLine(40, 25, 0, 25);
-    const auto left = sk.addLine(0, 25, 0, 0);
-    using PR = sketch::PointRef;
-    sk.coincident(bottom, PR::End, right, PR::Start);
-    sk.coincident(right, PR::End, top, PR::Start);
-    sk.coincident(top, PR::End, left, PR::Start);
-    sk.coincident(left, PR::End, bottom, PR::Start);
-    sk.horizontal(bottom);
-    sk.horizontal(top);
-    sk.vertical(left);
-    sk.vertical(right);
-    sk.lockX(bottom, PR::Start, 0.0);
-    sk.lockY(bottom, PR::Start, 0.0);
-    sk.distance(bottom, PR::Start, bottom, PR::End, 40.0);
-    sk.distance(right, PR::Start, right, PR::End, 25.0);
-    sk.solve();
 
     auto [next, id] = history_.current().add("Sketch");
     const auto object = next.find(id);
@@ -95,7 +78,7 @@ ObjectId Controller::addSketch() {
     selection_.push_back(id);
     refresh();
     if (history_.current().size() == 1) fitView();
-    status("Added Sketch — a placeholder 40 x 25 rectangle until the sketch editor exists");
+    status("Added Sketch — draw on it with the Line and Circle tools");
     return id;
 }
 
