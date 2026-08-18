@@ -588,6 +588,30 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
                 res.vertices = gpu_.uploadVertices(m.contentHash, m.vertices);
                 res.indices = gpu_.uploadIndices(m.contentHash, m.indices);
                 res.edgeVertices = gpu_.uploadEdgeVertices(m.contentHash, m.edgeVertices);
+
+                // An upload that FAILED must be said out loud, here, once.
+                //
+                // bgfx's buffer handle pools are fixed at compile time (4096 each), and vCAD takes
+                // two vertex buffers per unique mesh — surfaces and edges — so it runs out at about
+                // 2048 unique parts. Past that every upload returned an invalid handle, the draw
+                // loop skipped the batch because the lookup failed, and the viewport rendered an
+                // empty scene at an excellent frame rate. Measured, in spikes/scale: 2,000 unique
+                // parts drew 3,976 calls and 3,000 drew nothing whatsoever.
+                //
+                // Nothing anywhere reported it. A renderer that silently stops drawing is worse
+                // than one that stops: the frame rate goes UP, so every measurement taken past the
+                // ceiling looks better than the ones below it.
+                if ((!m.vertices.empty() && res.vertices == BufferId::None)
+                    || (!m.indices.empty() && res.indices == BufferId::None)
+                    || (!m.edgeVertices.empty() && res.edgeVertices == BufferId::None)) {
+                    uploaded_.erase(key);
+                    return kernel::Error{
+                        kernel::ErrorCode::InvalidResult,
+                        "The renderer ran out of GPU buffers. This model has more unique parts "
+                        "than this build can draw.",
+                        "buffer upload returned no handle after " + std::to_string(stats_.uploads)
+                            + " unique meshes; bgfx's handle pool is fixed at compile time"};
+                }
                 // Digest -> LOCAL element index, built once per unique mesh. The map that used
                 // to live here was frame-global and held one entry per element per placement;
                 // this one is bounded by the mesh's own face count no matter how many times the

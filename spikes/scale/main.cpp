@@ -236,19 +236,44 @@ int main(int argc, char** argv) {
     // ── The claims, checked ──────────────────────────────────────────────────────────────
     int failures = 0;
 
-    // 1. Draw calls proportional to unique meshes. Two passes per mesh (shaded + edges), so the
-    //    ceiling is 2x unique meshes; anything near the instance count means dedupe is defeated.
+    // 1. Draw calls proportional to unique meshes, and MORE THAN NONE.
+    //
+    //    The lower bound is not pedantry. This printed "PASS draw calls 0 <= 16000" at 8,000 unique
+    //    parts, while the renderer was drawing absolutely nothing: bgfx's buffer handle pool is
+    //    fixed at 4096, vCAD takes two vertex buffers per mesh, and past ~2048 meshes every upload
+    //    failed and every batch was skipped. An upper bound is satisfied by zero, so the headline
+    //    claim of this whole spike went green exactly when the renderer stopped working — and the
+    //    frame rate went UP, which made it look like an improvement.
     const std::uint32_t ceiling = uniqueParts * 2;
-    if (s.drawCalls > ceiling) {
+    if (s.drawCalls == 0 || s.triangles == 0) {
+        std::fprintf(stderr,
+                     "FAIL: nothing was drawn (%u calls, %llu triangles). The scene believes it has "
+                     "geometry, so this is a renderer failure, not an empty document.\n",
+                     s.drawCalls, static_cast<unsigned long long>(s.triangles));
+        ++failures;
+    } else if (s.drawCalls > ceiling) {
         std::fprintf(stderr,
                      "FAIL: %u draw calls for %u unique parts (expected <= %u). Dedupe or "
                      "batching is not working.\n",
                      s.drawCalls, uniqueParts, ceiling);
         ++failures;
     } else {
-        std::printf("PASS  draw calls %u <= %u (2 passes x %u unique meshes), independent of %u "
-                    "instances\n",
+        std::printf("PASS  draw calls %u in (0, %u] (2 passes x %u unique meshes), independent of "
+                    "%u instances\n",
                     s.drawCalls, ceiling, uniqueParts, instanceCount);
+    }
+
+    // 1b. Nothing was quietly dropped on the way to the GPU. The backend counts a batch whose
+    //     buffers do not resolve; it used to `continue` in silence, which is how an empty frame
+    //     passed for a fast one.
+    if (s.skippedBatches > 0) {
+        std::fprintf(stderr,
+                     "FAIL: %u batches were skipped because their buffers did not resolve. That is "
+                     "geometry the scene thinks is on screen and the user cannot see.\n",
+                     s.skippedBatches);
+        ++failures;
+    } else {
+        std::printf("PASS  no batches skipped for missing buffers\n");
     }
 
     // 2. Every requested instance was actually drawn. This is the check that stops a truncated

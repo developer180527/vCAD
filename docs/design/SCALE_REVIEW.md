@@ -212,3 +212,90 @@ content, because of the viewport path, not the renderer.**
 
 Items 3–5 are the ones that turn "100,000 bolts" into "100,000 parts", and that distinction is the
 difference between the demo and the goal.
+
+
+---
+
+# Amendment, 19 Aug 2026: measured again, and the ceiling is not where this document said
+
+Everything above reasons about 100,000 parts. Re-running `spike_scale` with UNIQUE parts found a
+hard wall three orders of magnitude earlier, and it fails **silently**.
+
+## What was measured
+
+| Unique parts | Draw calls | Triangles | Resident | Frame | Scene build |
+|---|---|---|---|---|---|
+| 2,000 | 3,976 | 108,720 | 11.6 MB | 2.81 ms (356 fps) | 4.3 s |
+| 3,000 | **0** | **0** | 12.5 MB | — | — |
+| 4,000 | **0** | **0** | 13.1 MB | — | — |
+| 8,000 | **0** | **0** | 13.2 MB | — | bgfx assert at shutdown |
+
+**Above roughly 2,000 unique parts, vCAD draws nothing at all.** Not slowly — nothing.
+
+### Why
+
+`BGFX_CONFIG_MAX_VERTEX_BUFFERS` and `BGFX_CONFIG_MAX_INDEX_BUFFERS` are both **4096**. vCAD
+allocates, per unique mesh, one vertex buffer for surfaces, one for edges, and one index buffer. Two
+vertex buffers per mesh against a pool of 4096 gives a ceiling of about **2,048 unique meshes**. Past
+it every upload returns an invalid handle, `submitBatches` skips the batch because the lookup fails,
+and the frame comes out empty.
+
+Nothing reports this. The uploads return `BufferId::None`, the draw loop treats that as "nothing to
+draw", and the viewport renders an empty scene at a very good frame rate.
+
+### The spike passed
+
+    PASS  draw calls 0 <= 16000 (2 passes x 8000 unique meshes)
+
+An upper bound is satisfied by zero. The spike's *other* check ("nothing rasterised") did fail, so
+the run was not entirely green — but the headline draw-call claim, the one this whole document is
+built on, is vacuous exactly when the renderer has stopped working. Another self-agreeing assertion,
+in the file written to guard against them.
+
+## What this changes
+
+The original §3 treats shared buffers and indirect drawing as scaling work for 100k parts. They are
+not. **Shared buffers are what makes 2,049 parts possible**, and that is a number a real assembly
+passes on the first day.
+
+## Decisions
+
+Ordered by what unblocks the next thing, not by size.
+
+### P0 — the renderer is wrong today
+
+1. **Fail loudly on an upload that fails.** An invalid buffer handle must surface as an error the
+   user sees, not a silently skipped batch. This is one afternoon and it converts every future
+   version of this bug from invisible to obvious.
+2. **Fix the vacuous assertion.** `draw calls <= N` becomes `draw calls == expected` and
+   `triangles > 0`. A bound that zero satisfies is not a test.
+3. **Shared mega-buffers.** Suballocate many meshes into a few large vertex/index buffers, keyed by
+   vertex layout. Removes the handle ceiling entirely, and is the precondition for everything in P1:
+   you cannot batch draws across meshes that live in different buffers.
+
+### P1 — the 100k path
+
+4. **Indirect drawing.** With meshes sharing buffers, a bind serves many draws — but each visible
+   range is still its own `submit`. Real reduction needs `bgfx` indirect draws with the draw
+   arguments built on the GPU after culling (bgfx's `37-gpudrivenrendering` is the reference).
+5. **Level of detail, edges first.** The 2,000-part scene drew **297,635 lines against 108,720
+   triangles** — edges are the larger half of the cost and the first thing that should vanish with
+   distance. A part covering four pixels needs neither its edges nor its full tessellation.
+6. **Tessellation off the main thread, and on demand.** Scene build measured 4.3 s at 2,000 meshes
+   and 17.2 s at 8,000 — roughly 2 ms per mesh, so 100k is **three and a half minutes** of blocking
+   work. The DDC already content-addresses tessellation, so the storage half exists; what is missing
+   is doing it in parallel and only for what is visible.
+
+### P2 — after the above changes the numbers
+
+7. **Occlusion culling.** Frustum culling drew 572 of 2,000; inside a housing most of the rest is
+   hidden and frustum culling cannot tell.
+8. **Quantised vertex formats.** 16-bit positions within mesh bounds, octahedral normals. 2-3x on
+   memory, and memory is what LOD is fighting.
+9. **Incremental placement digest.** 1.8 ms at 2,000 placements is O(n) per idle frame; at 100k that
+   is ~90 ms to conclude nothing changed.
+
+### Not now
+
+Streaming/out-of-core, and anything that assumes an assembly larger than memory. The first useful
+version of vCAD does not need it, and the design will be better informed once 5 through 7 exist.

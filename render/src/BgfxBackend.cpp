@@ -652,7 +652,12 @@ std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::Vi
         const auto* vb = resources.find(batch.vertices);
         const auto* ib = resources.find(batch.indices);
         const auto* inst = resources.find(batch.instances);
-        if (vb == nullptr || ib == nullptr || inst == nullptr) continue;
+        if (vb == nullptr || ib == nullptr || inst == nullptr) {
+            // COUNTED, not merely skipped. A batch whose buffers do not resolve is geometry the
+            // scene thinks is visible and the user cannot see.
+            ++stats.skippedBatches;
+            continue;
+        }
 
         // One submit per visible run. bgfx cannot draw two disjoint runs of one buffer in a
         // single call, and an entirely visible batch is one run, so this is one call per batch
@@ -795,7 +800,10 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
             if (batch.vertexCount == 0 || batch.instances == BufferId::None) continue;
             const auto* vb = impl_.resources.find(batch.vertices);
             const auto* inst = impl_.resources.find(batch.instances);
-            if (vb == nullptr || inst == nullptr) continue;
+            if (vb == nullptr || inst == nullptr) {
+                ++impl_.stats.skippedBatches;
+                continue;
+            }
 
             const float colour[4]{float(batch.colour[0]) / 255.0f,
                                   float(batch.colour[1]) / 255.0f,

@@ -293,6 +293,14 @@ public:
         /// itself with no error. Any report that quotes `instances` without this is lying.
         std::uint32_t instancesRequested = 0;
 
+        /// Batches the backend could not draw because a buffer handle did not resolve.
+        ///
+        /// Non-zero means geometry the scene believes is on screen is NOT being drawn. It was
+        /// previously an unconditional `continue` — the frame simply came out emptier, faster, and
+        /// silent. Anything reading these stats should treat a non-zero value as a failure rather
+        /// than a statistic.
+        std::uint32_t skippedBatches = 0;
+
         double cpuFrameMs = 0.0;
         double gpuFrameMs = 0.0;
     };
