@@ -32,8 +32,19 @@ Viewport::Viewport(cad::app::Controller& controller, QWidget* parent)
 
     // Created up front and hidden, rather than made on demand: a widget constructed during a mouse
     // move is a widget constructed sixty times a second.
-    dimensionField_ = new QLabel(this);
+    // A TOP-LEVEL window, not a child of this widget — `this` is only its owner.
+    //
+    // A child of a WA_PaintOnScreen widget has no defined compositing: this viewport hands its
+    // pixels to a CAMetalLayer and Qt is told not to paint it, so a child ends up drawn into a
+    // surface nothing ever clears. The result was catastrophic and immediate — the viewport went
+    // black and the readout smeared a trail of itself across it on every mouse move.
+    //
+    // Qt::ToolTip makes it a borderless top-level that the window server composites over the Metal
+    // layer, which is how Qt's own tooltips manage to appear over a 3D view. It also never takes
+    // focus, so keystrokes still reach the viewport — which the dimension entry depends on.
+    dimensionField_ = new QLabel(this, Qt::ToolTip);
     dimensionField_->setObjectName(QStringLiteral("sketchDimension"));
+    dimensionField_->setFocusPolicy(Qt::NoFocus);
     dimensionField_->hide();
     setAutoFillBackground(false);
     setMinimumSize(320, 240);
@@ -310,6 +321,19 @@ bool Viewport::focusNextPrevChild(bool next) {
     return QWidget::focusNextPrevChild(next);
 }
 
+void Viewport::hideEvent(QHideEvent* event) {
+    // A top-level readout does not disappear with its owner. Left alone it floats over whatever the
+    // user switches to, which is worse than not having it.
+    if (dimensionField_ != nullptr) dimensionField_->hide();
+    QWidget::hideEvent(event);
+}
+
+void Viewport::leaveEvent(QEvent* event) {
+    // The pointer has left the viewport, so there is nothing for the readout to annotate.
+    if (dimensionField_ != nullptr) dimensionField_->hide();
+    QWidget::leaveEvent(event);
+}
+
 void Viewport::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && controller_.leftPressDraws()) {
         controller_.endSketchChain();
@@ -333,12 +357,14 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
         } else if (event->key() == Qt::Key_Tab) {
             if (controller_.lockSketchDimension()) {
                 syncDimensionField();
+            emit dimensionChanged();
                 markDirty();
                 return;
             }
         } else if (event->key() == Qt::Key_Backspace) {
             controller_.backspaceSketchDimension();
             syncDimensionField();
+            emit dimensionChanged();
             return;
         } else if (event->key() == Qt::Key_Escape) {
             // Clears a half-typed number first, and only ENDS THE CHAIN when there is none —
@@ -393,12 +419,13 @@ void Viewport::syncDimensionField() {
 
     // Offset from the cursor so the pointer never sits on top of the number, and clamped inside
     // the viewport so it cannot be pushed off-screen near an edge.
+    // GLOBAL coordinates, because it is a window rather than a child. Still clamped to the
+    // viewport's own rectangle so it cannot wander onto the ribbon or off the screen.
     const QPoint at = lastMouse_ + QPoint(16, 16);
     const int x = std::min(at.x(), width() - dimensionField_->width() - 4);
     const int y = std::min(at.y(), height() - dimensionField_->height() - 4);
-    dimensionField_->move(std::max(4, x), std::max(4, y));
+    dimensionField_->move(mapToGlobal(QPoint(std::max(4, x), std::max(4, y))));
     dimensionField_->show();
-    dimensionField_->raise();
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* event) {
@@ -415,6 +442,9 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
             update();
         }
         syncDimensionField();
+        // The status bar carries the same numbers, and a hover changes them without changing the
+        // document — so nothing else would ask it to refresh.
+        emit dimensionChanged();
         return;
     }
     if (drag_ == cad::render::Drag::None) return;

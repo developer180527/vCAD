@@ -919,6 +919,7 @@ void MainWindow::createDocument(DocumentKind kind) {
     connect(editor, &Viewport::pickMessage, this, [this](const QString& text) {
         setStatusMessage(text);
     });
+    connect(editor, &Viewport::dimensionChanged, this, [this] { refreshStatus(); });
     // The sketch surface is a SIBLING in the stack, not an overlay on the viewport. A sketch is
     // edited face-on in its own 2D coordinate system; sharing the 3D camera would mean unprojecting
     // every click onto a plane before it meant anything.
@@ -1788,7 +1789,26 @@ void MainWindow::refreshStatus() {
         const auto* sketch = c->activeSketch();
         const std::size_t curves = sketch != nullptr ? sketch->geometry().size() : 0;
         const std::size_t constraints = sketch != nullptr ? sketch->constraints().size() : 0;
-        QString text = tr("%1 curves · %2 constraints · ").arg(curves).arg(constraints);
+        QString text;
+
+        // The live dimension FIRST, and in the status bar as well as beside the cursor.
+        //
+        // The floating readout is a top-level window composited over a Metal layer, and that is the
+        // one part of this shell my own screenshot harness cannot exercise — the first attempt at it
+        // turned the viewport black. The status bar is an ordinary widget: if the floating copy ever
+        // misbehaves again, the numbers are still here, and the feature degrades to "less
+        // convenient" rather than "gone".
+        const auto measure = c->sketchPreviewText();
+        if (measure.valid) {
+            text += QString::fromStdString(measure.length);
+            if (!measure.angle.empty()) {
+                text += QStringLiteral("  ") + QString::fromStdString(measure.angle);
+            }
+            if (c->sketchLockedLength()) text += tr(" (locked)");
+            text += QStringLiteral("   ·   ");
+        }
+
+        text += tr("%1 curves · %2 constraints · ").arg(curves).arg(constraints);
         if (!report.conflicting.empty()) {
             text += tr("OVER-CONSTRAINED (%1)").arg(report.conflicting.size());
         } else if (report.dofs == 0) {

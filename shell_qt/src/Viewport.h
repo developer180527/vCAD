@@ -65,6 +65,10 @@ signals:
     /// explains nothing is the failure this whole path was reported as.
     void pickMessage(const QString& text);
 
+    /// The live dimension changed. Separate from the document's own change signal because a hover
+    /// moves the numbers without touching the sketch, and the status bar shows them too.
+    void dimensionChanged();
+
 public:
     /// Empty unless attachRenderer() failed, in which case it is the user-facing reason.
     [[nodiscard]] const QString& rendererError() const noexcept { return rendererError_; }
@@ -88,6 +92,11 @@ protected:
     /// second press — so without this the second click never reaches the controller and a chain
     /// cannot be ended with the mouse alone.
     void mouseDoubleClickEvent(QMouseEvent*) override;
+
+    /// Both hide the floating dimension readout: a top-level window does not vanish with its owner,
+    /// and one left showing floats over whatever the user switches to.
+    void hideEvent(QHideEvent*) override;
+    void leaveEvent(QEvent*) override;
 
     /// Stops Qt stealing Tab for focus navigation while a dimension is being entered.
     ///
