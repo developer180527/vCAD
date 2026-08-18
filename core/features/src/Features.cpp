@@ -185,6 +185,41 @@ sketch::SketchFrame frameOf(const kernel::PlaneFrame& measured) {
     return frame;
 }
 
+/// Plane: an origin datum, as a real object in the document.
+///
+/// Not a special case hidden in the shell. A datum plane has to be pickable, highlightable,
+/// nameable and referenceable by a sketch — which is the entire job description of a feature — and
+/// making it one means sketch-on-a-face already works on it with no new code: the sketch resolves
+/// the plane's face through the same element map as any other body's.
+///
+/// It produces a bounded square face because an unbounded plane cannot be picked, highlighted or
+/// fitted to a view. The bound is display, not meaning: a sketch placed on it takes the PLANE, and
+/// nothing stops geometry running past the visible edge.
+kernel::Result<Output> computePlane(const ComputeContext& ctx) {
+    std::int64_t plane = 0;
+    if (const auto* stored = ctx.object.find("plane")) {
+        if (const auto* v = std::get_if<std::int64_t>(stored)) plane = *v;
+    }
+    double size = 100.0;
+    if (const auto* stored = ctx.object.find("size")) {
+        if (const auto* v = std::get_if<units::Length>(stored)) size = v->base();
+    }
+
+    auto face = kernel::makePlane(static_cast<int>(plane), size);
+    if (!face) return face.error();
+
+    // nameprimitive, like Box and Cylinder: a datum has no input to inherit provenance from, so
+    // its face is a primitive of this feature.
+    naming::NamingContext naming(ctx.namingSerial, 0);
+    auto map = naming.nameprimitive(face.value(), {});
+    if (!map) return map.error();
+
+    Output out;
+    out.shape = face.value();
+    out.map = std::move(map.value());
+    return out;
+}
+
 kernel::Result<Output> computeSketch(const ComputeContext& ctx) {
     const auto* text = ctx.object.find("sketch");
     if (text == nullptr) {
@@ -448,6 +483,7 @@ recompute::FeatureRegistry builtins() {
     r.add({"Fuse", 1, computeBoolean<&kernel::booleanFuse>});
     r.add({"Common", 1, computeBoolean<&kernel::booleanCommon>});
     r.add({"Sketch", 1, computeSketch});
+    r.add({"Plane", 1, computePlane});
     r.add({"Extrude", 1, computeExtrude});
     r.add({"Translate", 1, computeTranslate});
     // Import is the ONE built-in that reads outside the document, so it is the one that has to

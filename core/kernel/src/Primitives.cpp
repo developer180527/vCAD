@@ -3,6 +3,8 @@
 #include "cad/kernel/Guard.h"
 #include "cad/kernel/internal/Occt.h"
 
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 
@@ -62,6 +64,33 @@ Result<Operation> makeCylinder(double radius, double height) {
         op.impl().algo = algo;
         op.impl().result = algo->Shape();
         return op;
+    });
+}
+
+Result<Shape> makePlane(int plane, double size) {
+    if (!(size > 0.0)) {
+        return Error{ErrorCode::InvalidInput, "A plane needs a positive size."};
+    }
+    return guard("build the datum plane", [&] {
+        const double h = size * 0.5;
+        // Corners walked in a consistent order, so the face's normal comes out along the plane's
+        // own axis rather than depending on which corner happened to be listed first.
+        gp_Pnt a;
+        gp_Pnt b;
+        gp_Pnt c;
+        gp_Pnt d;
+        if (plane == 1) {          // XZ
+            a = gp_Pnt(-h, 0.0, -h); b = gp_Pnt(h, 0.0, -h);
+            c = gp_Pnt(h, 0.0, h);   d = gp_Pnt(-h, 0.0, h);
+        } else if (plane == 2) {   // YZ
+            a = gp_Pnt(0.0, -h, -h); b = gp_Pnt(0.0, h, -h);
+            c = gp_Pnt(0.0, h, h);   d = gp_Pnt(0.0, -h, h);
+        } else {                   // XY
+            a = gp_Pnt(-h, -h, 0.0); b = gp_Pnt(h, -h, 0.0);
+            c = gp_Pnt(h, h, 0.0);   d = gp_Pnt(-h, h, 0.0);
+        }
+        BRepBuilderAPI_MakePolygon polygon(a, b, c, d, /*Close*/ true);
+        return wrap(BRepBuilderAPI_MakeFace(polygon.Wire(), /*OnlyPlane*/ true).Face());
     });
 }
 

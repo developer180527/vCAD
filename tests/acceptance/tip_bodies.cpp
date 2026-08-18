@@ -20,6 +20,20 @@
 
 #include <string>
 
+namespace {
+
+/// The first object of a given type. A new part starts with three origin datum planes, so
+/// "row zero is the body I just made" stopped being true — and was only ever true by accident.
+cad::document::ObjectId firstOfType(cad::app::Controller& c, const std::string& type) {
+    for (const auto& item : c.tree()) {
+        if (item.type == type) return item.id;
+    }
+    return {};
+}
+
+}  // namespace
+
+
 using namespace cad;
 
 namespace {
@@ -45,9 +59,10 @@ TEST_CASE("a filleted box is drawn once, not twice", "[app][tip]") {
 
     // Select the body, then fillet it. "Round every edge of the selected body" is what the command
     // does with no edges picked, which is the path the report came from.
-    const auto tree = c.tree();
-    REQUIRE_FALSE(tree.empty());
-    c.select(tree.front().id, false);
+    const document::ObjectId boxId = firstOfType(c, "Box");
+    REQUIRE(boxId != document::ObjectId{});
+    const std::size_t baseline = c.stats().objects;
+    c.select(boxId, false);
     REQUIRE(run(c, "feature.fillet"));
 
     const auto after = c.stats();
@@ -58,7 +73,9 @@ TEST_CASE("a filleted box is drawn once, not twice", "[app][tip]") {
     // ONE body. Two means the box and its filleted result are both being drawn in the same place,
     // which z-fights into a dither that looks exactly like a rendering bug.
     CHECK(after.instances == 1);
-    CHECK(after.objects == 2);   // both still IN the document; only one is drawn
+    // Both still IN the document; only one is drawn. Counted against a baseline rather than as an
+    // absolute, so seeding another object into a new part does not break a test about drawing.
+    CHECK(after.objects == baseline + 1);
 }
 
 TEST_CASE("a failed feature does not hide its input", "[app][tip]") {
@@ -68,9 +85,8 @@ TEST_CASE("a failed feature does not hide its input", "[app][tip]") {
     app::Controller c;
     REQUIRE(run(c, "feature.box"));
 
-    const auto tree = c.tree();
-    REQUIRE_FALSE(tree.empty());
-    const auto boxId = tree.front().id;
+    const document::ObjectId boxId = firstOfType(c, "Box");
+    REQUIRE(boxId != document::ObjectId{});
     c.select(boxId, false);
     REQUIRE(run(c, "feature.fillet"));
 

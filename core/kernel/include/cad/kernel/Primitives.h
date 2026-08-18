@@ -43,4 +43,14 @@ Result<BoxResult> makeBox(double dx, double dy, double dz);
 
 Result<Operation> makeCylinder(double radius, double height);
 
+/// A square planar face centred on the origin, lying in one of the three global planes.
+///
+/// The geometry behind a datum plane. A real datum is unbounded; a bounded face is what every CAD
+/// application draws instead, because an infinite plane cannot be picked, highlighted or fitted to
+/// a view. `size` is the edge length, so the face spans -size/2..+size/2 on both of its axes.
+///
+/// `plane`: 0 = XY, 1 = XZ, 2 = YZ — the same encoding a sketch's plane property uses, so the two
+/// cannot drift apart into two spellings of the same three values.
+Result<Shape> makePlane(int plane, double size);
+
 }  // namespace cad::kernel

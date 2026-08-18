@@ -32,9 +32,14 @@ TEST_CASE("Start Sketch uses the selected face, and Finish gives the view back",
 
     REQUIRE(controller.beginCommand("feature.box"));
     REQUIRE(controller.commitCommand());
-    const auto tree = controller.tree();
-    REQUIRE_FALSE(tree.empty());
-    const document::ObjectId boxId = tree.front().id;
+    // Found by TYPE, not by position. A new part now starts with three origin datum planes, so
+    // the first tree row is a plane and "the box is row zero" was only ever true by accident.
+    document::ObjectId boxId{};
+    for (const auto& item : controller.tree()) {
+        const auto object = controller.document().find(item.id);
+        if (object && object->type() == "Box") { boxId = item.id; break; }
+    }
+    REQUIRE(boxId != document::ObjectId{});
 
     // An off-axis view the user arranged for themselves. Finishing must give exactly this back —
     // a sketch that quietly re-aims the camera makes every sketch cost a re-orbit.
@@ -131,4 +136,75 @@ TEST_CASE("entering a sketch turns orbit mode off", "[sketch][flow]") {
     // the sketch tools being broken. Entering a sketch is the moment the user asked to DRAW.
     CHECK_FALSE(controller.orbitMode());
     CHECK(controller.leftPressDraws());
+}
+
+TEST_CASE("a new part has three origin planes you can sketch on", "[sketch][flow][datum]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+
+    // Three datums, in the document, before any geometry exists. This is the whole point: without
+    // them Start Sketch has nothing to select on an empty part and has to GUESS a plane — and a
+    // guessed plane is invisible, so the user cannot tell which one they got.
+    int planes = 0;
+    document::ObjectId xz{};
+    for (const auto& item : controller.tree()) {
+        const auto object = controller.document().find(item.id);
+        if (!object || object->type() != "Plane") continue;
+        ++planes;
+        // Computed, not merely declared: a datum that failed to build cannot be sketched on, and
+        // the failure would only surface at the moment the user tried.
+        CHECK(object->state() == document::ObjectState::Clean);
+        REQUIRE(object->output() != nullptr);
+        if (object->label().find("XZ") != std::string::npos) xz = item.id;
+    }
+    CHECK(planes == 3);
+    REQUIRE(xz != document::ObjectId{});
+
+    // Selecting the XZ datum and starting a sketch puts the camera on THAT plane — XZ's normal is
+    // Y, so an implementation that ignored the selection and used XY would look along Z instead.
+    const auto plane = controller.document().find(xz);
+    // The FACE, not simply the first name: a map holds the datum's edges and vertices too, and
+    // allNames() has no defined order.
+    naming::ElementName faceName;
+    bool found = false;
+    for (const auto& name : plane->output()->map.allNames()) {
+        const auto shape = plane->output()->map.resolve(name);
+        if (shape && kernel::planeOf(*shape)) { faceName = name; found = true; break; }
+    }
+    REQUIRE(found);
+    controller.setSelectionLevel(app::Controller::SelectionLevel::Face);
+    REQUIRE(controller.selectElement(xz, faceName));
+
+    const document::ObjectId sketchId = controller.beginSketch();
+    REQUIRE(sketchId != document::ObjectId{});
+    REQUIRE(controller.environment() == app::Environment::Sketch);
+    CHECK_THAT(alignmentWith(controller, {0.0, 1.0, 0.0}),
+               Catch::Matchers::WithinAbs(1.0, 1e-3));
+
+    // And it is usable: a click lands, a line draws, finishing does not error.
+    controller.setSketchTool(app::Controller::SketchTool::Line);
+    REQUIRE(controller.sketchClickAt(400.0f, 350.0f));
+    REQUIRE(controller.sketchClickAt(600.0f, 450.0f));
+    controller.finishSketch();
+
+    const auto sketch = controller.document().find(sketchId);
+    REQUIRE(sketch != nullptr);
+    CHECK(sketch->state() == document::ObjectState::Clean);
+}
+
+TEST_CASE("origin planes are reference geometry, not bodies", "[sketch][flow][datum]") {
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+
+    // Hidden by default. Shown, three large sheets sit in front of the model, get picked before the
+    // faces behind them, and "fit" frames the datums rather than the part. Hidden is not absent:
+    // they are in the tree and the test above sketches on one.
+    CHECK(controller.stats().instances == 0);
+
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+
+    // One body drawn, not four. The datums must not count as bodies for drawing, for framing, or
+    // for the tip-body rule that decides what a feature consumed.
+    CHECK(controller.stats().instances == 1);
 }

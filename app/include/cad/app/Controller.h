@@ -706,6 +706,9 @@ private:
     /// feature would fail to compute and give the user a red error for doing what the button said.
     /// A constrained rectangle is something you can immediately extrude and edit through the
     /// properties grid, which exercises the whole parametric path.
+    /// Creates the three origin datum planes a new part starts with.
+    void seedOriginPlanes();
+
     document::ObjectId addSketch();
 
 

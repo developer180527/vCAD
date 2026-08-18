@@ -33,6 +33,7 @@ Controller::Controller() {
     viewport_.height = 800;
     scene_->setViewport(viewport_);
     registerCommands();
+    seedOriginPlanes();
     savedDigest_ = saveDigest();   // a new, untouched document is not "modified"
 }
 
@@ -263,6 +264,15 @@ void Controller::refresh() {
             render::Placement p;
             p.object = id;
             std::copy(kIdentity, kIdentity + 12, p.transform);
+            // Datum planes start HIDDEN. They are reference geometry, not bodies: shown by default
+            // they sit in front of the model as three large sheets, they are picked before the
+            // faces behind them, and "fit" frames the datums rather than the part. Every CAD
+            // application hides them for the same reasons and offers a toggle — which is what the
+            // View tab's Origin Planes entry is for.
+            //
+            // Hidden, not absent: the object is in the tree, it can be selected there, and a
+            // sketch can be placed on it. Visibility is about pixels, not about existence.
+            p.visible = object->type() != "Plane";
             placements_.push_back(p);
         }
     }
@@ -930,6 +940,33 @@ bool Controller::editSketch(ObjectId id) {
     return true;
 }
 
+void Controller::seedOriginPlanes() {
+    // Three datums in every new part, as objects rather than as something the shell draws.
+    //
+    // They exist so there is something to sketch ON before any geometry exists. Without them Start
+    // Sketch has nothing to select and has to guess a plane, which is what it used to do — and a
+    // guessed plane is invisible, so the user cannot tell which one they got.
+    //
+    // Committed as ONE history entry and then treated as the baseline: seeding them must not make
+    // a brand-new document look edited, and must not sit on the undo stack as three steps a user
+    // can undo into an empty document with no way to get them back.
+    static constexpr struct { const char* label; std::int64_t plane; } kPlanes[]{
+        {"XY", 0}, {"XZ", 1}, {"YZ", 2}};
+
+    auto next = history_.current();
+    for (const auto& p : kPlanes) {
+        auto [added, id] = next.add("Plane");
+        next = added;
+        const auto object = next.find(id);
+        auto updated = object->withProperty("plane", p.plane)
+                           .withProperty("size", units::millimetres(100.0))
+                           .withLabel(std::string(p.label) + " Plane");
+        next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    }
+    history_.commit(std::move(next), "Origin planes");
+    refresh();
+}
+
 ObjectId Controller::beginSketch() {
     // A selected planar face wins. This is the order the user expects and the order every CAD
     // application uses -- pick the surface, then draw on it -- and it is what makes "sketch on the
@@ -943,7 +980,10 @@ ObjectId Controller::beginSketch() {
         // Planar only. A cylindrical face has no single plane to draw on, and refusing here with a
         // reason beats accepting and producing a sketch somewhere arbitrary.
         if (!kernel::planeOf(*shape)) {
-            status("A sketch needs a flat face. That one is curved.");
+            // Covers a curved face AND an edge or vertex, which is why it does not say "curved":
+            // telling a user who selected an edge that it is curved sends them looking for the
+            // wrong problem.
+            status("A sketch needs a flat face or a plane. That selection is neither.");
             continue;
         }
         const ObjectId onFace = addSketchOnFace(picked.object, picked.element.toString());

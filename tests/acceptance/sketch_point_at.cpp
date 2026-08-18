@@ -158,9 +158,14 @@ TEST_CASE("editing a face-placed sketch aligns the camera and accepts clicks", "
 
     REQUIRE(controller.beginCommand("feature.box"));
     REQUIRE(controller.commitCommand());
-    const auto tree = controller.tree();
-    REQUIRE_FALSE(tree.empty());
-    const document::ObjectId boxId = tree.front().id;
+    // Found by TYPE, not by position. A new part now starts with three origin datum planes, so
+    // the first tree row is a plane and "the box is row zero" was only ever true by accident.
+    document::ObjectId boxId{};
+    for (const auto& item : controller.tree()) {
+        const auto object = controller.document().find(item.id);
+        if (object && object->type() == "Box") { boxId = item.id; break; }
+    }
+    REQUIRE(boxId != document::ObjectId{});
     REQUIRE(boxId != document::ObjectId{});
 
     // A face of the box, found the way the shell finds one: by picking it. Any planar face will do;
