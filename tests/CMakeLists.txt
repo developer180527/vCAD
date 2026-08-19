@@ -92,6 +92,14 @@ if(IOS)
   set_target_properties(cad_tests PROPERTIES
     MACOSX_BUNDLE TRUE
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "dev.vcad.tests"
+    # AND the plist variable, which is a different thing. CMake fills its bundle Info.plist template
+    # from MACOSX_BUNDLE_GUI_IDENTIFIER; the Xcode attribute above only sets the build setting. With
+    # just the attribute the app signs and validates and then devicectl refuses it: "not a valid
+    # bundle ... ensure CFBundleIdentifier is set". Both are needed, and they must agree.
+    MACOSX_BUNDLE_GUI_IDENTIFIER "dev.vcad.tests"
+    MACOSX_BUNDLE_BUNDLE_NAME "cad_tests"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
     # A device build must be signed, and the suite needs no entitlements beyond running.
     XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
     # Catch2 writes to stdout, which devicectl's --console streams back. No file I/O, so no

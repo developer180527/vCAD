@@ -14,7 +14,21 @@
 
 set(PLANEGCS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Mod/Sketcher/App/planegcs")
 
-add_library(planegcs SHARED
+# SHARED on desktop, STATIC on iOS.
+#
+# An iOS app may only load dylibs it ships inside its own bundle, and CMake's rpath for a build-tree
+# dylib names a directory on the BUILD MACHINE. The device cannot see it, so dyld kills the process
+# before main runs — the app appears on the home screen, launches, and closes instantly, which reads
+# as a crash in the tests rather than a packaging mistake. devicectl even reports exit code 0.
+#
+# Static side-steps it entirely, and costs nothing here: the reason this is shared is a comment about
+# OCCT's global state, and planegcs does not touch OCCT.
+set(PLANEGCS_LINKAGE SHARED)
+if(IOS)
+  set(PLANEGCS_LINKAGE STATIC)
+endif()
+
+add_library(planegcs ${PLANEGCS_LINKAGE}
   "${PLANEGCS_DIR}/GCS.cpp"
   "${PLANEGCS_DIR}/Constraints.cpp"
   "${PLANEGCS_DIR}/Geo.cpp"

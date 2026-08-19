@@ -133,6 +133,7 @@ TEST_CASE("a manifest that disagrees with its library is refused", "[plugin][loa
 }
 
 TEST_CASE("a directory that is not a plugin is refused legibly", "[plugin][loader]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     Host host;
 
     const auto empty = std::filesystem::temp_directory_path() / "cad-plugin-test-empty";
@@ -152,6 +153,7 @@ TEST_CASE("a directory that is not a plugin is refused legibly", "[plugin][loade
 }
 
 TEST_CASE("discovery finds plugin directories in a stable order", "[plugin][loader]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     const auto found = abi::discoverPluginDirectories(CAD_TEST_PLUGIN_DIR);
     REQUIRE_FALSE(found.empty());
     CHECK(std::is_sorted(found.begin(), found.end()));

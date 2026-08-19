@@ -29,8 +29,16 @@ BUNDLE_ID="dev.vcad.tests"
 
 # The signing team, read from the keychain rather than hard-coded: a checkout on another machine
 # has a different one, and a wrong team fails deep inside xcodebuild with an unhelpful message.
-TEAM="${CAD_IOS_TEAM:-$(security find-identity -v -p codesigning \
-    | sed -n 's/.*Apple Development: .*(\([A-Z0-9]*\)).*/\1/p' | head -1)}"
+# The team ID is the certificate's ORGANISATIONAL UNIT, not the value in parentheses in its common
+# name — that parenthesised string is the certificate's own identifier and looks just like a team ID,
+# which is exactly why using it fails with the unhelpful "No Account for Team ..." rather than
+# anything that points at the real mistake.
+#
+#   CN=Apple Development: someone@example.com (X8ZW64M5MM)   <- NOT the team
+#   OU=7PF6KT3R5Q                                            <- the team
+TEAM="${CAD_IOS_TEAM:-$(security find-certificate -c "Apple Development" -p 2>/dev/null \
+    | openssl x509 -noout -subject 2>/dev/null \
+    | sed -n 's/.*OU=\([A-Z0-9]*\).*/\1/p' | head -1)}"
 if [[ -z "$TEAM" ]]; then
     echo "No Apple Development signing identity found. Open Xcode and add your Apple ID." >&2
     exit 1

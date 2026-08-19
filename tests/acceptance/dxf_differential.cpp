@@ -302,6 +302,7 @@ TEST_CASE("the two DXF readers agree on a well-formed file", "[dxf][differential
 
 TEST_CASE("the two DXF readers agree whenever both accept a mutated file",
           "[dxf][differential]") {
+    if (!cad::testing::hasRepoFixtures()) SKIP("the repository's DXF corpus is not reachable from here");
     if (!io::hasRustDxfReader()) {
         SUCCEED("build has no Rust reader; nothing to compare against");
         return;
