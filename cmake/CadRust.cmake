@@ -44,7 +44,19 @@ function(cad_add_rust_library)
   else()
     set(_lib_name "libcad_parse.a")
   endif()
-  set(_lib_path "${_target_dir}/${_cargo_profile_dir}/${_lib_name}")
+  # CROSS-COMPILING: cargo builds for the host unless told otherwise, and a host archive linked
+  # into a device binary fails with "built for 'macOS'" at the very end of the link — after every
+  # C++ object has compiled, which makes it look like a C++ problem.
+  #
+  # When a target is given, cargo nests its output one directory deeper, so the path has to follow.
+  set(_cargo_target_flag "")
+  set(_cargo_target_subdir "")
+  if(CAD_RUST_TARGET)
+    set(_cargo_target_flag --target ${CAD_RUST_TARGET})
+    set(_cargo_target_subdir "${CAD_RUST_TARGET}/")
+  endif()
+
+  set(_lib_path "${_target_dir}/${_cargo_target_subdir}${_cargo_profile_dir}/${_lib_name}")
 
   # The link libraries Rust's std needs, ASKED FOR rather than hardcoded per platform.
   #
@@ -99,8 +111,8 @@ function(cad_add_rust_library)
 
   add_custom_command(
     OUTPUT "${_lib_path}"
-    COMMAND ${CARGO_EXECUTABLE} build ${_cargo_profile_flag} --offline --locked
-            --target-dir "${_target_dir}"
+    COMMAND ${CARGO_EXECUTABLE} build ${_cargo_profile_flag} ${_cargo_target_flag} --offline
+            --locked --target-dir "${_target_dir}"
     WORKING_DIRECTORY "${_crate_dir}"
     # Depended on by FILE, so editing the source rebuilds -- CMake does not watch directories for
     # content changes, so naming the crate directory would not work.

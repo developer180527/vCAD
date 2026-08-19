@@ -16,6 +16,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "Platform.h"
+
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -34,6 +36,7 @@ struct OwnedSession {
 }  // namespace
 
 TEST_CASE("a real plugin directory loads through the ABI entry point", "[plugin][abi]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     OwnedSession session;
     REQUIRE(session.handle != 0);
 
@@ -49,6 +52,7 @@ TEST_CASE("a real plugin directory loads through the ABI entry point", "[plugin]
 }
 
 TEST_CASE("a loaded plugin's feature type is usable afterwards", "[plugin][abi]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     OwnedSession session;
     std::uint32_t loaded = 0;
     REQUIRE(cad_plugins_load(session.handle, CAD_TEST_PLUGIN_DIR, &loaded, nullptr) == CAD_OK);
@@ -68,6 +72,7 @@ TEST_CASE("a loaded plugin's feature type is usable afterwards", "[plugin][abi]"
 }
 
 TEST_CASE("a directory with no plugins is not an error", "[plugin][abi]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     OwnedSession session;
 
     const std::filesystem::path empty =
@@ -91,6 +96,7 @@ TEST_CASE("a directory with no plugins is not an error", "[plugin][abi]") {
 }
 
 TEST_CASE("one bad plugin does not stop the good one", "[plugin][abi]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     // A directory holding BOTH the working demo plugin and a broken entry. The whole point of
     // counting failures rather than returning on the first one is that a user with two plugins,
     // one of which is stale after an update, still gets the other.

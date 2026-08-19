@@ -6,7 +6,19 @@
 #
 # SHARED on purpose: this is what Rust, the future SwiftUI shell and native plugins load, and
 # none of them can consume a C++ static archive.
-add_library(cad_abi SHARED
+# SHARED on desktop, STATIC on iOS.
+#
+# The ABI is a shared library because that is what a plugin links against and what makes the
+# additive-ABI promise meaningful across releases. iOS has no plugins — an app may only load code it
+# shipped, signed with its own identity, which is why docs/design/IPAD_UX.md lists plugins as absent
+# by design rather than merely unbuilt. A dylib there is a link error for a capability the platform
+# does not have.
+set(CAD_ABI_LINKAGE SHARED)
+if(IOS)
+  set(CAD_ABI_LINKAGE STATIC)
+endif()
+
+add_library(cad_abi ${CAD_ABI_LINKAGE}
   src/Session.cpp
   src/Manifest.cpp
   src/Loader.cpp

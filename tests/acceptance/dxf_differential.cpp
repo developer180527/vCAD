@@ -41,6 +41,7 @@
 #include "cad/sketch/Sketch.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include "Platform.h"
 
 // std::max over an initializer list. Included explicitly because libc++ happens to pull
 // <algorithm> in through <string> and libstdc++ does not -- so omitting it builds on macOS and
@@ -264,6 +265,7 @@ Comparison compare(const sketch::Sketch& a, const sketch::Sketch& b) {
 }  // namespace
 
 TEST_CASE("the two DXF readers agree on a well-formed file", "[dxf][differential]") {
+    if (!cad::testing::hasRepoFixtures()) SKIP("the repository's DXF corpus is not reachable from here");
     if (!io::hasRustDxfReader()) {
         SUCCEED("build has no Rust reader; nothing to compare against");
         return;

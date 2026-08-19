@@ -65,12 +65,45 @@ target_link_libraries(cad_tests PRIVATE cad::sketch)
 target_compile_definitions(cad_tests PRIVATE CAD_REPO_ROOT="${CMAKE_SOURCE_DIR}")
 cad_set_warnings(cad_tests)
 
-add_subdirectory(plugins)
-add_dependencies(cad_tests vcad_demo_plugin)
+# The demo plugin is a loadable shared library, which iOS has no concept of for third-party code:
+# an app may only dlopen what it shipped, signed with its own identity. The plugin TESTS still
+# compile there and skip with a reason (tests/acceptance/Platform.h); it is only the fixture that
+# cannot exist, so building it is skipped rather than the tests that use it.
+if(NOT IOS)
+  add_subdirectory(plugins)
+  add_dependencies(cad_tests vcad_demo_plugin)
+endif()
 target_compile_definitions(cad_tests PRIVATE
   CAD_TEST_PLUGIN_DIR="${CMAKE_CURRENT_BINARY_DIR}/plugins")
 
-catch_discover_tests(cad_tests)
+# ── iOS: the suite has to be an app bundle ──────────────────────────────────────────────
+#
+# iOS cannot execute a bare binary. There is no shell, no working directory a process can be
+# launched in, and no way to hand argv to something that is not a bundle — so verifying that the
+# core "passes its tests on the iPad" means shipping the suite AS an app and reading its output back
+# over the wire.
+#
+# The suite itself is unchanged: same sources, same Catch2 main, same assertions. Only the packaging
+# differs, which is the point — a test that had to be rewritten to run on the device would no longer
+# be evidence about the code that runs on the desktop.
+if(IOS)
+  # Named rather than sniffed at each use site, so a test can say WHY it is skipping.
+  target_compile_definitions(cad_tests PRIVATE CAD_PLATFORM_IOS=1)
+  set_target_properties(cad_tests PROPERTIES
+    MACOSX_BUNDLE TRUE
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "dev.vcad.tests"
+    # A device build must be signed, and the suite needs no entitlements beyond running.
+    XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+    # Catch2 writes to stdout, which devicectl's --console streams back. No file I/O, so no
+    # sandbox questions: the fixtures that need a path use the app's own container.
+    XCODE_ATTRIBUTE_ENABLE_BITCODE "NO")
+endif()
+
+# Discovery RUNS the binary to enumerate tests, which is impossible when the binary is for another
+# architecture. On iOS the suite is driven by launching the bundle on the device instead.
+if(NOT IOS)
+  catch_discover_tests(cad_tests)
+endif()
 
 # M1 is done when this passes.
 add_test(NAME m1_acceptance COMMAND cad_tests "[m1]")

@@ -6,9 +6,21 @@
 #
 # The cost is a dependency on bgfx[tools], which pulls glslang and spirv-tools. Worth it.
 
+# shaderc is a HOST tool: it runs on the machine doing the build, whatever it is building for.
+# Searching the TARGET triplet works only by coincidence when target == host, and cross-compiling
+# finds an arm64-ios shaderc that does not exist and could not be executed if it did. The iOS build
+# failed exactly there, pointing at .../arm64-ios/tools/bgfx/shaderc.
+#
+# The host triplet is searched first, so a cross build picks the runnable tool and a native build is
+# unaffected — VCPKG_HOST_TRIPLET equals VCPKG_TARGET_TRIPLET there.
+# BGFX_SHADERC may be set explicitly (-DBGFX_SHADERC=...), which find_program then leaves alone.
+# That is the escape hatch for a cross build whose host triplet did not install the tools.
 find_program(BGFX_SHADERC
   NAMES shaderc
-  PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/bgfx"
+  PATHS "${VCPKG_INSTALLED_DIR}/${VCPKG_HOST_TRIPLET}/tools/bgfx"
+        "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_HOST_TRIPLET}/tools/bgfx"
+        "${_VCPKG_INSTALLED_DIR}/${VCPKG_HOST_TRIPLET}/tools/bgfx"
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/bgfx"
         "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/tools/bgfx"
   NO_DEFAULT_PATH)
 

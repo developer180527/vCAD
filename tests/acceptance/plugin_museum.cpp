@@ -22,6 +22,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "Platform.h"
+
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -199,6 +201,7 @@ std::vector<fs::path> exhibits() {
 }  // namespace
 
 TEST_CASE("every plugin ever built still loads", "[museum][abi]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     const auto all = exhibits();
 
     INFO("triple: " << triple() << ", museum: " << museumRoot().string());
@@ -247,6 +250,7 @@ TEST_CASE("every plugin ever built still loads", "[museum][abi]") {
 }
 
 TEST_CASE("an exhibit's bytes have not changed", "[museum][abi]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     // The museum only means anything if the binaries are frozen, so the recorded digest is
     // VERIFIED rather than left for a human. An earlier version of this test checked only that a
     // file was present and larger than a kilobyte, and recorded the sha256 in PROVENANCE for

@@ -11,6 +11,7 @@
 #include "cad/abi/cad_plugin_abi.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include "Platform.h"
 
 #include <filesystem>
 #include <fstream>
@@ -58,6 +59,7 @@ std::filesystem::path stagedCopy(const std::string& name, const std::string& man
 }  // namespace
 
 TEST_CASE("a real plugin loads, registers, and computes", "[plugin][loader]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     Host host;
     REQUIRE(host.host() != nullptr);
 
@@ -90,6 +92,7 @@ TEST_CASE("a real plugin loads, registers, and computes", "[plugin][loader]") {
 }
 
 TEST_CASE("a plugin needing a newer host is refused before it is loaded", "[plugin][loader]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     // The forward direction, and it is refusal rather than compatibility. PLUGIN_CONTRACT.md §8
     // asks for this as its own test because the failure it prevents -- loading anyway and calling
     // a function pointer the old host never populated -- is the hardest possible crash to
@@ -107,6 +110,7 @@ TEST_CASE("a plugin needing a newer host is refused before it is loaded", "[plug
 }
 
 TEST_CASE("a manifest that disagrees with its library is refused", "[plugin][loader]") {
+    if (!cad::testing::canLoadPlugins()) SKIP("this platform only permits loading code shipped inside the signed app bundle");
     // The manifest is a claim; the binary is the truth. A manifest able to disagree with its own
     // library is a lie surface -- the user is shown one plugin's identity at install time while a
     // different plugin's code runs at load time, which makes the consent they gave meaningless.

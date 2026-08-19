@@ -14,15 +14,29 @@ set(CAD_RENDER_SOURCES
 )
 # Objective-C++, and only on Apple platforms: bgfx's Metal backend cannot initialise without a
 # CAMetalLayer, so headless rendering has to create one. See src/MetalSurface.mm.
-if(APPLE)
+# macOS only, NOT Apple generally. MetalSurface.mm is written against AppKit's NSView; iOS has no
+# AppKit, and its equivalent is a UIView backed by a CAMetalLayer. Porting it is real work the iPad
+# app will need — and work that belongs with the iPad app, not with this milestone: the acceptance
+# suite drives the renderer through NullBackend and never asks for a surface at all.
+#
+# Excluded rather than #ifdef'd inside the file, so "iOS has no surface yet" is visible in the build
+# description instead of being a silently empty translation unit.
+if(APPLE AND NOT IOS)
   list(APPEND CAD_RENDER_SOURCES src/MetalSurface.mm)
+elseif(IOS)
+  list(APPEND CAD_RENDER_SOURCES src/MetalSurfaceIOS.cpp)
 endif()
 
 cad_core_library(cad_render ${CAD_RENDER_SOURCES})
 
 if(APPLE)
-  target_link_libraries(cad_render PRIVATE "-framework QuartzCore" "-framework Metal"
-                                      "-framework AppKit")
+  # QuartzCore and Metal exist on both; AppKit is macOS-only and is needed only by
+  # MetalSurface.mm, which iOS does not build. Linking it there fails with
+  # "framework 'AppKit' not found" — a confusing error for a file that is not in the target.
+  target_link_libraries(cad_render PRIVATE "-framework QuartzCore" "-framework Metal")
+  if(NOT IOS)
+    target_link_libraries(cad_render PRIVATE "-framework AppKit")
+  endif()
 endif()
 
 # Shaders land next to the build's binaries; BgfxBackend looks for them under CAD_SHADER_DIR,

@@ -10,6 +10,7 @@
 #include "Model.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include "Platform.h"
 
 #include <array>
 #include <cstdio>
@@ -31,6 +32,7 @@ std::string emitDigest();        // the payload both parent and child compute
 }  // namespace cadtest
 
 TEST_CASE("M1: naming is deterministic across processes", "[m1][naming]") {
+    if (!cad::testing::canSpawnSubprocesses()) SKIP("this platform forbids spawning a subprocess, so two processes cannot be compared here");
     REQUIRE_FALSE(cadtest::g_argv0.empty());
 
     // cmd.exe has no `VAR=value command` prefix syntax, so set the variable in our own

@@ -59,6 +59,13 @@ option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 # may not, and the difference between "the Rust integration works on Windows" and "cargo was
 # missing so CMake quietly skipped it and everything fell back to dime" is invisible from a green
 # test run unless something asserts it.
+# The Rust target triple, when cross-compiling. Empty means "build for the host", which is right
+# for a native build and wrong for every other kind: cargo does not read CMake's toolchain.
+set(CAD_RUST_TARGET "" CACHE STRING "Rust target triple, empty for host")
+if(IOS AND NOT CAD_RUST_TARGET)
+  set(CAD_RUST_TARGET "aarch64-apple-ios" CACHE STRING "" FORCE)
+endif()
+
 option(CAD_REQUIRE_RUST     "Fail the build if the Rust toolchain is missing" OFF)
 
 # assetlib: the content-addressed DDC (ADR 0004). Vendored in-tree — see
