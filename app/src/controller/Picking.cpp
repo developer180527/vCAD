@@ -230,8 +230,17 @@ void Controller::refreshHighlights() {
 }
 
 Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bool additive) {
+    return applyPick(pickAt(x, y), additive);
+}
+
+/// What a click or a tap DOES with the thing it found.
+///
+/// Split out of clickAt when tapAt arrived, so the two differ only in how they decide WHAT was
+/// pointed at — one pixel for a mouse, an aperture for a finger — and not at all in what pointing
+/// at it means. Two copies of this body is how the desktop and the iPad would end up disagreeing
+/// about whether a second tap deselects.
+Controller::ClickResult Controller::applyPick(const Pick& pick, bool additive) {
     ClickResult out;
-    const Pick pick = pickAt(x, y);
 
     if (!pick.hit) {
         // Empty space. Clearing is what every CAD application does, and it is what keeps the tree
@@ -313,6 +322,116 @@ Controller::ClickResult Controller::clickAt(std::uint32_t x, std::uint32_t y, bo
     out.changed = true;
     refreshHighlights();
     notifyDocument();
+    return out;
+}
+
+namespace {
+
+/// The ranking's notion of what a thing is, from the kernel's.
+PickKind kindOf(kernel::ShapeType type) {
+    switch (type) {
+        case kernel::ShapeType::Vertex: return PickKind::Vertex;
+        case kernel::ShapeType::Edge:   return PickKind::Edge;
+        case kernel::ShapeType::Face:   return PickKind::Face;
+        default:                        return PickKind::Unknown;
+    }
+}
+
+const char* nameOf(PickKind kind) {
+    switch (kind) {
+        case PickKind::Vertex: return "Vertex";
+        case PickKind::Edge:   return "Edge";
+        case PickKind::Face:   return "Face";
+        case PickKind::Unknown: break;
+    }
+    return "Element";
+}
+
+}   // namespace
+
+std::vector<Controller::Candidate> Controller::candidatesAt(std::uint32_t x, std::uint32_t y,
+                                                            std::uint32_t radiusPixels) {
+    std::vector<Candidate> out;
+    if (active_.picker == nullptr) return out;
+
+    std::vector<render::IPicker::ApertureHit> hits;
+    active_.picker->pickAperture(scene_->frame(), x, y, radiusPixels, hits);
+    if (hits.empty()) return out;
+
+    // Ranked in the pure type and then re-joined, rather than sorting `Candidate` directly. The
+    // rule is worth being able to test without a document, a scene or a GPU — those are exactly
+    // the things that make the interesting cases (an edge one pixel inside a face) unreasonable
+    // to arrange in a test.
+    std::vector<PickCandidate> ranked;
+    ranked.reserve(hits.size());
+    std::vector<Candidate> resolved;
+    resolved.reserve(hits.size());
+
+    for (const auto& hit : hits) {
+        Candidate c;
+        c.slot = hit.element;
+        c.distanceSq = static_cast<std::uint64_t>(hit.dx) * hit.dx
+                       + static_cast<std::uint64_t>(hit.dy) * hit.dy;
+
+        render::IPicker::Hit raw;
+        raw.element = hit.element;
+        raw.valid = true;
+        if (const auto name = scene_->resolve(raw)) c.element = *name;
+        if (const auto owner = scene_->objectOf(hit.element)) c.object = *owner;
+
+        // The kind comes from the RESOLVED TOPOLOGY, never from the name. An edge and the face
+        // bounding it can share a feature and an operation, so their names do not distinguish
+        // them — the same reason clickAt resolves the shape before honouring a selection level.
+        std::string ownerLabel;
+        if (const auto object = history_.current().find(c.object)) {
+            ownerLabel = object->label();
+            if (object->output() != nullptr && !c.element.isNull()) {
+                if (const auto shape = object->output()->map.resolve(c.element)) {
+                    c.kind = kindOf(shape->type());
+                }
+            }
+        }
+        c.label = ownerLabel.empty() ? nameOf(c.kind) : ownerLabel + " · " + nameOf(c.kind);
+
+        ranked.push_back(PickCandidate{c.slot, c.kind, c.distanceSq, c.depth});
+        resolved.push_back(std::move(c));
+    }
+
+    // A level RESTRICTS rather than reorders — it decides what a pick resolves to. Body keeps
+    // everything, because a body is reached through whichever element was hit.
+    if (const auto wanted = topologyFor(selectionLevel_)) {
+        restrictToKind(ranked, kindOf(*wanted));
+    }
+    rankCandidates(ranked);
+
+    out.reserve(ranked.size());
+    for (const auto& r : ranked) {
+        const auto it = std::find_if(resolved.begin(), resolved.end(),
+                                     [&](const Candidate& c) { return c.slot == r.slot; });
+        if (it != resolved.end()) out.push_back(*it);
+    }
+    return out;
+}
+
+Controller::ClickResult Controller::tapAt(std::uint32_t x, std::uint32_t y,
+                                          std::uint32_t radiusPixels, bool additive) {
+    const auto candidates = candidatesAt(x, y, radiusPixels);
+
+    Pick pick;
+    if (!candidates.empty()) {
+        pick.hit = true;
+        pick.object = candidates.front().object;
+        pick.element = candidates.front().element;
+        pick.slot = candidates.front().slot;
+        pick.depth = candidates.front().depth;
+    }
+    auto out = applyPick(pick, additive);
+    // Said out loud when the tap was ambiguous, because that is when a shell should be offering
+    // the rest of the list — and when a user who got the wrong thing needs to know there was a
+    // choice rather than concluding the picker is inaccurate.
+    if (candidates.size() > 1 && out.hit) {
+        out.message += " (" + std::to_string(candidates.size() - 1) + " more here)";
+    }
     return out;
 }
 

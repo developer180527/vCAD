@@ -12,11 +12,18 @@ struct ViewportView: UIViewRepresentable {
     @Binding var handle: CadViewportView?
     let onStatus: (String) -> Void
     let onDocumentChanged: () -> Void
+    /// Whether the renderer came up, and why not if it did not.
+    ///
+    /// Pushed rather than polled. `CadViewportView.attached` read inside a SwiftUI body is
+    /// evaluated exactly once — before the view has been laid out, so necessarily before the
+    /// renderer can have started — and never again unless some other state happens to change.
+    let onStarted: (Bool, String) -> Void
 
     func makeUIView(context: Context) -> CadViewportView {
         let view = CadViewportView(frame: .zero)
         view.onStatus = { onStatus($0) }
         view.onDocumentChanged = { onDocumentChanged() }
+        view.onStarted = { ok, error in onStarted(ok, error) }
         // `start()` is NOT called here. A view has no size until it is laid out, and a renderer
         // brought up against a zero-sized drawable initialises into nothing. The view starts itself
         // from `layoutSubviews`, which is also what makes rotation and Slide Over work.
@@ -25,6 +32,16 @@ struct ViewportView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: CadViewportView, context: Context) {}
+
+    /// Tears the renderer down when the screen goes away.
+    ///
+    /// Not optional politeness: bgfx is a process-wide singleton, so a viewport still holding a
+    /// context when the next project opens makes THAT project's renderer fail to start. Leaving it
+    /// to deallocation does not work either — the callbacks above capture state that holds the
+    /// view, so nothing would ever release it.
+    static func dismantleUIView(_ view: CadViewportView, coordinator: ()) {
+        view.shutdown()
+    }
 }
 
 /// What the shell shows when the renderer could not start.

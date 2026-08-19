@@ -1,4 +1,20 @@
-$input v_normal, v_color, v_ids
+// v_wpos IS DECLARED EVEN THOUGH THIS SHADER DOES NOT USE IT, and that is not tidiness.
+//
+// bgfx hashes a shader's varying signature and refuses to link a vertex shader whose OUTPUT set
+// differs from the fragment shader's INPUT set — not a subset, identical. This shader pairs with
+// vs_shaded, which outputs v_normal, v_color, v_ids and v_wpos. Declaring three of the four made
+// createProgram return an invalid handle.
+//
+// What that cost is the interesting part. Nothing crashed and nothing was reported: the pick pass
+// simply never ran, `readIds` returned early on an invalid program, and every pick came back as
+// "nothing there". Shaded rendering was unaffected, so the model was plainly on screen while every
+// click and every tap missed it — which reads as a broken picker, or on a tablet as a fat finger.
+//
+// It arrived when the Slice feature added v_wpos to vs_shaded and fs_shaded for its per-fragment
+// clip. fs_pick was not updated, because nothing links the three files except a hash computed
+// inside bgfx at runtime. render/src/BgfxBackend.cpp now logs when the pick program is missing,
+// and spikes/highlight measures a real pick end to end.
+$input v_normal, v_color, v_ids, v_wpos
 
 #include <bgfx_shader.sh>
 

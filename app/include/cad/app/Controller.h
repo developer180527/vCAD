@@ -10,6 +10,7 @@
 // implement them. tools/check_layering.py enforces the no-Qt half.
 
 #include "cad/app/Model.h"
+#include "cad/app/SelectionRanking.h"
 #include "cad/app/SketchDrawing.h"
 #include "cad/document/Document.h"
 #include "cad/recompute/DdcCache.h"
@@ -267,7 +268,45 @@ public:
     ///
     /// Clicking empty space with `additive` false clears the selection, which is what every CAD
     /// application does and what makes the model tree and the viewport agree.
+    ///
+    /// Equivalent to `tapAt` with a radius of zero, and kept because a mouse genuinely does point
+    /// at one pixel.
     ClickResult clickAt(std::uint32_t x, std::uint32_t y, bool additive);
+
+    /// One thing found under a pointer, ranked against the others.
+    ///
+    /// Carries a label because the only reason to hold the whole list is to SHOW it — SolidWorks's
+    /// Select Other, Shapr3D's overlap pop-up — and a shell that had to resolve each entry back to
+    /// a name would be re-deriving what this call already resolved.
+    struct Candidate {
+        document::ObjectId object{};
+        naming::ElementName element;
+        std::uint32_t slot = 0;
+        PickKind kind = PickKind::Unknown;
+        std::string label;        ///< "Box · Face", for a Select Other list
+        std::uint64_t distanceSq = 0;
+        float depth = 1.0f;
+    };
+
+    /// Everything within `radiusPixels` of a point, best first.
+    ///
+    /// **The shared answer to "a finger is not a mouse".** A tap covers ~88 device pixels on a
+    /// Retina iPad — Apple's 44 pt minimum target — and inside that area there are normally several
+    /// elements. Both shells call this and differ only in the radius they pass, which is what stops
+    /// them disagreeing about what pointing means. See docs/design/SELECTION.md.
+    ///
+    /// Ranked by kind (vertex, then edge, then face), then screen distance, then depth. NOT by
+    /// depth alone: the frontmost thing under a fingertip is nearly always a face, so depth-first
+    /// ranking makes edges unselectable by touch.
+    [[nodiscard]] std::vector<Candidate> candidatesAt(std::uint32_t x, std::uint32_t y,
+                                                      std::uint32_t radiusPixels);
+
+    /// A tap, in DEVICE pixels, with a finger-sized aperture. Selects the best candidate.
+    ///
+    /// The same rules as `clickAt` once something is chosen — including that tapping an already
+    /// selected thing deselects it, which is the touch convention (Onshape: "tap to select, tap
+    /// again to deselect") and falls out of `select` already being a toggle.
+    ClickResult tapAt(std::uint32_t x, std::uint32_t y, std::uint32_t radiusPixels, bool additive);
 
     /// The pointer moved to a point. Marks what is under it as hovered.
     ///
@@ -386,6 +425,8 @@ public:
 
 private:
     void registerCommands();
+    /// What a click or a tap does with what it found. Shared so the two cannot diverge.
+    ClickResult applyPick(const Pick&, bool additive);
     void notifyDocument();
     void notifyView();
     void status(const std::string&);

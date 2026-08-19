@@ -68,6 +68,38 @@ NS_ASSUME_NONNULL_BEGIN
 /// One row per model-tree item: `label`, `kind`, `state`.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)tree;
 
+/// Tears down the renderer and the document, deterministically.
+///
+/// **bgfx is a process-wide singleton.** One context, one `bgfx::init`. So a viewport that is still
+/// alive when the next one starts does not merely waste memory — it makes the next `attachRenderer`
+/// FAIL, which is what "the renderer could not start" means when it appears on reopening a project
+/// that rendered perfectly the first time.
+///
+/// Relying on `dealloc` is not good enough for that, and here it did not happen at all: the shell's
+/// callback blocks capture SwiftUI state that holds this view, so view → block → state → view is a
+/// retain cycle and `dealloc` never runs. Clearing the blocks is what breaks it, and doing so from
+/// an explicit teardown means the timing is a fact rather than a hope.
+- (void)shutdown;
+
+/// A tap selects what is under the finger.
+///
+/// The finger's radius is decided HERE rather than by the shared layer, because it is the one thing
+/// that genuinely differs between a mouse and a hand: Apple's minimum touch target is 44 points, so
+/// that is the aperture a tap passes, while the desktop passes a few pixels. Everything after that
+/// — ranking the candidates, honouring the selection level, toggling an already-selected element —
+/// is `Controller::tapAt`, shared. See docs/design/SELECTION.md.
+- (void)tapAtX:(CGFloat)x y:(CGFloat)y;
+
+/// Everything under a point, best first: `label`, `slot`, `kind`.
+///
+/// The list behind a Select Other / precision selector UI. Returned even when nothing needs it yet,
+/// because it is the SAME query the tap makes — taking the first entry is a shortcut, not a
+/// different code path.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)candidatesAtX:(CGFloat)x y:(CGFloat)y;
+
+/// Which document objects are selected, by label. For the Items panel.
+- (NSArray<NSString *> *)selectionLabels;
+
 /// Frames the model.
 ///
 /// Named `fitCamera` and not `fitView`: Swift's Objective-C importer treats a `…View` suffix on a
@@ -78,6 +110,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// Reads and writes the native document format (ADR 0003). Returns NO on failure.
 - (BOOL)openDocumentAtPath:(NSString *)path;
 - (BOOL)saveDocumentAtPath:(NSString *)path;
+
+/// Called when the renderer comes up, or fails to.
+///
+/// A CALLBACK and not just the `attached` property, because the property alone is unobservable from
+/// SwiftUI: a body that reads it renders once, before the view has been laid out and therefore
+/// before the renderer can possibly have started, and nothing re-evaluates it afterwards. The
+/// failure banner then sits over a perfectly live viewport until some unrelated state change
+/// happens to redraw the screen.
+///
+/// Which is worse than the bug it was added to catch: it makes a working renderer look broken.
+@property(nonatomic, copy, nullable) void (^onStarted)(BOOL ok, NSString *error);
 
 /// Called after the document changes, so the shell can refresh its tree without polling.
 @property(nonatomic, copy, nullable) void (^onDocumentChanged)(void);

@@ -114,12 +114,22 @@ public:
     Hit pick(const SceneFrame&, std::uint32_t x, std::uint32_t y) override;
     void pickRect(const SceneFrame&, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
                   std::vector<std::uint32_t>& out) override;
+    void pickAperture(const SceneFrame&, std::uint32_t, std::uint32_t, std::uint32_t,
+                      std::vector<ApertureHit>& out) override;
 
     void setNextHit(Hit h) noexcept { next_ = h; }
+
+    /// Scripts what an aperture read returns, offsets and all.
+    ///
+    /// The null picker has no rasteriser by design, so it cannot answer "what is near this point"
+    /// — but the RANKING above it is the interesting logic and must be testable without a GPU.
+    /// This is how a test says "these three elements were under the finger, at these distances".
+    void setNextAperture(std::vector<ApertureHit> hits) { aperture_ = std::move(hits); }
     [[nodiscard]] std::size_t pickCount() const noexcept { return picks_; }
 
 private:
     Hit next_{};
+    std::vector<ApertureHit> aperture_;
     std::size_t picks_ = 0;
 };
 

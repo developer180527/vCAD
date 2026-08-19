@@ -499,7 +499,19 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
     const auto x = static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr));
     const auto y = static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr));
 
-    const auto result = controller_.clickAt(x, y, event->modifiers().testFlag(Qt::ShiftModifier));
+    // An aperture even for a mouse, and a small one.
+    //
+    // A single-pixel hit test makes edge and vertex selection a test of motor control: an edge is
+    // one pixel wide on screen, so clicking one means landing on it exactly. Every CAD application
+    // has a tolerance of a few pixels for this reason — see docs/design/SELECTION.md. The tablet
+    // passes a fingertip instead, and that radius is the ONLY difference between the two shells'
+    // selection behaviour.
+    //
+    // Scaled by the device pixel ratio because it is specified in logical pixels: 4 physical pixels
+    // on a Retina display is half the tolerance the same code gives a non-Retina one.
+    const auto radius = static_cast<std::uint32_t>(std::lround(4.0 * dpr));
+    const auto result =
+        controller_.tapAt(x, y, radius, event->modifiers().testFlag(Qt::ShiftModifier));
     if (!result.message.empty()) emit pickMessage(QString::fromStdString(result.message));
     if (result.changed) markDirty();
 }

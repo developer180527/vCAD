@@ -212,6 +212,35 @@ int main() {
         std::printf("PASS  the centre pick resolved to element %u\n", hit.element);
     }
 
+    // ── THE APERTURE, which is what touch selection actually calls ───────────────────────
+    //
+    // Added because the iPad reported "0 candidates, miss" on every tap while the model was plainly
+    // on screen, and the single-pixel pick above passes. Those two facts cannot both be about the
+    // same code unless the aperture read is broken — so this measures it here, on a Mac, where the
+    // answer arrives in seconds instead of a build-install-tap cycle.
+    std::vector<render::IPicker::ApertureHit> aperture;
+    gpu.picker->pickAperture(scene.frame(), cx, cy, 44, aperture);
+    std::printf("aperture r=44 at centre: %zu candidate(s)\n", aperture.size());
+    if (aperture.empty()) {
+        std::fprintf(stderr, "FAIL: the aperture found nothing where the single-pixel pick found "
+                             "an element. Touch selection cannot work.\n");
+        pickOk = false;
+    } else {
+        // The centre pixel's element must be among them: an aperture that returns a DIFFERENT set
+        // from the pick it contains is worse than one that returns nothing.
+        const bool containsCentre =
+            std::any_of(aperture.begin(), aperture.end(),
+                        [&](const render::IPicker::ApertureHit& h) { return h.element == hit.element; });
+        std::printf("%s  the aperture contains the centre pick\n", containsCentre ? "PASS" : "FAIL");
+        if (!containsCentre) pickOk = false;
+    }
+
+    // A tap NEAR the silhouette, which is the case touch exists for: 20 pixels outside the body,
+    // where a one-pixel test misses and a fingertip should not.
+    std::vector<render::IPicker::ApertureHit> nearMiss;
+    gpu.picker->pickAperture(scene.frame(), 20, cy, 44, nearMiss);
+    std::printf("aperture r=44 at the left edge (20,%u): %zu candidate(s)\n", cy, nearMiss.size());
+
     // And empty space must NOT pick. A picker that always hits is as useless as one that never
     // does, and it is the easier mistake to miss.
     const auto miss = gpu.picker->pick(scene.frame(), 4, 4);

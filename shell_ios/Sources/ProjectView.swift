@@ -51,6 +51,9 @@ struct ProjectView: View {
     @State private var diagnostics: [String: String] = [:]
     @State private var showDiagnostics = false
     @State private var statusToken = 0
+    /// nil = the renderer has not answered yet. Not `false`: see the overlay below.
+    @State private var rendererStarted: Bool?
+    @State private var rendererError = ""
 
     private var labels: Bool { settings.toolLabels || revealingLabels }
 
@@ -143,17 +146,26 @@ struct ProjectView: View {
             onDocumentChanged: {
                 treeRows = viewport?.tree() ?? []
                 diagnostics = viewport?.diagnostics() ?? [:]
+            },
+            onStarted: { ok, error in
+                rendererStarted = ok
+                rendererError = error
+                diagnostics = viewport?.diagnostics() ?? [:]
             }
         )
         .ignoresSafeArea()
         // The failure overlay, which is the whole point of `attached` being exposed. Without it a
         // renderer that never started looks exactly like a renderer that started and drew nothing —
         // and no amount of staring at the screen distinguishes them.
+        // Shown only once the renderer has REPORTED a failure. `rendererStarted` is nil until then,
+        // which is the state this was missing: "not started yet" and "could not start" are
+        // different things, and showing the banner for the first is how a working viewport gets
+        // reported as broken.
         .overlay {
-            if let viewport, !viewport.attached {
+            if rendererStarted == false {
                 ViewportFailure(
-                    reason: viewport.lastError.isEmpty
-                        ? "The renderer has not started yet." : viewport.lastError)
+                    reason: rendererError.isEmpty
+                        ? "The renderer reported no reason." : rendererError)
             }
         }
     }

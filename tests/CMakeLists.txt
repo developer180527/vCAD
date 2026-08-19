@@ -55,7 +55,8 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/sketch_drawing.cpp
                                  acceptance/revolve_hole.cpp
                                  acceptance/tessellation_parallel.cpp
-                                 acceptance/ios_shell_commands.cpp)
+                                 acceptance/ios_shell_commands.cpp
+                                 acceptance/selection_aperture.cpp)
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)

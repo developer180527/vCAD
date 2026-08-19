@@ -1025,6 +1025,68 @@ public:
         out.erase(std::unique(out.begin(), out.end()), out.end());
     }
 
+    void pickAperture(const SceneFrame& frame, std::uint32_t x, std::uint32_t y,
+                      std::uint32_t radius, std::vector<ApertureHit>& out) override {
+        out.clear();
+        // The aperture is clamped at the left/top edges rather than shifted: a tap near the edge of
+        // the screen must not silently sample a region centred somewhere else, or the offsets below
+        // describe a different point than the one the user touched.
+        const std::uint32_t vw = impl_.config.viewport.width;
+        const std::uint32_t vh = impl_.config.viewport.height;
+        if (vw == 0 || vh == 0 || x >= vw || y >= vh) return;
+
+        // Clamped against the viewport HERE rather than left to readIds, because readIds skips
+        // out-of-range pixels instead of padding them: the vector it returns is dense, so a
+        // rectangle clipped on the right would make every row below the first start at the wrong
+        // column, and the offsets computed from the index would name pixels nobody touched.
+        const std::uint32_t x0 = x > radius ? x - radius : 0;
+        const std::uint32_t y0 = y > radius ? y - radius : 0;
+        const std::uint32_t x1 = std::min(x + radius, vw - 1);
+        const std::uint32_t y1 = std::min(y + radius, vh - 1);
+        const std::uint32_t w = x1 - x0 + 1;
+        const std::uint32_t h = y1 - y0 + 1;
+
+        std::vector<std::uint32_t> ids;
+        readIds(frame, x0, y0, w, h, ids);
+        if (ids.size() != static_cast<std::size_t>(w) * h) return;
+
+        // NEAREST occurrence of each element, not every occurrence. A face covers thousands of
+        // pixels in the aperture and only its closest one carries information; keeping them all
+        // would make the caller's ranking a popularity contest that faces always win.
+        std::vector<std::uint64_t> best;   // element -> squared distance, via linear scan
+        for (std::uint32_t row = 0; row < h; ++row) {
+            for (std::uint32_t col = 0; col < w; ++col) {
+                const std::uint32_t id = ids[static_cast<std::size_t>(row) * w + col];
+                if (id == 0) continue;
+                const std::int32_t dx = static_cast<std::int32_t>(x0 + col) - static_cast<std::int32_t>(x);
+                const std::int32_t dy = static_cast<std::int32_t>(y0 + row) - static_cast<std::int32_t>(y);
+                // Round aperture, not square: the corners of a square are 1.41x further away than
+                // its edges, so a square aperture reaches further diagonally than the user's finger
+                // does in any direction.
+                const std::uint64_t d2 = static_cast<std::uint64_t>(dx) * dx
+                                         + static_cast<std::uint64_t>(dy) * dy;
+                if (d2 > static_cast<std::uint64_t>(radius) * radius) continue;
+
+                const std::uint32_t element = id - 1;
+                bool seen = false;
+                for (std::size_t i = 0; i < out.size(); ++i) {
+                    if (out[i].element != element) continue;
+                    seen = true;
+                    if (d2 < best[i]) {
+                        best[i] = d2;
+                        out[i].dx = dx;
+                        out[i].dy = dy;
+                    }
+                    break;
+                }
+                if (!seen) {
+                    out.push_back({element, dx, dy});
+                    best.push_back(d2);
+                }
+            }
+        }
+    }
+
 private:
     void readIds(const SceneFrame&, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
                  std::vector<std::uint32_t>& out);
@@ -1035,7 +1097,24 @@ private:
 void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t y,
                          std::uint32_t w, std::uint32_t h, std::vector<std::uint32_t>& out) {
     out.clear();
-    if (!impl_.initialised || !bgfx::isValid(impl_.pick) || !bgfx::isValid(impl_.pickFb)) return;
+    // Said out loud, every one of them.
+    //
+    // These four early returns are indistinguishable from "nothing is there" to every caller, and
+    // that is exactly how GPU picking came to be broken without anyone noticing: the shell reported
+    // a miss, the model was plainly on screen, and no layer in between had anything to say. A pick
+    // that cannot run is not a pick that found nothing.
+    if (!impl_.initialised) {
+        CAD_WARN(cad::log::Category::Render) << "pick: the renderer is not initialised";
+        return;
+    }
+    if (!bgfx::isValid(impl_.pick)) {
+        CAD_WARN(cad::log::Category::Render) << "pick: the pick program failed to load (fs_pick)";
+        return;
+    }
+    if (!bgfx::isValid(impl_.pickFb)) {
+        CAD_WARN(cad::log::Category::Render) << "pick: the pick framebuffer does not exist";
+        return;
+    }
 
     const std::uint32_t vw = impl_.config.viewport.width;
     const std::uint32_t vh = impl_.config.viewport.height;
@@ -1061,7 +1140,11 @@ void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t
     // The blit lives inside readTarget. It was missing here entirely: pickReadback was created
     // and read but never written to, so every pick read an untouched texture and reported a miss.
     auto read = impl_.readTarget(impl_.pickTarget, impl_.pickReadback, vw, vh);
-    if (!read) return;
+    if (!read) {
+        CAD_WARN(cad::log::Category::Render)
+            << "pick: reading the id buffer failed: " << read.error().message;
+        return;
+    }
     const std::vector<std::uint8_t>& pixels = read.value();
 
     for (std::uint32_t row = 0; row < h; ++row) {

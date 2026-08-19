@@ -189,6 +189,15 @@ void NullPicker::pickRect(const SceneFrame&, std::uint32_t, std::uint32_t, std::
     if (next_.valid) out.push_back(next_.element);
 }
 
+void NullPicker::pickAperture(const SceneFrame&, std::uint32_t, std::uint32_t, std::uint32_t,
+                              std::vector<ApertureHit>& out) {
+    ++picks_;
+    out = aperture_;
+    // Falls back to the single scripted hit, at the centre, so a test that only cares about
+    // resolution rather than ranking does not have to describe an aperture it is not testing.
+    if (out.empty() && next_.valid) out.push_back({next_.element, 0, 0});
+}
+
 NullBackend::NullBackend() {
     backend_.resources = &resources;
     backend_.frames = &frames;

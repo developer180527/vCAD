@@ -333,6 +333,34 @@ public:
     virtual void pickRect(const SceneFrame&, std::uint32_t x, std::uint32_t y,
                           std::uint32_t w, std::uint32_t h,
                           std::vector<std::uint32_t>& outElements) = 0;
+
+    /// One element found within the aperture, WITH where it was found.
+    ///
+    /// The difference from `pickRect`, which is otherwise the same read: that one deduplicates into
+    /// a set and throws the positions away, which is right for box select and useless for deciding
+    /// which of several candidates the user meant.
+    struct ApertureHit {
+        std::uint32_t element = 0;   ///< absolute slot
+        /// Offset from the aperture's centre, in device pixels. Signed, so a caller can rank by
+        /// distance without knowing where the aperture was.
+        std::int32_t dx = 0;
+        std::int32_t dy = 0;
+    };
+
+    /// Every element within `radius` pixels of a point, nearest occurrence of each.
+    ///
+    /// The primitive touch selection needs. A finger covers ~88 device pixels on a Retina display
+    /// (Apple's 44 pt minimum), so a one-pixel hit test is not a strict version of selection but a
+    /// broken one — see docs/design/SELECTION.md.
+    ///
+    /// The pick pass renders the scene and reads the target back whatever the aperture size, so a
+    /// large radius costs no more than a small one.
+    ///
+    /// Default implementation: none. A backend that cannot do this has no business claiming to
+    /// support picking, and a silently empty default would make touch selection fail as "nothing
+    /// there" on exactly the backends that need it most.
+    virtual void pickAperture(const SceneFrame&, std::uint32_t x, std::uint32_t y,
+                              std::uint32_t radius, std::vector<ApertureHit>& out) = 0;
 };
 
 /// What a backend bundles together. A replacement provides one of these; nothing above the
