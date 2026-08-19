@@ -46,8 +46,11 @@ fi
 
 DEVICE="${1:-}"
 if [[ -z "$DEVICE" ]]; then
+    # Matched by SHAPE, not by column position: both the Name and Model columns contain spaces, so
+    # counting fields from either end picks a different token per device.
     DEVICE="$(xcrun devicectl list devices 2>/dev/null \
-        | awk '/iPad/ && /available/ {print $(NF-3); exit}')"
+        | grep iPad | grep 'available' \
+        | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}' | head -1)"
 fi
 if [[ -z "$DEVICE" ]]; then
     echo "No available iPad found. Connect one and trust this Mac." >&2

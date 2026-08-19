@@ -45,6 +45,7 @@ option(CAD_BUILD_TESTS      "Build tests"                         ON)
 option(CAD_BUILD_SPIKES     "Build M0 de-risking spikes"          ON)
 option(CAD_BUILD_RENDER     "Build renderer (M3)"                 OFF)
 option(CAD_BUILD_SHELL_QT   "Build Qt desktop shell (M4)"         OFF)
+option(CAD_BUILD_SHELL_IOS  "Build SwiftUI iPad shell"            OFF)
 option(CAD_ENABLE_ASAN      "Enable AddressSanitizer"             OFF)
 option(CAD_STRICT_LAYERING  "Fail the build on layering violations" ON)
 
@@ -142,6 +143,15 @@ add_subdirectory(bindings/python)
 enable_testing()
 
 add_subdirectory(shell_qt)
+
+# Swift is enabled HERE and not in shell_ios/CMakeLists.txt: enable_language() affects the whole
+# project, and a subdirectory turning on a language for everyone is the kind of action-at-a-distance
+# that makes a configure failure impossible to place. Behind the option so no desktop build pays a
+# compiler-detection step for a language it does not use.
+if(CAD_BUILD_SHELL_IOS)
+  enable_language(Swift)
+  add_subdirectory(shell_ios)
+endif()
 
 if(CAD_BUILD_TESTS)
   find_package(Catch2 3 REQUIRED)
