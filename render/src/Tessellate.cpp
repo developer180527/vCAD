@@ -223,7 +223,7 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output& output,
             mesh->elements.push_back(*name);
 
             EdgeRange range;
-            range.vertexOffset = static_cast<std::uint32_t>(mesh->edgeVertices.size() / 3);
+            range.vertexOffset = static_cast<std::uint32_t>(mesh->edgeVertices.size());
             range.element = element;
 
             // A LINE LIST: every segment emits both endpoints, so interior points appear twice.
@@ -236,9 +236,11 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output& output,
             // keep the one-draw-call property.
             const int points = sampler.NbPoints();
             const auto push = [&](const gp_Pnt& pt) {
-                mesh->edgeVertices.push_back(static_cast<float>(pt.X()));
-                mesh->edgeVertices.push_back(static_cast<float>(pt.Y()));
-                mesh->edgeVertices.push_back(static_cast<float>(pt.Z()));
+                // The element travels with every vertex. See EdgeVertex for why it cannot be a
+                // per-draw uniform.
+                mesh->edgeVertices.push_back(EdgeVertex{static_cast<float>(pt.X()),
+                                                        static_cast<float>(pt.Y()),
+                                                        static_cast<float>(pt.Z()), element});
             };
             gp_Pnt prev = sampler.Value(1);
             expand(mesh->bounds, prev);
@@ -250,8 +252,8 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output& output,
                 prev = cur;
             }
 
-            range.vertexCount = static_cast<std::uint32_t>(mesh->edgeVertices.size() / 3)
-                                - range.vertexOffset;
+            range.vertexCount =
+                static_cast<std::uint32_t>(mesh->edgeVertices.size()) - range.vertexOffset;
             mesh->edges.push_back(range);
         }
 

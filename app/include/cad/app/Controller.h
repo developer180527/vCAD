@@ -24,6 +24,7 @@
 #include "cad/units/Units.h"
 
 #include <functional>
+#include <span>
 #include <array>
 #include <optional>
 #include <memory>
@@ -195,7 +196,15 @@ public:
     /// filter bar): "a click at this level means that face" is a model rule, and a rule that lives
     /// in MainWindow does not exist on iPad. Named `SelectionLevel` rather than "filter" because it
     /// does not filter a set -- it decides what a pick RESOLVES TO.
-    enum class SelectionLevel : std::uint8_t { Body, Face, Edge, Vertex };
+    /// `Auto` resolves to whatever was actually hit — the vertex, edge or face the ranking chose.
+    ///
+    /// The right default for touch, and arguably for everything. A fixed level means the user must
+    /// declare in advance what kind of thing they are about to point at, which a desktop can afford
+    /// (a persistent filter control) and a tablet cannot: the screen is too precious for a control
+    /// that is only occasionally needed, and the ranking already knows what was under the finger.
+    ///
+    /// Appended, not inserted, because these values are persisted in preferences.
+    enum class SelectionLevel : std::uint8_t { Body, Face, Edge, Vertex, Auto };
 
     [[nodiscard]] SelectionLevel selectionLevel() const noexcept { return selectionLevel_; }
 
@@ -262,6 +271,12 @@ public:
         bool hit = false;         ///< something was under the pointer
         bool changed = false;     ///< the selection changed, so redraw
         std::string message;
+        /// How many things the aperture found, best first — the size of the Select Other list.
+        ///
+        /// Returned rather than left for the caller to ask separately, because asking costs a whole
+        /// pick: the scene is re-rendered into the id buffer and read back. The iPad shell did ask
+        /// separately, purely to report the count in a diagnostic, and so paid for every tap twice.
+        std::size_t candidates = 0;
     };
 
     /// A click in the viewport, in DEVICE pixels. `additive` is the ctrl/shift-click behaviour.
@@ -308,12 +323,35 @@ public:
     /// again to deselect") and falls out of `select` already being a toggle.
     ClickResult tapAt(std::uint32_t x, std::uint32_t y, std::uint32_t radiusPixels, bool additive);
 
+    /// The same tap, resolved at a level other than the active one.
+    ///
+    /// What a double tap needs: the convention on a tablet is that one tap takes the face or edge
+    /// under the pointer and two taps take the whole body. That is one gesture asking for a
+    /// different LEVEL, not a different kind of pick, so it is a parameter rather than a mode the
+    /// shell has to set and unset around the call.
+    ClickResult tapAt(std::uint32_t x, std::uint32_t y, std::uint32_t radiusPixels, bool additive,
+                      SelectionLevel level);
+
     /// The pointer moved to a point. Marks what is under it as hovered.
     ///
     /// Returns whether the highlight actually changed, so a shell can repaint on that instead of on
     /// every mouse-move event. Hover fires continuously; a redraw per event is the difference
     /// between a responsive viewport and a warm laptop.
     bool hoverAt(std::uint32_t x, std::uint32_t y);
+
+    /// Hover with an aperture, ranked exactly as `tapAt` ranks a click.
+    ///
+    /// A shell should pass the same radius it passes to `tapAt`, so what lights up under the
+    /// pointer is what a click would take. Passing zero is the old single-pixel behaviour.
+    bool hoverAt(std::uint32_t x, std::uint32_t y, std::uint32_t radiusPixels);
+
+    /// What is currently hovered, if anything. The absolute element slot.
+    ///
+    /// Exposed so a shell — or a test driving one — can see the pre-highlight the same way the
+    /// renderer does. Without it "hover works" is only checkable by looking at pixels.
+    [[nodiscard]] const std::optional<std::uint32_t>& hoveredElement() const noexcept {
+        return hoveredSlot_;
+    }
 
     /// Drops the hover highlight -- the pointer left the viewport.
     bool clearHover();
@@ -525,6 +563,18 @@ public:
     /// that missed the plane (edge-on, or outside the sketch environment) is refused rather than
     /// snapped to something arbitrary.
     bool sketchClickAt(float x, float y);
+
+    /// A whole pen stroke, in DEVICE pixels: the points the pointer travelled through.
+    ///
+    /// The stylus counterpart of `sketchClickAt`, and the same rules apply once the points are on
+    /// the plane — snapping, chaining, inferred constraints, a solve per edit. What differs is only
+    /// that one stroke makes one segment and the stroke's own shape chooses between a line and an
+    /// arc (docs/design/SKETCHING_IPAD.md).
+    ///
+    /// Points that miss the plane are DROPPED rather than the stroke refused: a hand that crosses
+    /// the silhouette of a solid mid-stroke has not stopped drawing. The stroke fails only when too
+    /// few points survive to describe anything.
+    bool sketchStrokeAt(std::span<const std::array<float, 2>> devicePoints);
 
     /// Tracks the pointer while a two-click shape is half-drawn, so the overlay can show what the
     /// shape WOULD be. Ignored when nothing is pending — the cursor means nothing before the first

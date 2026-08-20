@@ -58,6 +58,13 @@ public:
     MainWindow();
     ~MainWindow() override;
 
+    /// The active document's controller and viewport, for the wiring probe.
+    ///
+    /// Narrow on purpose: the probe drives real widgets with real events and then asks the model
+    /// what happened, so these are the two handles it needs and nothing else is exposed.
+    [[nodiscard]] cad::app::Controller* probeController() noexcept { return controller(); }
+    [[nodiscard]] class Viewport* probeViewport() noexcept;
+
     /// Screenshot support (`--shot`). Selecting a ribbon tab and opening a populated document
     /// are the two things a UI screenshot needs and a fresh window does not do on its own.
     void selectRibbonTab(int index);
@@ -183,6 +190,8 @@ private:
     void syncWorkspace();
 
     void createDocument(cad::app::DocumentKind);
+    /// Pushes the selection filter's current choice into the active document.
+    void applySelectionFilter();
 
     [[nodiscard]] cad::app::Controller* controller() noexcept { return session_.active(); }
 

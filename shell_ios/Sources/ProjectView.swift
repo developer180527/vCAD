@@ -54,6 +54,9 @@ struct ProjectView: View {
     /// nil = the renderer has not answered yet. Not `false`: see the overlay below.
     @State private var rendererStarted: Bool?
     @State private var rendererError = ""
+    /// Whether a sketch is open, and whether the next tap picks the plane to open it on.
+    @State private var sketching = false
+    @State private var choosingPlane = false
 
     private var labels: Bool { settings.toolLabels || revealingLabels }
 
@@ -151,6 +154,15 @@ struct ProjectView: View {
                 rendererStarted = ok
                 rendererError = error
                 diagnostics = viewport?.diagnostics() ?? [:]
+            },
+            onPlaneTap: { x, y in
+                guard choosingPlane else { return false }
+                if viewport?.beginSketch(at: CGPoint(x: x, y: y)) == true {
+                    choosingPlane = false
+                    sketching = true
+                    status = stylusHint
+                }
+                return true
             }
         )
         .ignoresSafeArea()
@@ -190,6 +202,18 @@ struct ProjectView: View {
         .frame(width: 240)
         .background(Palette.chrome, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    /// What draws, in this session, on this device.
+    ///
+    /// Said out loud because the rule is invisible otherwise: a user with a stylus never discovers
+    /// that a finger would have drawn, and a user without one must not be left wondering why
+    /// nothing happens. It is a statement of fact, not an instruction — the mode was decided by
+    /// which instrument they picked up.
+    private var stylusHint: String {
+        (viewport?.stylusSeen == true)
+            ? "Draw with the stylus · one finger orbits · two pan"
+            : "Draw with one finger · two fingers pan · pinch to zoom"
     }
 
     /// One finger orbits, two pan, pinch zooms — and the status line says so, once, until the user
@@ -351,7 +375,21 @@ struct ProjectView: View {
                 items: [
                     command("Box", "cube", "feature.box"),
                     command("Cylinder", "cylinder", "feature.cylinder"),
-                    command("Sketch", "pencil.and.outline", "feature.sketch"),
+                    RailItem(
+                        "Sketch", "pencil.and.outline", selected: sketching || choosingPlane,
+                        action: viewport == nil
+                            ? nil
+                            : {
+                                if sketching {
+                                    viewport?.finishSketch()
+                                    sketching = false
+                                } else {
+                                    // Pick the surface, THEN draw — the order every CAD
+                                    // application uses. The next tap chooses it.
+                                    choosingPlane = true
+                                    status = "Tap a flat face to sketch on"
+                                }
+                            }),
                     command("Extrude", "arrow.up.square", "feature.extrude"),
                 ], showLabels: labels, edge: .leading)
 

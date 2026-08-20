@@ -41,6 +41,9 @@ constexpr bgfx::ViewId kViewPick = 1;
 /// a view that also draws is not guaranteed to see that view's output.
 constexpr bgfx::ViewId kViewBlit = 2;
 
+/// The side of the aperture readback texture. See Impl::pickRegion.
+constexpr std::uint16_t kPickRegion = 256;
+
 /// bgfx has no integer vertex attributes, so the element index rides as four unnormalised
 /// uint8 channels and is reassembled in the vertex shader. Standard bgfx idiom.
 bgfx::VertexLayout& cadVertexLayout() {
@@ -80,7 +83,13 @@ bgfx::VertexLayout& instanceLayout() {
 bgfx::VertexLayout& edgeVertexLayout() {
     static bgfx::VertexLayout layout = [] {
         bgfx::VertexLayout l;
-        l.begin().add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float).end();
+        l.begin()
+            .add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+            // The element id, exactly as the shaded layout carries it. Position alone is what made
+            // edges unpickable and unhighlightable — see EdgeVertex.
+            .add(bgfx::Attrib::Color1, 4, bgfx::AttribType::Uint8, /*normalized*/ false,
+                 /*asInt*/ false)
+            .end();
         return l;
     }();
     return layout;
@@ -198,11 +207,12 @@ public:
     }
 
     BufferId uploadEdgeVertices(const kernel::ShapeHash& hash,
-                                std::span<const float> f) override {
+                                std::span<const EdgeVertex> f) override {
         if (f.empty()) return BufferId::None;
-        // Three floats per edge vertex, so the element count is a third of the span.
+        // One EdgeVertex per vertex now, rather than three loose floats: the span's size IS the
+        // vertex count.
         return intern(hash, 2, f.size_bytes(), [&] {
-            return appendToArena(edgeArena_, f.data(), static_cast<std::uint32_t>(f.size() / 3),
+            return appendToArena(edgeArena_, f.data(), static_cast<std::uint32_t>(f.size()),
                                  f.size_bytes(), &edgeVertexLayout(), Kind::Edge);
         });
     }
@@ -577,6 +587,13 @@ struct BgfxBackend::Impl {
     bgfx::ProgramHandle shaded = BGFX_INVALID_HANDLE;
     bgfx::ProgramHandle edge = BGFX_INVALID_HANDLE;
     bgfx::ProgramHandle pick = BGFX_INVALID_HANDLE;
+    /// The pick program for EDGES: vs_edge + fs_pick.
+    ///
+    /// A separate program because the vertex stage differs — edges have their own vertex layout —
+    /// while the fragment stage is the same id write. The varying sets match, which is the one
+    /// thing bgfx requires of a pair (see the comment in fs_pick.sc, which was written the
+    /// expensive way).
+    bgfx::ProgramHandle pickEdge = BGFX_INVALID_HANDLE;
 
     bgfx::UniformHandle uShading = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle uHighlight = BGFX_INVALID_HANDLE;
@@ -594,6 +611,11 @@ struct BgfxBackend::Impl {
     /// shader already carries the absolute slot in `v_ids.x` for picking; this reuses it.
     bgfx::TextureHandle highlightLut = BGFX_INVALID_HANDLE;
     std::uint16_t highlightLutHeight = 0;
+    /// Whether anything at all is hovered or selected this frame.
+    bool highlightsActive = false;
+    /// Screen-space offset for the current edge submission, in pixels. Non-zero only during the
+    /// highlight thickening pass.
+    float edgeOffsetPx[2]{0.0f, 0.0f};
     /// The last bytes uploaded, so an idle redraw uploads nothing. Hover fires on every mouse-move.
     std::vector<std::uint8_t> highlightUploaded;
 
@@ -627,6 +649,16 @@ struct BgfxBackend::Impl {
     bgfx::FrameBufferHandle pickFb = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle pickTarget = BGFX_INVALID_HANDLE;    ///< the RT the pick pass writes
     bgfx::TextureHandle pickReadback = BGFX_INVALID_HANDLE;  ///< BLIT_DST|READ_BACK copy
+    /// A SMALL readback texture, for reading just the aperture.
+    ///
+    /// The whole cost of a pick was here. Reading the id buffer meant blitting and reading back the
+    /// entire frame — at 2064x1440 that is 11.9 MB across the bus to answer a question about an
+    /// 88-pixel circle, measured at 9.8 ms on an 800x600 window and worse on a tablet. A blit can
+    /// copy a sub-rectangle, so it does.
+    ///
+    /// Fixed size rather than resized per pick: creating a texture per query would trade the
+    /// readback for an allocation, and 256x256 covers any aperture a hand can produce.
+    bgfx::TextureHandle pickRegion = BGFX_INVALID_HANDLE;
 
     /// Blit a render target into its readback texture and pull the bytes back.
     ///
@@ -637,12 +669,24 @@ struct BgfxBackend::Impl {
                                                         bgfx::TextureHandle readback,
                                                         std::uint32_t w, std::uint32_t h);
 
+    /// Reads a SUB-RECTANGLE of a target, through the small `pickRegion` texture. Rows in the
+    /// result are `kPickRegion` texels apart, not `w`.
+    kernel::Result<std::vector<std::uint8_t>> readRegion(bgfx::TextureHandle target,
+                                                        std::uint32_t x, std::uint32_t y,
+                                                        std::uint32_t w, std::uint32_t h);
+
     IFrameSink::Stats stats;
 
     /// Uploads one batch's instance data and submits it. Shared by the shaded and pick passes,
     /// because a pick that draws a different set of geometry than the view is a pick that lies.
     std::uint32_t submitBatches(const SceneFrame& frame, bgfx::ViewId view,
                                 bgfx::ProgramHandle program, std::uint64_t state);
+
+    /// The same, for edge batches. Shared by the shaded pass and the pick pass for the reason the
+    /// comment on submitBatches gives: a pick that draws a different set of geometry than the view
+    /// is a pick that lies — and for edges it did, by drawing none of them.
+    std::uint32_t submitEdgeBatches(const SceneFrame& frame, bgfx::ViewId view,
+                                    bgfx::ProgramHandle program, std::uint64_t state);
 
     /// Re-applies the uniforms every shaded draw needs.
     ///
@@ -653,6 +697,9 @@ struct BgfxBackend::Impl {
     /// single-batch offscreen spike, and in a real assembly it reads as inconsistent lighting
     /// rather than as a bug.
     void applyShadingUniforms();
+
+    /// Binds the per-element highlight table. Needed by the shaded AND the edge pass.
+    void applyHighlightLookup();
 
     /// End a frame.
     ///
@@ -666,6 +713,49 @@ struct BgfxBackend::Impl {
     /// best-tested path; deviating from it cost two regressions and bought nothing.
     std::uint32_t advanceFrame() { return bgfx::frame(); }
 };
+
+kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readRegion(
+    bgfx::TextureHandle target, std::uint32_t x, std::uint32_t y, std::uint32_t w,
+    std::uint32_t h) {
+    if (!bgfx::isValid(target) || !bgfx::isValid(pickRegion) || w == 0 || h == 0) {
+        return Error{ErrorCode::InvalidInput, "There is nothing to read back."};
+    }
+    if (w > kPickRegion || h > kPickRegion) {
+        return Error{ErrorCode::InvalidInput, "That region is larger than the readback texture."};
+    }
+    if ((bgfx::getCaps()->supported & BGFX_CAPS_TEXTURE_BLIT) == 0
+        || (bgfx::getCaps()->supported & BGFX_CAPS_TEXTURE_READ_BACK) == 0) {
+        return Error{ErrorCode::Unsupported, "This graphics device cannot read textures back."};
+    }
+
+    // The sub-rectangle blit that makes a pick cheap: source offset x,y, size w,h, into the corner
+    // of a 256x256 texture.
+    bgfx::blit(kViewBlit, pickRegion, 0, 0, target, static_cast<std::uint16_t>(x),
+               static_cast<std::uint16_t>(y), static_cast<std::uint16_t>(w),
+               static_cast<std::uint16_t>(h));
+
+    // readTexture reads the WHOLE destination, so the buffer is the texture's size and the caller
+    // indexes it with kPickRegion as the row stride — not w. Getting that wrong reads a diagonal
+    // smear of the aperture, which looks like an inaccurate picker rather than a stride mistake.
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(kPickRegion) * kPickRegion * 4);
+    const std::uint32_t readyFrame = bgfx::readTexture(pickRegion, pixels.data());
+    bool ready = false;
+    for (int guard = 0; guard < 16; ++guard) {
+        if (advanceFrame() >= readyFrame) {
+            ready = true;
+            break;
+        }
+    }
+    // Said out loud. An exhausted guard returns a buffer nobody filled — all zeroes, which decodes
+    // as "nothing is there" and is indistinguishable from an honest miss. Bounding the loop is what
+    // stops a driver that never reports ready from hanging the application; being bounded is not a
+    // reason to be silent about it.
+    if (!ready) {
+        CAD_WARN(cad::log::Category::Render)
+            << "pick: the readback never became ready (waited 16 frames)";
+    }
+    return pixels;
+}
 
 kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readTarget(
     bgfx::TextureHandle target, bgfx::TextureHandle readback, std::uint32_t w, std::uint32_t h) {
@@ -697,6 +787,18 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::Impl::readTarget(
     return pixels;
 }
 
+void BgfxBackend::Impl::applyHighlightLookup() {
+    // Split out of applyShadingUniforms so the EDGE pass can bind the same table without also
+    // binding the shaded pass's ambient term, which its shader does not declare.
+    const float lut[4]{static_cast<float>(kHighlightLutWidth),
+                       static_cast<float>(highlightLutHeight),
+                       bgfx::isValid(highlightLut) ? 1.0f : 0.0f, 0.0f};
+    if (bgfx::isValid(uHighlight)) bgfx::setUniform(uHighlight, lut);
+    if (bgfx::isValid(sHighlight) && bgfx::isValid(highlightLut)) {
+        bgfx::setTexture(0, sHighlight, highlightLut);
+    }
+}
+
 void BgfxBackend::Impl::applyShadingUniforms() {
     // PER DRAW, with the others, and for the same reason: bgfx::submit discards uniform bindings,
     // so a section plane set once before the batch loop would clip the first draw and nothing else
@@ -709,16 +811,20 @@ void BgfxBackend::Impl::applyShadingUniforms() {
     // shader needs to turn an element slot into a texel, z is whether a lookup is available at all.
     // The tint per highlight kind lives in the shader, because it has to vary per fragment and a
     // uniform cannot do that -- which was the original mistake.
-    const float lut[4]{static_cast<float>(kHighlightLutWidth),
-                       static_cast<float>(highlightLutHeight),
-                       bgfx::isValid(highlightLut) ? 1.0f : 0.0f, 0.0f};
-    if (bgfx::isValid(uHighlight)) bgfx::setUniform(uHighlight, lut);
-    if (bgfx::isValid(sHighlight) && bgfx::isValid(highlightLut)) {
-        bgfx::setTexture(0, sHighlight, highlightLut);
-    }
+    applyHighlightLookup();
 }
 
 void BgfxBackend::Impl::syncHighlights(std::span<const Highlight> highlights) {
+    // Recorded so the thickening pass below can be skipped entirely when nothing is selected,
+    // which is most of the time. A scan of the table is a byte compare per element — cheap beside
+    // an extra pass over every line in the scene.
+    highlightsActive = false;
+    for (const Highlight h : highlights) {
+        if (h != Highlight::None) {
+            highlightsActive = true;
+            break;
+        }
+    }
     if (highlights.empty()) {
         highlightLutHeight = 0;
         return;
@@ -751,6 +857,87 @@ void BgfxBackend::Impl::syncHighlights(std::span<const Highlight> highlights) {
     bgfx::updateTexture2D(highlightLut, 0, 0, 0, 0, kHighlightLutWidth, highlightLutHeight,
                           bgfx::copy(bytes.data(), static_cast<std::uint32_t>(bytes.size())));
     highlightUploaded = std::move(bytes);
+}
+
+std::uint32_t BgfxBackend::Impl::submitEdgeBatches(const SceneFrame& frame, bgfx::ViewId view,
+                                                  bgfx::ProgramHandle program,
+                                                  std::uint64_t state) {
+    std::uint32_t calls = 0;
+    // x = depth bias; yz = screen-space offset in pixels; w = 1 when only highlighted fragments
+    // may survive. See the thickening pass in submit().
+    const bool thickening = edgeOffsetPx[0] != 0.0f || edgeOffsetPx[1] != 0.0f;
+    const float edgeParams[4]{config.edgeDepthBias, edgeOffsetPx[0], edgeOffsetPx[1],
+                              thickening ? 1.0f : 0.0f};
+
+
+        for (const EdgeBatch& batch : frame.edgeBatches) {
+            if (batch.vertexCount == 0 || batch.instances == BufferId::None) continue;
+            const auto* vb = resources.find(batch.vertices);
+            const auto* inst = resources.find(batch.instances);
+            if (vb == nullptr || inst == nullptr) {
+                ++stats.skippedBatches;
+                continue;
+            }
+
+            const float colour[4]{float(batch.colour[0]) / 255.0f,
+                                  float(batch.colour[1]) / 255.0f,
+                                  float(batch.colour[2]) / 255.0f, 1.0f};
+
+            for (const DrawRange& range : batch.ranges) {
+                if (range.instanceCount == 0) continue;
+                // Both uniforms inside the loop: see applyShadingUniforms on why once per batch
+                // is not enough.
+                bgfx::setUniform(uEdgeColor, colour);
+                bgfx::setUniform(uEdgeParams, edgeParams);
+                bgfx::setUniform(uSectionPlane, sectionPlane);
+                // The highlight lookup, bound per draw for the same reason the shading uniforms
+                // are: bgfx::submit discards uniform bindings, so setting it once before the loop
+                // reaches the first draw call and nothing after it.
+                applyHighlightLookup();
+                // The handle TYPE has to match how the buffer was created. Binding a dynamic
+                // buffer through a static handle is not a type error in bgfx -- the handle is a
+                // bare index, and both pools use the same numbering -- so it reaches Metal as an
+                // attribute pointing at a buffer with no stride, and asserts inside the driver.
+                // The sketch overlay is the only dynamic edge buffer, and this is where it enters.
+                if (vb->arena) {
+                    // The batch's own offset is RELATIVE to the mesh, and the mesh's offset is
+                    // relative to the arena — an edge range within a mesh packed among thousands.
+                    bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
+                                          vb->offset + batch.vertexOffset, batch.vertexCount);
+                } else if (vb->kind == BgfxResources::Kind::DynamicEdge) {
+                    bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
+                                          batch.vertexOffset, batch.vertexCount);
+                } else {
+                    bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx},
+                                          batch.vertexOffset, batch.vertexCount);
+                }
+                // The SAME buffer the shaded pass used, at the same offsets. Edges used to
+                // carry their own copy of identical data, which doubled instance memory.
+                bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},
+                                            range.instanceOffset, range.instanceCount);
+                // PT_LINES, not PT_LINESTRIP. The vertex buffer is a line list — see the edge
+                // loop in Tessellate.cpp — because one strip over a buffer holding every edge of
+                // the mesh connects unrelated edges to each other.
+                //
+                // Depth-test but no depth-write: edges must not occlude each other, and writing
+                // depth from a biased primitive corrupts the depth buffer for anything drawn
+                // after.
+                //
+                // ALWAYS for an on-top batch: the sketch being edited lies on the face it is drawn
+                // on and is often inside the body, so depth-testing it makes the user's own strokes
+                // vanish into the part.
+                // The caller's state, plus the depth rule this batch asked for. ALWAYS for an
+                // on-top batch: the sketch being edited lies on the face it is drawn on and is
+                // often inside the body, so depth-testing it makes the user's own strokes vanish
+                // into the part.
+                bgfx::setState(state | (batch.onTop ? BGFX_STATE_DEPTH_TEST_ALWAYS
+                                                    : BGFX_STATE_DEPTH_TEST_LEQUAL));
+                bgfx::submit(view, program);
+                ++calls;
+                stats.lines += (batch.vertexCount / 2) * range.instanceCount;
+            }
+        }
+    return calls;
 }
 
 std::uint32_t BgfxBackend::Impl::submitBatches(const SceneFrame& frame, bgfx::ViewId view,
@@ -841,14 +1028,22 @@ public:
     void resize(const Viewport& v) override {
         const Viewport was = impl_.config.viewport;
         impl_.config.viewport = v;
-        if (!impl_.config.offscreen) {
-            bgfx::reset(v.width, v.height, BGFX_RESET_NONE);
-            return;
-        }
-        // Offscreen: the textures ARE the framebuffer, so they have to be rebuilt at the new
-        // size. Updating config alone left captureFrame reading back at the new dimensions from
-        // a texture still sized at init, which skewed every row and produced diagonal streaks.
+        // The BACKBUFFER, when there is one. Offscreen mode has none: it renders into textures.
+        if (!impl_.config.offscreen) bgfx::reset(v.width, v.height, BGFX_RESET_NONE);
+
         if (!impl_.initialised || (was.width == v.width && was.height == v.height)) return;
+
+        // AND the textures, in BOTH modes. This used to return early when presenting directly, on
+        // the reasoning that a swap chain resize is all a windowed renderer needs — and that is
+        // true of the colour target and false of the PICK target, which is an offscreen texture
+        // whichever way the scene is presented.
+        //
+        // What that cost: the pick target stayed at whatever size the window had when the renderer
+        // attached, while the pick pass set its view rect to the CURRENT size. bgfx squeezed the
+        // whole scene into the top of the stale texture — measured at 9372 ids in rows 70..128 of a
+        // 1204-row target — so every pick away from that band read empty pixels and reported
+        // nothing there. Selection, hover and everything built on them were dead on the desktop
+        // while working perfectly offscreen and on the iPad, which resize rarely or never.
         impl_.destroyTargets();
         impl_.createTargets(static_cast<std::uint16_t>(std::max(v.width, 1u)),
                             static_cast<std::uint16_t>(std::max(v.height, 1u)));
@@ -914,68 +1109,47 @@ void BgfxFrameSink::submit(const SceneFrame& frame) {
     }
 
     if (frame.showEdges && bgfx::isValid(impl_.edge)) {
-        const float edgeParams[4]{impl_.config.edgeDepthBias, 0, 0, 0};
+        impl_.stats.drawCalls += impl_.submitEdgeBatches(
+            frame, kViewShaded, impl_.edge,
+            BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_PT_LINES | BGFX_STATE_MSAA);
 
-        for (const EdgeBatch& batch : frame.edgeBatches) {
-            if (batch.vertexCount == 0 || batch.instances == BufferId::None) continue;
-            const auto* vb = impl_.resources.find(batch.vertices);
-            const auto* inst = impl_.resources.find(batch.instances);
-            if (vb == nullptr || inst == nullptr) {
-                ++impl_.stats.skippedBatches;
-                continue;
+        // A SELECTED EDGE HAS TO BE THICK, not merely a different colour.
+        //
+        // A line primitive is one physical pixel wide — on a Retina display that is a hair, and
+        // recolouring a hair among a hundred other hairs is a change the user has to hunt for. It
+        // was reported as "the highlight is barely visible", which is exactly right: the tint was
+        // applied and could not be seen.
+        //
+        // bgfx cannot widen a line (Metal has no line width), and widening edges properly means
+        // expanding them into screen-space ribbons — a change to the whole edge pipeline. This is
+        // the cheap version of the same idea: draw the edges again, offset by a pixel in each
+        // diagonal, discarding every fragment that is NOT highlighted. Four extra passes turn a
+        // one-pixel line into a three-pixel one, and only the highlighted fragments survive.
+        //
+        // Skipped entirely when nothing is highlighted, which is the normal state — so the cost
+        // appears only while something is selected, and disappears when it is deselected.
+        if (impl_.highlightsActive) {
+            // A RING of eight, not four diagonals.
+            //
+            // Four diagonals draw two parallel lines with a gap between them, which at any real
+            // offset looks like a double line rather than a thick one. Eight positions — the four
+            // sides and the four corners — fill it.
+            static constexpr float kRing[8][2]{{1, 0},  {-1, 0}, {0, 1},  {0, -1},
+                                               {1, 1},  {-1, 1}, {1, -1}, {-1, -1}};
+            // Scaled by the display, because the offset is in DEVICE pixels: a fixed ±1 is a
+            // half-point hair on a Retina screen, which is the "barely visible" complaint restated.
+            // 1.5 logical pixels each way gives a line about 4 points wide on any display.
+            const float spread =
+                1.5f * std::max(1.0f, impl_.config.viewport.devicePixelRatio);
+            for (const auto& offset : kRing) {
+                impl_.edgeOffsetPx[0] = offset[0] * spread;
+                impl_.edgeOffsetPx[1] = offset[1] * spread;
+                impl_.stats.drawCalls += impl_.submitEdgeBatches(
+                    frame, kViewShaded, impl_.edge,
+                    BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_PT_LINES
+                        | BGFX_STATE_MSAA);
             }
-
-            const float colour[4]{float(batch.colour[0]) / 255.0f,
-                                  float(batch.colour[1]) / 255.0f,
-                                  float(batch.colour[2]) / 255.0f, 1.0f};
-
-            for (const DrawRange& range : batch.ranges) {
-                if (range.instanceCount == 0) continue;
-                // Both uniforms inside the loop: see applyShadingUniforms on why once per batch
-                // is not enough.
-                bgfx::setUniform(impl_.uEdgeColor, colour);
-                bgfx::setUniform(impl_.uEdgeParams, edgeParams);
-                bgfx::setUniform(impl_.uSectionPlane, impl_.sectionPlane);
-                // The handle TYPE has to match how the buffer was created. Binding a dynamic
-                // buffer through a static handle is not a type error in bgfx -- the handle is a
-                // bare index, and both pools use the same numbering -- so it reaches Metal as an
-                // attribute pointing at a buffer with no stride, and asserts inside the driver.
-                // The sketch overlay is the only dynamic edge buffer, and this is where it enters.
-                if (vb->arena) {
-                    // The batch's own offset is RELATIVE to the mesh, and the mesh's offset is
-                    // relative to the arena — an edge range within a mesh packed among thousands.
-                    bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
-                                          vb->offset + batch.vertexOffset, batch.vertexCount);
-                } else if (vb->kind == BgfxResources::Kind::DynamicEdge) {
-                    bgfx::setVertexBuffer(0, bgfx::DynamicVertexBufferHandle{vb->idx},
-                                          batch.vertexOffset, batch.vertexCount);
-                } else {
-                    bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{vb->idx},
-                                          batch.vertexOffset, batch.vertexCount);
-                }
-                // The SAME buffer the shaded pass used, at the same offsets. Edges used to
-                // carry their own copy of identical data, which doubled instance memory.
-                bgfx::setInstanceDataBuffer(bgfx::DynamicVertexBufferHandle{inst->idx},
-                                            range.instanceOffset, range.instanceCount);
-                // PT_LINES, not PT_LINESTRIP. The vertex buffer is a line list — see the edge
-                // loop in Tessellate.cpp — because one strip over a buffer holding every edge of
-                // the mesh connects unrelated edges to each other.
-                //
-                // Depth-test but no depth-write: edges must not occlude each other, and writing
-                // depth from a biased primitive corrupts the depth buffer for anything drawn
-                // after.
-                //
-                // ALWAYS for an on-top batch: the sketch being edited lies on the face it is drawn
-                // on and is often inside the body, so depth-testing it makes the user's own strokes
-                // vanish into the part.
-                bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
-                               | (batch.onTop ? BGFX_STATE_DEPTH_TEST_ALWAYS
-                                              : BGFX_STATE_DEPTH_TEST_LEQUAL)
-                               | BGFX_STATE_PT_LINES | BGFX_STATE_MSAA);
-                bgfx::submit(kViewShaded, impl_.edge);
-                ++impl_.stats.drawCalls;
-                impl_.stats.lines += (batch.vertexCount / 2) * range.instanceCount;
-            }
+            impl_.edgeOffsetPx[0] = impl_.edgeOffsetPx[1] = 0.0f;
         }
     }
 
@@ -1095,14 +1269,15 @@ private:
 };
 
 void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t y,
-                         std::uint32_t w, std::uint32_t h, std::vector<std::uint32_t>& out) {
+                         std::uint32_t w, std::uint32_t h,
+                         std::vector<std::uint32_t>& out) {
     out.clear();
     // Said out loud, every one of them.
     //
-    // These four early returns are indistinguishable from "nothing is there" to every caller, and
-    // that is exactly how GPU picking came to be broken without anyone noticing: the shell reported
-    // a miss, the model was plainly on screen, and no layer in between had anything to say. A pick
-    // that cannot run is not a pick that found nothing.
+    // These early returns are indistinguishable from "nothing is there" to every caller, and that is
+    // exactly how GPU picking came to be broken without anyone noticing: the shell reported a miss,
+    // the model was plainly on screen, and no layer in between had anything to say. A pick that
+    // cannot run is not a pick that found nothing.
     if (!impl_.initialised) {
         CAD_WARN(cad::log::Category::Render) << "pick: the renderer is not initialised";
         return;
@@ -1137,22 +1312,80 @@ void BgfxPicker::readIds(const SceneFrame& frame, std::uint32_t x, std::uint32_t
     // No MSAA on the pick target, deliberately: a resolved id is an averaged id, which decodes
     // to an element that was never under the pointer.
 
-    // The blit lives inside readTarget. It was missing here entirely: pickReadback was created
-    // and read but never written to, so every pick read an untouched texture and reported a miss.
-    auto read = impl_.readTarget(impl_.pickTarget, impl_.pickReadback, vw, vh);
+    // EDGES TOO, and this is what makes an edge selectable at all.
+    //
+    // The pick pass drew only the shaded batches, so the id buffer contained faces and nothing
+    // else: an edge could never be under the pointer, however carefully aimed, because it was never
+    // rasterised into the buffer being read. Selecting edges was not unreliable — it was impossible,
+    // and the occasional success was the FACE behind the edge being reported.
+    //
+    // Drawn after the faces with depth test LEQUAL rather than LESS, so an edge lying exactly on the
+    // surface it bounds wins the pixel instead of losing it by a rounding error. That is the same
+    // reason the shaded pass gives its edges a depth bias.
+    if (bgfx::isValid(impl_.pickEdge)) {
+        impl_.submitEdgeBatches(frame, kViewPick, impl_.pickEdge,
+                                BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z
+                                    | BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES);
+    }
+
+    // A SUB-RECTANGLE when it fits, the whole frame when it does not.
+    //
+    // The region path is what makes a pick cheap (see Impl::pickRegion). The fallback is what keeps
+    // it CORRECT: a box select can ask for a rectangle far larger than the readback texture, and
+    // the first version of this returned nothing for those — a silent empty answer that reads as
+    // "there is nothing there", which is the exact failure mode this file has been bitten by twice.
+    const bool fits = w <= kPickRegion && h <= kPickRegion;
+    auto read = fits ? impl_.readRegion(impl_.pickTarget, x, y, w, h)
+                     : impl_.readTarget(impl_.pickTarget, impl_.pickReadback, vw, vh);
     if (!read) {
         CAD_WARN(cad::log::Category::Render)
             << "pick: reading the id buffer failed: " << read.error().message;
         return;
     }
+    // A diagnostic, behind an environment variable: when a pick comes back empty there is no way
+    // from outside to tell "the pass drew nothing" from "the region was read from the wrong place",
+    // and those have opposite fixes.
+    if (std::getenv("CAD_PICK_DEBUG") != nullptr) {
+        auto whole = impl_.readTarget(impl_.pickTarget, impl_.pickReadback, vw, vh);
+        std::size_t nonZero = 0;
+        std::uint32_t minX = vw, minY = vh, maxX = 0, maxY = 0;
+        if (whole) {
+            const auto& all = whole.value();
+            for (std::uint32_t row = 0; row < vh; ++row) {
+                for (std::uint32_t col = 0; col < vw; ++col) {
+                    const std::size_t i = (static_cast<std::size_t>(row) * vw + col) * 4;
+                    if (i + 3 >= all.size()) continue;
+                    if (all[i] == 0 && all[i + 1] == 0 && all[i + 2] == 0 && all[i + 3] == 0) continue;
+                    ++nonZero;
+                    minX = std::min(minX, col);
+                    maxX = std::max(maxX, col);
+                    minY = std::min(minY, row);
+                    maxY = std::max(maxY, row);
+                }
+            }
+        }
+        // WHERE the ids are, not just how many. Geometry drawn into a corner of the target rather
+        // than across it is the signature of a viewport/projection size disagreement, and no count
+        // can show that.
+        CAD_WARN(cad::log::Category::Render)
+            << "pick debug: " << nonZero << " ids in [" << minX << "," << minY << "]-[" << maxX
+            << "," << maxY << "] of " << vw << "x" << vh << ", asked about [" << x << "," << y
+            << "], region " << w << "x" << h;
+    }
+
     const std::vector<std::uint8_t>& pixels = read.value();
+    // Row stride and origin differ between the two paths: the region lands in the corner of a
+    // 256-wide texture, the full frame keeps its own coordinates.
+    const std::size_t stride = fits ? kPickRegion : vw;
 
     for (std::uint32_t row = 0; row < h; ++row) {
         for (std::uint32_t col = 0; col < w; ++col) {
             const std::uint32_t px = x + col;
             const std::uint32_t py = y + row;
             if (px >= vw || py >= vh) continue;
-            const std::size_t at = (static_cast<std::size_t>(py) * vw + px) * 4;
+            const std::size_t at =
+                fits ? (static_cast<std::size_t>(row) * stride + col) * 4
+                     : (static_cast<std::size_t>(py) * stride + px) * 4;
             const std::uint32_t id = static_cast<std::uint32_t>(pixels[at])
                                      | (static_cast<std::uint32_t>(pixels[at + 1]) << 8)
                                      | (static_cast<std::uint32_t>(pixels[at + 2]) << 16)
@@ -1272,6 +1505,7 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     impl_->shaded = program("vs_shaded", "fs_shaded");
     impl_->edge = program("vs_edge", "fs_edge");
     impl_->pick = program("vs_shaded", "fs_pick");
+    impl_->pickEdge = program("vs_edge", "fs_pick");
 
     // A missing shader is reported, not silently tolerated: a viewport that initialises and
     // draws nothing is the hardest possible thing to diagnose from a bug report.
@@ -1305,6 +1539,7 @@ void BgfxBackend::shutdown() {
     drop(impl_->shaded);
     drop(impl_->edge);
     drop(impl_->pick);
+    drop(impl_->pickEdge);
     drop(impl_->uShading);
     drop(impl_->uHighlight);
     drop(impl_->uEdgeParams);
@@ -1317,6 +1552,7 @@ void BgfxBackend::shutdown() {
     drop(impl_->colourReadback);
     drop(impl_->pickFb);
     drop(impl_->pickReadback);
+    drop(impl_->pickRegion);
     impl_->colourTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
     impl_->pickTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
     impl_->resources.releaseAll();
@@ -1391,6 +1627,9 @@ void BgfxBackend::Impl::createTargets(std::uint16_t w, std::uint16_t h) {
         pickReadback = bgfx::createTexture2D(
             w, h, false, 1, bgfx::TextureFormat::RGBA8,
             BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+        pickRegion = bgfx::createTexture2D(
+            kPickRegion, kPickRegion, false, 1, bgfx::TextureFormat::RGBA8,
+            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
     }
 }
 
@@ -1406,6 +1645,7 @@ void BgfxBackend::Impl::destroyTargets() {
     drop(colourReadback);
     drop(pickFb);
     drop(pickReadback);
+    drop(pickRegion);
     colourTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
     pickTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
 }

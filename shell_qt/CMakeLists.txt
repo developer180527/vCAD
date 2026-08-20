@@ -39,6 +39,32 @@ qt_add_executable(vcad
 target_link_libraries(vcad PRIVATE cad::app cad::abi proshell::proshell Qt6::Widgets)
 cad_set_warnings(vcad)
 
+# ── the wiring probe ────────────────────────────────────────────────────────────────────
+#
+# Everything automated in this project stops at app/: the acceptance suite drives the Controller
+# directly, so a shell that never calls the Controller passes every test there is. That is exactly
+# how the selection filter bar came to be connected to nothing, and how hover pre-highlight was
+# never called at all.
+#
+# This drives the real widgets with synthetic events and asks the model what happened. It reuses
+# vcad's own sources rather than linking the executable, because there is no library to link.
+qt_add_executable(vcad_probe probe/main.cpp
+  src/MainWindow.cpp
+  src/Icons.cpp
+  src/Viewport.cpp
+  src/SketchCanvas.cpp
+  src/CadHomeModel.cpp
+  src/PluginManager.cpp
+)
+target_include_directories(vcad_probe PRIVATE src)
+target_link_libraries(vcad_probe PRIVATE cad::app cad::abi proshell::proshell Qt6::Widgets)
+cad_set_warnings(vcad_probe)
+
+add_test(NAME vcad_shell_wiring COMMAND vcad_probe)
+set_tests_properties(vcad_shell_wiring PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+  LABELS "shell")
+
 # The shader binaries have to sit beside the binary, because that is where main.cpp now tells
 # the renderer to look. cad_shaders writes them to ${CMAKE_BINARY_DIR}/shaders, which is beside
 # the SPIKES, not beside the shell.

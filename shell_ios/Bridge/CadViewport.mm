@@ -36,6 +36,8 @@
     UIPanGestureRecognizer *_panGesture;
     UIPinchGestureRecognizer *_pinch;
     UITapGestureRecognizer *_tap;
+    UITapGestureRecognizer *_doubleTap;
+    UIHoverGestureRecognizer *_hover;
     /// One baseline PER RECOGNISER. Sharing one between the orbit and the pan is what made adding
     /// a second finger mid-drag throw the view across the screen.
     CGPoint _lastOrbit;
@@ -46,6 +48,17 @@
     NSString *_lastError;
     /// What last touched the screen. See `fingerRadiusPixels`.
     UITouchType _lastTouchType;
+    /// Whether a stylus has EVER been used here. Once true, a finger never draws again.
+    BOOL _stylusSeen;
+    /// The stroke being drawn, in view points. Empty when nothing is being drawn.
+    NSMutableArray<NSValue *> *_strokePoints;
+    /// Whether the CURRENT one-finger gesture is a stroke. Decided once, at its start.
+    BOOL _strokeIsDrawing;
+    /// Where the pointer actually touched down, before any recogniser accepted the gesture.
+    CGPoint _touchDown;
+    BOOL _haveTouchDown;
+    /// What the last stroke did, for the diagnostics panel.
+    NSString *_lastStrokeReport;
     /// The last tap's result, for the diagnostics panel.
     NSString *_lastTapReport;
 }
@@ -87,11 +100,29 @@
     _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
     [self addGestureRecognizer:_pinch];
 
+    // PENCIL HOVER, where the hardware has it (Pencil Pro, M2 iPads and later).
+    //
+    // The one thing a tablet has that answers "what will this select" BEFORE committing to it,
+    // which is the whole job of pre-highlight — and the advantage IPAD_UX.md flagged as worth
+    // designing around. Absent on hardware without it, and nothing depends on it: a tap works the
+    // same either way, so this is an addition rather than a requirement.
+    _hover = [[UIHoverGestureRecognizer alloc] initWithTarget:self action:@selector(handleHover:)];
+    [self addGestureRecognizer:_hover];
+
     // A tap selects. It coexists with the orbit pan rather than competing: UIKit only recognises a
     // tap when the finger did not travel, so a drag that starts as a touch and becomes a rotation
     // never also selects something at the point it started from.
     _tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
     [self addGestureRecognizer:_tap];
+
+    _doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                         action:@selector(handleDoubleTap:)];
+    _doubleTap.numberOfTapsRequired = 2;
+    [self addGestureRecognizer:_doubleTap];
+    // The single tap waits for the double to fail, or every double tap would first select the face
+    // it landed on and then the body — two selections from one gesture, the first of them visible
+    // for a moment and wrong.
+    [_tap requireGestureRecognizerToFail:_doubleTap];
 
     // Pinch and two-finger pan must run together: a real hand does both at once, and a recognizer
     // that wins exclusively makes the view feel like it is fighting back.
@@ -128,6 +159,7 @@
     self.onStatus = nil;
     self.onDocumentChanged = nil;
     self.onStarted = nil;
+    self.onTap = nil;
     // Deleting the Controller is what shuts bgfx down (see its destructor: backend first, then the
     // surface). Nulled rather than left dangling because every method here checks it.
     delete _controller;
@@ -143,9 +175,13 @@
     [_panGesture release];
     [_pinch release];
     [_tap release];
+    [_doubleTap release];
+    [_hover release];
     [_rendererName release];
     [_lastError release];
     [_lastTapReport release];
+    [_lastStrokeReport release];
+    [_strokePoints release];
     [super dealloc];
 }
 
@@ -157,6 +193,15 @@
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
     _lastTouchType = touches.anyObject.type;
+    if (_lastTouchType == UITouchTypeStylus) _stylusSeen = YES;
+    // The TRUE start of a stroke.
+    //
+    // A UIPanGestureRecognizer does not begin until the pointer has travelled about ten points, so
+    // its first reported location is already a centimetre into the line — and a stroke shorter than
+    // that threshold never begins at all. Both are fatal for drawing: every segment would start
+    // short of where the pen went down, and small features could not be drawn.
+    _touchDown = [touches.anyObject locationInView:self];
+    _haveTouchDown = YES;
 }
 
 /// Pinch and two-finger pan run together; the one-finger orbit runs with neither.
@@ -209,6 +254,10 @@
 
     // Clear to Paper White's canvas, so the GPU surface and the SwiftUI chrome around it are the
     // same paper. A viewport that clears to black frames itself against the app.
+    // Auto, not Body: one tap takes the vertex, edge or face under the pointer, and a double tap
+    // takes the whole body. A tablet has no room for a persistent selection-filter control, and the
+    // ranking already knows what was touched.
+    _controller->setSelectionLevel(cad::app::Controller::SelectionLevel::Auto);
     _controller->setViewportBackground(0xFA, 0xFA, 0xF9);
     _controller->refresh();
     _controller->fitView();
@@ -286,6 +335,17 @@
 
 - (void)handleOrbit:(UIPanGestureRecognizer *)g {
     if (!_attached || _controller == nullptr) return;
+
+    // DRAWING takes the one-finger gesture when a sketch is open and the thing on the screen is
+    // allowed to draw. Decided per gesture, at its start, and held for the whole of it: asking
+    // again mid-stroke would let a stroke become an orbit halfway through if the stylus lifted for
+    // an instant.
+    if (g.state == UIGestureRecognizerStateBegan) _strokeIsDrawing = [self touchDraws];
+    if (_strokeIsDrawing) {
+        [self collectStroke:g];
+        return;
+    }
+
     const CGPoint p = [g translationInView:self];
     if (g.state == UIGestureRecognizerStateBegan) {
         _lastOrbit = CGPointZero;
@@ -312,8 +372,18 @@
         _lastTwoFinger = CGPointZero;
         return;
     }
-    cad::render::Viewport vp{static_cast<std::uint32_t>(_lastPixelSize.width),
-                             static_cast<std::uint32_t>(_lastPixelSize.height), 1.0f};
+    // POINTS, not device pixels — and this is why the pan felt slow.
+    //
+    // `CameraController::pan` divides by the viewport's height to get world-units-per-pixel, so that
+    // the model tracks the pointer EXACTLY at any zoom. That only holds when the delta and the
+    // viewport are measured in the same unit. UIKit reports translation in points; passing the
+    // drawable's size in device pixels made the model move at 1/scale of the finger — half speed on
+    // every Retina iPad, which feels like sluggishness rather than like a units mistake.
+    //
+    // Points on both sides, which is exactly what the Qt shell does (logical deltas, logical
+    // width()/height()). The drawable's pixel size belongs to the renderer; the gesture's does not.
+    cad::render::Viewport vp{static_cast<std::uint32_t>(self.bounds.size.width),
+                             static_cast<std::uint32_t>(self.bounds.size.height), 1.0f};
     _controller->camera().pan(static_cast<float>(p.x - _lastTwoFinger.x),
                               static_cast<float>(p.y - _lastTwoFinger.y), vp);
     _lastTwoFinger = p;
@@ -337,7 +407,140 @@
 
 - (void)handleTap:(UITapGestureRecognizer *)g {
     const CGPoint p = [g locationInView:self];
+    // The shell gets first refusal. See `onTap`.
+    if (self.onTap && self.onTap(p.x, p.y)) {
+        _dirty = YES;
+        return;
+    }
     [self tapAtX:p.x y:p.y];
+}
+
+// MARK: - Sketching
+
+- (BOOL)stylusSeen {
+    return _stylusSeen;
+}
+
+- (BOOL)sketching {
+    return _controller != nullptr
+           && _controller->environment() == cad::app::Environment::Sketch;
+}
+
+/// Whether THIS touch should draw rather than move the camera.
+///
+/// The whole of the mode logic, and there is no clock in it. A stylus draws whenever a sketch is
+/// open. A finger draws only on a device that has never seen a stylus — see `stylusSeen` for why
+/// that fallback exists rather than sketching being impossible without one.
+- (BOOL)touchDraws {
+    if (![self sketching]) return NO;
+    if (_lastTouchType == UITouchTypeStylus) return YES;
+    return !_stylusSeen;
+}
+
+- (BOOL)beginSketchAt:(CGPoint)point {
+    if (!_attached || _controller == nullptr) return NO;
+    const CGFloat x = point.x;
+    const CGFloat y = point.y;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    auto face = _controller->pickSketchFace(static_cast<std::uint32_t>(MAX(0.0, x * scale)),
+                                            static_cast<std::uint32_t>(MAX(0.0, y * scale)));
+    if (!face) {
+        // The reason, not a generic refusal. `pickSketchFace` distinguishes "nothing there" from
+        // "that is an edge" from "that face is curved", and each sends the user somewhere
+        // different.
+        if (self.onStatus) {
+            self.onStatus([NSString stringWithUTF8String:face.error().message.c_str()]);
+        }
+        return NO;
+    }
+    const auto id = _controller->addSketchOnFace(face.value().object,
+                                                 face.value().face.toString());
+    if (id.isNull()) return NO;
+    if (!_controller->editSketch(id)) return NO;
+
+    // The drawing tool, immediately.
+    //
+    // Tapping Sketch on a tablet means "I am about to draw" — there is no ribbon to then choose a
+    // tool from, and the default is Select, which consumes no strokes at all. That combination was
+    // silent: the pen moved and nothing whatsoever happened.
+    //
+    // One tool, because the STROKE decides between a line and an arc (docs/design/SKETCHING_IPAD.md).
+    _controller->setSketchTool(cad::app::SketchDrawing::Tool::Line);
+    _dirty = YES;
+    return YES;
+}
+
+- (void)finishSketch {
+    if (_controller == nullptr) return;
+    _controller->finishSketch();
+    _dirty = YES;
+}
+
+- (void)cancelSketch {
+    if (_controller == nullptr) return;
+    _controller->cancelSketch();
+    _dirty = YES;
+}
+
+/// Accumulates the pointer's path while a stroke is being drawn.
+///
+/// Every sample is kept. Thinning them would be a reasonable optimisation and a bad idea here: the
+/// classifier measures how far the stroke departs from its own chord, so dropping the samples in
+/// the middle is dropping exactly the evidence it uses.
+- (void)collectStroke:(UIPanGestureRecognizer *)g {
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan:
+            if (_strokePoints == nil) _strokePoints = [[NSMutableArray alloc] init];
+            [_strokePoints removeAllObjects];
+            // Touch-down first, then where the recogniser noticed. See `touchesBegan`.
+            if (_haveTouchDown) [_strokePoints addObject:[NSValue valueWithCGPoint:_touchDown]];
+            [_strokePoints addObject:[NSValue valueWithCGPoint:[g locationInView:self]]];
+            break;
+        case UIGestureRecognizerStateChanged:
+            [_strokePoints addObject:[NSValue valueWithCGPoint:[g locationInView:self]]];
+            break;
+        case UIGestureRecognizerStateEnded:
+            [_strokePoints addObject:[NSValue valueWithCGPoint:[g locationInView:self]]];
+            [self commitStroke];
+            _strokeIsDrawing = NO;
+            break;
+        default:
+            // Cancelled or failed: the stroke is abandoned rather than half-committed. A gesture
+            // the system took away from us did not finish, and guessing what it would have been is
+            // how a stray segment appears from nowhere.
+            [_strokePoints removeAllObjects];
+            _strokeIsDrawing = NO;
+            break;
+    }
+}
+
+/// Sends the collected stroke to the shared layer.
+- (void)commitStroke {
+    if (_controller == nullptr || _strokePoints.count < 2) {
+        [_strokePoints removeAllObjects];
+        return;
+    }
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    std::vector<std::array<float, 2>> points;
+    points.reserve(_strokePoints.count);
+    for (NSValue *value in _strokePoints) {
+        const CGPoint p = value.CGPointValue;
+        points.push_back({static_cast<float>(p.x * scale), static_cast<float>(p.y * scale)});
+    }
+    const std::size_t collected = points.size();
+    [_strokePoints removeAllObjects];
+    const bool ok = _controller->sketchStrokeAt(points);
+
+    // Reported on every stroke, exactly as taps are. "I draw and nothing happens" has the same
+    // several indistinguishable causes: the gesture never fired, the points missed the plane, or
+    // the geometry landed and is not being drawn.
+    [_lastStrokeReport release];
+    _lastStrokeReport =
+        [[NSString stringWithFormat:@"%@ %zu pts -> %@", [self pointerName], collected,
+                                    ok ? @"drawn" : @"refused"] retain];
+    _dirty = YES;
 }
 
 // MARK: - Selection
@@ -374,6 +577,15 @@
 
 - (void)tapAtX:(CGFloat)x y:(CGFloat)y {
     if (!_attached || _controller == nullptr) return;
+    if ([self sketching]) {
+        // Inside a sketch a tap ENDS the run of connected segments — the tablet's equivalent of
+        // Escape, and what a double-click does on the desktop (MODELLING_UX.md §2b). It must not
+        // select a body: selection at this moment would take the user out of what they are doing.
+        _controller->endSketchChain();
+        if (self.onStatus) self.onStatus(@"Chain ended");
+        _dirty = YES;
+        return;
+    }
     const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
                                                        : UIScreen.mainScreen.scale;
     const std::uint32_t px = static_cast<std::uint32_t>(MAX(0.0, x * scale));
@@ -384,7 +596,9 @@
     // to-remove is the only selection model touch can express. `Controller::select` is already a
     // toggle, which is the whole of the behaviour. Onshape states the same rule outright — "tap to
     // select, tap again to deselect".
-    const auto candidates = _controller->candidatesAt(px, py, radius);
+    // ONE pick per tap. This used to call candidatesAt as well, purely to report the count — and
+    // a pick is not a cheap query: it re-renders the scene into the id buffer and reads it back, so
+    // the diagnostic doubled the cost of every tap. The count comes back with the result now.
     const auto result = _controller->tapAt(px, py, radius, /*additive=*/true);
 
     // Recorded on EVERY tap, hit or miss.
@@ -396,13 +610,49 @@
     [_lastTapReport release];
     _lastTapReport = [[NSString stringWithFormat:@"%@ r=%u at %u,%u -> %zu candidate(s)%@",
                                                  [self pointerName], radius, px, py,
-                                                 candidates.size(),
+                                                 result.candidates,
                                                  result.hit ? @", hit" : @", miss"] retain];
 
     if (!result.message.empty() && self.onStatus) {
         self.onStatus([NSString stringWithUTF8String:result.message.c_str()]);
     } else if (self.onStatus) {
         self.onStatus(_lastTapReport);
+    }
+    if (result.changed) _dirty = YES;
+}
+
+- (void)handleHover:(UIHoverGestureRecognizer *)g {
+    if (!_attached || _controller == nullptr || [self sketching]) return;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        if (_controller->clearHover()) _dirty = YES;
+        return;
+    }
+    const CGPoint p = [g locationInView:self];
+    // The SAME aperture a tap uses, so what lights up is what a tap would take.
+    if (_controller->hoverAt(static_cast<std::uint32_t>(MAX(0.0, p.x * scale)),
+                             static_cast<std::uint32_t>(MAX(0.0, p.y * scale)),
+                             [self fingerRadiusPixels])) {
+        _dirty = YES;
+    }
+}
+
+- (void)handleDoubleTap:(UITapGestureRecognizer *)g {
+    const CGPoint p = [g locationInView:self];
+    [self doubleTapAtX:p.x y:p.y];
+}
+
+- (void)doubleTapAtX:(CGFloat)x y:(CGFloat)y {
+    if (!_attached || _controller == nullptr || [self sketching]) return;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    const auto result = _controller->tapAt(static_cast<std::uint32_t>(MAX(0.0, x * scale)),
+                                           static_cast<std::uint32_t>(MAX(0.0, y * scale)),
+                                           [self fingerRadiusPixels], /*additive=*/true,
+                                           cad::app::Controller::SelectionLevel::Body);
+    if (!result.message.empty() && self.onStatus) {
+        self.onStatus([NSString stringWithUTF8String:result.message.c_str()]);
     }
     if (result.changed) _dirty = YES;
 }
@@ -536,6 +786,13 @@
         @"failed" : [NSString stringWithFormat:@"%zu", s.failed],
         @"error" : _lastError ?: @"",
         @"lastTap" : _lastTapReport ?: @"none yet",
+        @"lastStroke" : _lastStrokeReport ?: @"none yet",
+        @"sketching" : [self sketching] ? @"yes" : @"no",
+        @"stylusSeen" : _stylusSeen ? @"yes" : @"no",
+        @"sketchGeometry" :
+            [NSString stringWithFormat:@"%zu", _controller->activeSketch() != nullptr
+                                                   ? _controller->activeSketch()->geometry().size()
+                                                   : 0],
         @"pointer" : [self pointerName],
         @"selected" : [NSString stringWithFormat:@"%zu", _controller->selection().size()],
     };

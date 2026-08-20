@@ -2178,6 +2178,7 @@ CadStatus cad_sketch_constrain(CadSession handle, CadSketch sk, std::int32_t kin
                 case CAD_CON_EQUAL_LENGTH:  index = sketch.equalLength(a, b); break;
                 case CAD_CON_LOCK_X:        index = sketch.lockX(a, ap, value); break;
                 case CAD_CON_LOCK_Y:        index = sketch.lockY(a, ap, value); break;
+                case CAD_CON_TANGENT:       index = sketch.tangent(a, ap, b, bp); break;
                 default:
                     return fail(s, CAD_ERR_UNSUPPORTED, "That constraint kind is not known.");
             }

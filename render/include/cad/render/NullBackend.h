@@ -22,7 +22,7 @@ class NullGpuResources final : public IGpuResources {
 public:
     BufferId uploadVertices(const kernel::ShapeHash&, std::span<const CadVertex>) override;
     BufferId uploadIndices(const kernel::ShapeHash&, std::span<const std::uint32_t>) override;
-    BufferId uploadEdgeVertices(const kernel::ShapeHash&, std::span<const float>) override;
+    BufferId uploadEdgeVertices(const kernel::ShapeHash&, std::span<const EdgeVertex>) override;
     BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
                                        std::span<const float>) override;
     BufferId uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,

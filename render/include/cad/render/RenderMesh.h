@@ -39,6 +39,29 @@ struct FaceRange {
 /// One polyline. CAD edges are exact curves from OCCT, sampled to a chord tolerance — NOT
 /// derived from the triangle mesh, and NOT a screen-space effect. Crisp edges are the single
 /// biggest difference between "a 3D view" and "a CAD viewport" (ADR 0007 decision 5).
+/// One vertex of an edge polyline, WITH the element it belongs to.
+///
+/// The element id was missing here, and its absence was not a small gap: an edge with no id is
+/// invisible to the pick buffer, so edges could not be selected at all, and invisible to the
+/// highlight table, so a selected edge could not change colour. Both were reported as "unreliable",
+/// which is the kindest possible reading of "impossible".
+///
+/// Per VERTEX rather than per draw call, because one edge batch covers every edge of a mesh —
+/// that single batch is what keeps a million-part assembly affordable, and it is also why a uniform
+/// cannot say which edge a fragment belongs to.
+///
+/// 16 bytes against the previous 12. The cost is real (a third more edge memory, ~5 MB on an 8k
+/// scene) and it buys the two things above; there is no cheaper place to put the id.
+struct EdgeVertex {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    /// Index into RenderMesh::elements, matching CadVertex::element. Reaches the shader as four
+    /// unnormalised uint8 channels — bgfx has no integer vertex attributes.
+    std::uint32_t element = 0;
+};
+static_assert(sizeof(EdgeVertex) == 16, "the vertex layout depends on this being tightly packed");
+
 struct EdgeRange {
     std::uint32_t vertexOffset = 0;
     std::uint32_t vertexCount = 0;
@@ -60,7 +83,7 @@ public:
     std::vector<FaceRange> faces;
 
     /// Edge geometry, in its own arrays: line primitives, drawn in a separate pass.
-    std::vector<float> edgeVertices;          ///< xyz triples
+    std::vector<EdgeVertex> edgeVertices;
     std::vector<EdgeRange> edges;
 
     /// Element names, parallel to the `element` indices above. This is how a GPU pick

@@ -189,7 +189,16 @@ void MainWindow::buildQuickAccess() {
 
     selectionFilter_ = new QButtonGroup(this);
     selectionFilter_->setExclusive(true);
-    const std::array<std::pair<const char*, const char*>, 4> filters{{
+    // Auto FIRST, and the default.
+    //
+    // A fixed level makes the user declare in advance what kind of thing they are about to point
+    // at. Auto resolves to whatever was actually hit — the ranking under the pointer already knows
+    // (docs/design/SELECTION.md) — and the explicit levels stay for the case that needs them: when
+    // several kinds overlap and you want only one of them, which is what a filter is FOR.
+    //
+    // Same list as the iPad, which reaches the same rule through a double tap instead of a control.
+    const std::array<std::pair<const char*, const char*>, 5> filters{{
+        {"Auto", "Select whatever is under the pointer"},
         {"Body", "Select whole bodies"},
         {"Face", "Select faces"},
         {"Edge", "Select edges"},
@@ -208,7 +217,15 @@ void MainWindow::buildQuickAccess() {
         filterRow->addWidget(button);
     }
     addQuickAccessWidget(filterBar_);
-    connect(selectionFilter_, &QButtonGroup::idClicked, this, [this](int) { refreshStatus(); });
+    // CONNECTED to the model, which it was not.
+    //
+    // This control existed, looked right, and did nothing: it re-rendered the status bar and never
+    // told the Controller, so choosing "Edge" left clicks resolving to whole bodies. A filter that
+    // does not filter is worse than an absent one, because the user believes it.
+    connect(selectionFilter_, &QButtonGroup::idClicked, this, [this](int) {
+        applySelectionFilter();
+        refreshStatus();
+    });
 
     // File menu, on the File tab rather than a menu bar.
     auto* menu = fileMenu();
@@ -895,6 +912,36 @@ void MainWindow::selectBrowserRowForShot(int row) {
     browser_->setCurrentItem(root->child(row));
 }
 
+Viewport* MainWindow::probeViewport() noexcept {
+    // The active document's editor, found the same way the rest of the window finds it.
+    const auto index = session_.activeIndex();
+    if (index >= session_.documents().size()) return nullptr;
+    // editors_ holds QWidget*, because a document's editor is not always a 3D viewport — a drawing
+    // or a presentation will have its own. A failed cast is the honest answer for those.
+    return index < editors_.size() ? qobject_cast<Viewport*>(editors_[index]) : nullptr;
+}
+
+void MainWindow::applySelectionFilter() {
+    // The control and the model, kept in step.
+    //
+    // They were not: this filter bar re-rendered the status text and never told the Controller, so
+    // choosing "Edge" left every click resolving to a whole body. A filter that does not filter is
+    // worse than an absent one, because the user believes it.
+    //
+    // Applied through the ACTIVE document rather than stored once, because each document has its
+    // own Controller and a new one would otherwise start at the default while the button still
+    // showed the last choice.
+    auto* c = controller();
+    if (c == nullptr || selectionFilter_ == nullptr) return;
+    using Level = cad::app::Controller::SelectionLevel;
+    static constexpr std::array<Level, 5> kLevels{Level::Auto, Level::Body, Level::Face,
+                                                  Level::Edge, Level::Vertex};
+    const int id = selectionFilter_->checkedId();
+    if (id >= 0 && id < static_cast<int>(kLevels.size())) {
+        c->setSelectionLevel(kLevels[static_cast<std::size_t>(id)]);
+    }
+}
+
 void MainWindow::createDocument(DocumentKind kind) {
     if (!cad::app::implemented(kind)) {
         setStatusMessage(
@@ -904,6 +951,18 @@ void MainWindow::createDocument(DocumentKind kind) {
     }
     const std::size_t index = session_.create(kind);
     auto* c = session_.documents()[index].controller.get();
+
+    // A new document inherits the filter the user is looking at, rather than silently reverting to
+    // the default while the control still shows their choice.
+    using Level = cad::app::Controller::SelectionLevel;
+    static constexpr std::array<Level, 5> kLevels{Level::Auto, Level::Body, Level::Face,
+                                                  Level::Edge, Level::Vertex};
+    if (selectionFilter_ != nullptr) {
+        const int id = selectionFilter_->checkedId();
+        if (id >= 0 && id < static_cast<int>(kLevels.size())) {
+            c->setSelectionLevel(kLevels[static_cast<std::size_t>(id)]);
+        }
+    }
 
     auto* editor = new Viewport(*c, workspaces());
     // Bring the GPU up on the first viewport. Idempotent -- bgfx is a process singleton, so the

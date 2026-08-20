@@ -223,7 +223,7 @@ public:
     virtual BufferId uploadIndices(const kernel::ShapeHash& contentHash,
                                    std::span<const std::uint32_t>) = 0;
     virtual BufferId uploadEdgeVertices(const kernel::ShapeHash& contentHash,
-                                        std::span<const float>) = 0;
+                                        std::span<const EdgeVertex>) = 0;
 
     /// Uploads instance data into a buffer that PERSISTS across frames.
     ///

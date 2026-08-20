@@ -41,9 +41,9 @@ BufferId NullGpuResources::uploadIndices(const kernel::ShapeHash& hash,
 }
 
 BufferId NullGpuResources::uploadEdgeVertices(const kernel::ShapeHash& hash,
-                                              std::span<const float> f) {
+                                              std::span<const EdgeVertex> f) {
     if (f.empty()) return BufferId::None;
-    return intern(hash, 2, f.size() * sizeof(float));
+    return intern(hash, 2, f.size() * sizeof(EdgeVertex));
 }
 
 BufferId NullGpuResources::uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,

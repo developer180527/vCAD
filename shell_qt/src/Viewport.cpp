@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QGuiApplication>
 #include <QPalette>
 
 #include <algorithm>
@@ -88,7 +89,17 @@ bool Viewport::attachRenderer() {
     const auto h = static_cast<std::uint32_t>(std::max(1.0, height() * dpr));
 
     void* view = nullptr;
-    if (!g_forceOffscreen) {
+    // Only a platform that has REAL native windows can hand one over.
+    //
+    // `winId()` returns a handle whatever the platform is, and under the offscreen and minimal QPA
+    // plugins it is not an NSView — passing it to the surface code sends a message to a pointer
+    // that is not an object, which crashes in objc_msgSend with no diagnostic at all. That is what
+    // stopped the shell from running headless, and therefore what stopped it from ever being
+    // tested.
+    const QString platform = QGuiApplication::platformName();
+    const bool nativeWindows = platform != QStringLiteral("offscreen")
+                               && platform != QStringLiteral("minimal");
+    if (!g_forceOffscreen && nativeWindows) {
         // Force a real native view, then hand it over. winId() is what creates it; asking for it
         // is the entire mechanism, which is why it looks like a discarded value.
         setAttribute(Qt::WA_NativeWindow, true);
@@ -331,6 +342,9 @@ void Viewport::hideEvent(QHideEvent* event) {
 void Viewport::leaveEvent(QEvent* event) {
     // The pointer has left the viewport, so there is nothing for the readout to annotate.
     if (dimensionField_ != nullptr) dimensionField_->hide();
+    // And nothing is under it any more. A hover highlight left behind claims the pointer is
+    // somewhere it is not.
+    if (controller_.clearHover()) markDirty();
     QWidget::leaveEvent(event);
 }
 
@@ -339,6 +353,25 @@ void Viewport::mouseDoubleClickEvent(QMouseEvent* event) {
         controller_.endSketchChain();
         syncDimensionField();
         markDirty();
+        return;
+    }
+
+    // A double click selects the whole BODY, whatever the level says.
+    //
+    // The same rule as the iPad's double tap, and it is what makes Auto usable as a default: one
+    // click takes the face or edge under the pointer, two take the part it belongs to. Without it,
+    // selecting a body under Auto would mean going to the filter bar and back.
+    if (event->button() == Qt::LeftButton
+        && controller_.environment() != cad::app::Environment::Sketch) {
+        const auto dpr = devicePixelRatioF();
+        const auto x = static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr));
+        const auto y = static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr));
+        const auto radius = static_cast<std::uint32_t>(std::lround(4.0 * dpr));
+        const auto result =
+            controller_.tapAt(x, y, radius, event->modifiers().testFlag(Qt::ShiftModifier),
+                              cad::app::Controller::SelectionLevel::Body);
+        if (!result.message.empty()) emit pickMessage(QString::fromStdString(result.message));
+        if (result.changed) markDirty();
         return;
     }
     QWidget::mouseDoubleClickEvent(event);
@@ -447,7 +480,24 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
         emit dimensionChanged();
         return;
     }
-    if (drag_ == cad::render::Drag::None) return;
+    // PRE-HIGHLIGHT under the pointer, which the desktop simply never did: `Controller::hoverAt`
+    // existed, maintained a hovered slot and fed the highlight table, and no shell ever called it.
+    // Hover is what tells a user WHICH of several overlapping things a click will take — without
+    // it, fine-grained selection is a guess followed by a check.
+    //
+    // The same aperture as the click below, deliberately. A one-pixel hover would light up the face
+    // while the click took the edge crossing it, and an answer arrived at by a different rule than
+    // the action it predicts is not an answer.
+    if (drag_ == cad::render::Drag::None) {
+        const auto dpr = devicePixelRatioF();
+        const auto radius = static_cast<std::uint32_t>(std::lround(4.0 * dpr));
+        if (controller_.hoverAt(
+                static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr)),
+                static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr)), radius)) {
+            markDirty();
+        }
+        return;
+    }
     // Four logical pixels. Below that it is a click with a shaky hand, and treating it as an orbit
     // both fails to select and nudges the camera, which reads as the application ignoring clicks.
     if ((event->pos() - pressAt_).manhattanLength() > 4) dragged_ = true;

@@ -7,6 +7,7 @@ cad_core_library(cad_app
   # past the point where anyone can hold it in their head. See app/src/controller/.
   src/SketchDrawing.cpp
   src/SelectionRanking.cpp
+  src/StrokeShape.cpp
   src/controller/Lifetime.cpp
   src/controller/View.cpp
   src/controller/Picking.cpp

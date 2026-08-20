@@ -18,7 +18,11 @@ using kernel::ErrorCode;
 
 /// Bumped whenever the encoding below changes. Folded into the cache key, so old blobs become
 /// unreachable rather than misread — the same rule as the feature-output format (ADR 0004).
-constexpr std::uint32_t kMeshBlobVersion = 1;
+// 2: edge vertices gained their element id (12 -> 16 bytes each), which is what makes an edge
+// selectable and highlightable. A version 1 blob decodes into the new struct as garbage — three
+// floats read as four fields — so the bump is not bookkeeping: it is what stops a stale cache from
+// producing edges scattered across the scene.
+constexpr std::uint32_t kMeshBlobVersion = 2;
 
 void putU32(std::string& out, std::uint32_t v) {
     // Little-endian explicitly: the shared DDC tier is read by other machines.
@@ -61,7 +65,7 @@ std::string encode(const RenderMesh& m) {
     // Reserve up front: a large mesh is tens of MB and repeated reallocation during encode is
     // a measurable part of a cache store.
     out.reserve(m.vertices.size() * sizeof(CadVertex) + m.indices.size() * 4
-                + m.edgeVertices.size() * 4 + 1024);
+                + m.edgeVertices.size() * sizeof(EdgeVertex) + 1024);
     putU32(out, kMeshBlobVersion);
 
     // CadVertex, FaceRange and EdgeRange are POD and tightly packed (static_assert in the
@@ -134,7 +138,7 @@ std::shared_ptr<RenderMesh> decode(const std::string& in) {
     }
     for (const auto& e : m->edges) {
         if (static_cast<std::size_t>(e.vertexOffset) + e.vertexCount
-            > m->edgeVertices.size() / 3) {
+            > m->edgeVertices.size()) {
             return nullptr;
         }
         if (e.element >= m->elements.size()) return nullptr;

@@ -27,12 +27,14 @@
 /// code and would have rebuilt exactly the tangle this extraction exists to undo: every method able
 /// to reach anything, so no method's dependencies are visible.
 
+#include "cad/app/StrokeShape.h"
 #include "cad/sketch/Sketch.h"
 #include "cad/units/Units.h"
 
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -111,6 +113,25 @@ public:
     /// and commit another.
     [[nodiscard]] std::optional<Point> aimed() const;
 
+    /// A whole stroke, already mapped into sketch coordinates: pen down, drag, lift.
+    ///
+    /// # Beside `click`, not instead of it
+    ///
+    /// A mouse points; a pen draws. Shapr3D's pen tool takes one segment per stroke and decides
+    /// between a line and an arc from the gesture itself (docs/design/SKETCHING_IPAD.md), while the
+    /// desktop's click-click-click remains exactly right for a mouse. Both produce the same
+    /// geometry through the same snapping, chaining and inference, so the two shells cannot end up
+    /// with different sketches from the same intent.
+    ///
+    /// The endpoints are snapped and the chain continues from the far end, as a click does. What is
+    /// new is only what happens in between: `fitStroke` decides the primitive.
+    ///
+    /// **No timers anywhere.** Which tool a gesture drives is the shell's business and must come
+    /// from WHAT is touching the screen, never from how long — a mode that depends on dwell time is
+    /// unlearnable, because the user cannot see the clock. That is the one part of the reference
+    /// this deliberately does not copy.
+    Outcome stroke(const Context&, std::span<const Point> points);
+
     /// A click at `at`, already mapped into sketch coordinates.
     ///
     /// Snaps first, so the point that ends one segment and the point that starts the next are the
@@ -151,6 +172,20 @@ public:
     [[nodiscard]] std::vector<Point> previewSegments(const Context&) const;
 
 private:
+    /// Joins the new geometry to whatever the chain drew last, with a real coincident constraint.
+    ///
+    /// Snapping alone is NOT this. Snapping makes two endpoints share coordinates today; a
+    /// constraint makes them stay together when the solver moves something tomorrow. Shapr3D
+    /// applies exactly this even with automatic constraints switched OFF — connection is not a
+    /// convenience, it is what makes a chain a profile rather than a drawing of one.
+    /// `smooth` also constrains the two curves TANGENT at the join — for an arc, which is the
+    /// only case where a smooth meeting is what the hand meant.
+    void join(const Context&, sketch::GeoId next, sketch::PointRef nextPoint, bool smooth = false);
+
+    /// What the chain drew last, and which end of it the next segment starts from.
+    std::optional<sketch::GeoId> lastGeo_;
+    sketch::PointRef lastPoint_ = sketch::PointRef::End;
+
     /// The nearest snappable point within `kSnapPixels` of `at`, or nothing.
     [[nodiscard]] std::optional<Point> snap(const Context&, Point at) const;
 

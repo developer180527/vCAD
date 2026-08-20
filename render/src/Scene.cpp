@@ -857,7 +857,7 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
             EdgeBatch e;
             e.vertices = res.edgeVertices;
             e.vertexOffset = 0;
-            e.vertexCount = static_cast<std::uint32_t>(mesh.edgeVertices.size() / 3);
+            e.vertexCount = static_cast<std::uint32_t>(mesh.edgeVertices.size());
             // Same buffer as the shaded batch, deliberately: the per-instance data is identical
             // and a second copy doubled instance memory for nothing.
             e.instances = instanceBuffer;

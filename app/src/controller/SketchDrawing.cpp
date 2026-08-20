@@ -160,6 +160,46 @@ bool Controller::sketchClickAt(float x, float y) {
     return true;
 }
 
+bool Controller::sketchStrokeAt(std::span<const std::array<float, 2>> devicePoints) {
+    if (environment_ != Environment::Sketch || !editing_.has_value()) return false;
+
+    // Said out loud. The Select tool consumes nothing, so a shell that forgot to choose a drawing
+    // tool got silence from every stroke — which reads as the pen not working rather than as a mode
+    // the user is in. This cost an afternoon on the iPad, where there is no visible toolbar state
+    // to check against.
+    if (drawing_.tool() == SketchDrawing::Tool::Select) {
+        status("Choose a drawing tool first.");
+        return false;
+    }
+
+    std::vector<SketchDrawing::Point> onPlane;
+    onPlane.reserve(devicePoints.size());
+    for (const auto& p : devicePoints) {
+        // Dropped, not refused. A stroke that grazes a solid standing in front of the plane still
+        // has a beginning and an end the user meant; rejecting the whole thing because of a few
+        // interior samples would make drawing over existing geometry impossible.
+        if (const auto point = sketchPointAt(p[0], p[1])) onPlane.push_back(*point);
+    }
+    if (onPlane.size() < 2) {
+        status("That stroke did not land on the sketch plane.");
+        return false;
+    }
+
+    const auto outcome = drawing_.stroke(drawingContext(), onPlane);
+    if (!outcome.used) return false;
+    if (!outcome.status.empty()) status(outcome.status);
+    if (outcome.geometryChanged) {
+        // The same solve-per-edit rule as a click. A sketch that does not follow its constraints
+        // while you draw is not a sketch — it is a drawing that will jump later.
+        lastSketchSolve_ = editing_->solve();
+        if (!lastSketchSolve_.solved) status(lastSketchSolve_.message);
+        notifyDocument();
+    }
+    pushSketchOverlay();
+    notifyView();
+    return true;
+}
+
 std::vector<float> Controller::sketchOverlayVertices() const {
     std::vector<float> out;
     const sketch::Sketch* active = activeSketch();

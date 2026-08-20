@@ -1,6 +1,7 @@
 #include "cad/app/SketchDrawing.h"
 
 #include <cmath>
+#include <vector>
 #include <numbers>
 
 namespace cad::app {
@@ -15,6 +16,10 @@ void SketchDrawing::endChain() {
     pending_.reset();
     hover_.reset();
     input_.clear();
+    // The chain's last geometry goes with it. Kept, the NEXT run's first segment would be
+    // constrained coincident to the end of a run the user has already finished — an invisible link
+    // between two shapes that look separate, which the solver would then enforce.
+    lastGeo_.reset();
     // The lock belonged to the run that just ended. Carried over, it would size a segment the user
     // never asked about.
     locked_.reset();
@@ -111,6 +116,93 @@ void SketchDrawing::infer(const Context& ctx, sketch::GeoId id, Point from, Poin
     }
 }
 
+void SketchDrawing::join(const Context& ctx, sketch::GeoId next, sketch::PointRef nextPoint,
+                         bool smooth) {
+    if (ctx.sketch == nullptr || !lastGeo_) return;
+    ctx.sketch->coincident(*lastGeo_, lastPoint_, next, nextPoint);
+
+    // Tangency when an ARC joins the chain — Shapr3D applies exactly this, and only then.
+    //
+    // Not for line-to-line: two straight segments meeting tangentially are one straight segment,
+    // so the constraint would either be redundant or would flatten a corner the user drew on
+    // purpose. It is the arc that carries the intent, because an arc leaving a line at an angle is
+    // almost always a mistake and an arc leaving it smoothly is almost always a fillet.
+    if (!smooth) return;
+    const auto* previous = ctx.sketch->find(*lastGeo_);
+    const auto* current = ctx.sketch->find(next);
+    if (previous == nullptr || current == nullptr) return;
+    if (previous->kind == sketch::GeoKind::Point || current->kind == sketch::GeoKind::Point) return;
+    ctx.sketch->tangent(*lastGeo_, lastPoint_, next, nextPoint);
+}
+
+SketchDrawing::Outcome SketchDrawing::stroke(const Context& ctx, std::span<const Point> points) {
+    Outcome out;
+    if (ctx.sketch == nullptr || tool_ == Tool::Select || points.size() < 2) return out;
+
+    // The tolerance is the HAND's, in pixels, converted here. A wobble of a few pixels is not an
+    // arc at any zoom; a fixed millimetre tolerance would call everything an arc when zoomed out
+    // and everything a line when zoomed in.
+    constexpr double kStraightPixels = 4.0;
+    const double tolerance = ctx.worldPerPixel * kStraightPixels;
+
+    // Endpoints snapped, interior points left alone. The ends are what joins to other geometry;
+    // the middle only decides the shape, and snapping it would drag the fit towards whatever
+    // happened to be nearby.
+    std::vector<Point> sampled(points.begin(), points.end());
+    if (const auto snapped = snap(ctx, sampled.front())) sampled.front() = *snapped;
+    if (const auto snapped = snap(ctx, sampled.back())) sampled.back() = *snapped;
+
+    // A chain in progress wins over the stroke's own start: lifting the pen and starting the next
+    // stroke a little away from the last endpoint must still continue the chain, or a hand that is
+    // one pixel off produces an open profile — the failure MODELLING_UX.md §2b documents.
+    if (pending_) sampled.front() = *pending_;
+
+    const StrokeFit fit = fitStroke(sampled, tolerance);
+    out.used = true;
+
+    if (fit.kind == StrokeKind::Nothing) {
+        out.status = "That stroke was too short to draw anything.";
+        return out;
+    }
+
+    if (fit.kind == StrokeKind::Arc) {
+        const auto id = ctx.sketch->addArc(fit.centre[0], fit.centre[1], fit.radius, fit.startAngle,
+                                           fit.endAngle);
+        // Which END of the arc the stroke started at, since `fitStroke` may have swapped them to
+        // express a clockwise stroke as a counter-clockwise arc. Joining the wrong one connects the
+        // chain to the far end and the profile crosses itself.
+        const bool startIsFirst =
+            std::hypot(fit.centre[0] + fit.radius * std::cos(fit.startAngle) - fit.start[0],
+                       fit.centre[1] + fit.radius * std::sin(fit.startAngle) - fit.start[1])
+            < std::hypot(fit.centre[0] + fit.radius * std::cos(fit.endAngle) - fit.start[0],
+                         fit.centre[1] + fit.radius * std::sin(fit.endAngle) - fit.start[1]);
+        join(ctx, id, startIsFirst ? sketch::PointRef::Start : sketch::PointRef::End,
+             /*smooth=*/true);
+        lastGeo_ = id;
+        lastPoint_ = startIsFirst ? sketch::PointRef::End : sketch::PointRef::Start;
+        out.status = "Arc";
+    } else {
+        const auto id = ctx.sketch->addLine(fit.start[0], fit.start[1], fit.end[0], fit.end[1]);
+        infer(ctx, id, fit.start, fit.end);
+        join(ctx, id, sketch::PointRef::Start);
+        lastGeo_ = id;
+        lastPoint_ = sketch::PointRef::End;
+        out.status = "Line";
+    }
+
+    out.geometryChanged = true;
+    pending_ = fit.end;
+    hover_ = fit.end;
+    input_.clear();
+    locked_.reset();
+
+    if (closesLoop(ctx, fit.end)) {
+        endChain();
+        out.status += ": profile closed";
+    }
+    return out;
+}
+
 SketchDrawing::Outcome SketchDrawing::click(const Context& ctx, Point at) {
     Outcome out;
     if (ctx.sketch == nullptr || tool_ == Tool::Select) return out;
@@ -156,6 +248,12 @@ SketchDrawing::Outcome SketchDrawing::click(const Context& ctx, Point at) {
     } else {
         const auto id = ctx.sketch->addLine(first[0], first[1], at[0], at[1]);
         infer(ctx, id, first, at);
+        // The same join a stroke makes. Clicking and drawing are two ways to extend ONE chain, so
+        // they must leave it in the same state — otherwise a click after a stroke silently loses
+        // the connection and the profile will not close.
+        join(ctx, id, sketch::PointRef::Start);
+        lastGeo_ = id;
+        lastPoint_ = sketch::PointRef::End;
         if (locked_) {
             // DRIVING, like a typed dimension. A locked length the solver may undo was never
             // locked — it was a coincidence that held until something moved.
@@ -266,6 +364,12 @@ SketchDrawing::Outcome SketchDrawing::commitTyped(const Context& ctx) {
     } else {
         const auto id = ctx.sketch->addLine(first[0], first[1], at[0], at[1]);
         infer(ctx, id, first, at);
+        // The same join a stroke makes. Clicking and drawing are two ways to extend ONE chain, so
+        // they must leave it in the same state — otherwise a click after a stroke silently loses
+        // the connection and the profile will not close.
+        join(ctx, id, sketch::PointRef::Start);
+        lastGeo_ = id;
+        lastPoint_ = sketch::PointRef::End;
         ctx.sketch->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End, value);
         // Typing a length ends the segment but CONTINUES the chain, exactly as a click does.
         pending_ = at;

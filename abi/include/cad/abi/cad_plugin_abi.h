@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 21
+#define CAD_ABI_VERSION_MINOR 22
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -776,6 +776,11 @@ typedef uint64_t CadSketch;
 #define CAD_CON_EQUAL_LENGTH  8
 #define CAD_CON_LOCK_X        9
 #define CAD_CON_LOCK_Y       10
+/* Two curves meet smoothly where their named points coincide. ADDED IN 1.22 — appended, because
+   these values are positional and a plugin compiled against 1.21 must keep meaning what it meant.
+   Pass both point refs; a plugin that wants a rounded corner adds coincidence as well, since
+   tangency alone aligns directions without bringing the curves together. */
+#define CAD_CON_TANGENT      11
 
 typedef struct {
     int32_t  solved;

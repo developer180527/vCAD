@@ -24,6 +24,7 @@
 #include "cad/units/Units.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <utility>
@@ -233,6 +234,144 @@ int main() {
                         [&](const render::IPicker::ApertureHit& h) { return h.element == hit.element; });
         std::printf("%s  the aperture contains the centre pick\n", containsCentre ? "PASS" : "FAIL");
         if (!containsCentre) pickOk = false;
+    }
+
+    // ── IS A SELECTED EDGE ACTUALLY VISIBLE? ─────────────────────────────────────────────
+    //
+    // Reported as "the highlight is barely visible". A line primitive is one physical pixel wide, so
+    // recolouring it changes a hair among a hundred hairs. Counting the pixels that carry the
+    // selection tint is the only way to tell "applied" from "visible" — the eye is exactly what is
+    // in dispute.
+    {
+        scene.clearHighlights();
+        // One EDGE element, found through the mesh rather than guessed: the fillet renumbers
+        // everything, so a hard-coded slot would silently highlight a face.
+        std::uint32_t edgeSlot = 0;
+        bool haveEdge = false;
+        const auto shownObj = doc.find(shown);
+        for (std::uint32_t slot = 0; slot < scene.frame().elementCount && !haveEdge; ++slot) {
+            render::IPicker::Hit probe;
+            probe.element = slot;
+            probe.valid = true;
+            const auto name = scene.resolve(probe);
+            if (!name || shownObj == nullptr || shownObj->output() == nullptr) continue;
+            const auto resolved = shownObj->output()->map.resolve(*name);
+            if (resolved && resolved->type() == kernel::ShapeType::Edge) {
+                edgeSlot = slot;
+                haveEdge = true;
+            }
+        }
+        if (haveEdge) {
+            // EVERY edge slot in turn, keeping the largest change.
+            //
+            // Highlighting one arbitrary edge measures nothing: about half of a box's edges face
+            // away from the camera and are correctly hidden, so selecting one changes no pixels and
+            // the test would report a bug that is not there. The question is whether selecting a
+            // VISIBLE edge is unmistakable, so the measurement takes the best case and the
+            // threshold does the judging.
+            gpu.frames->submit(scene.frame());
+            auto before = backend.captureFrame();
+
+            std::size_t best = 0;
+            std::uint32_t bestSlot = 0;
+            const auto shownForEdges = doc.find(shown);
+            for (std::uint32_t slot = 0; slot < scene.frame().elementCount; ++slot) {
+                render::IPicker::Hit probe;
+                probe.element = slot;
+                probe.valid = true;
+                const auto name = scene.resolve(probe);
+                if (!name || shownForEdges == nullptr || shownForEdges->output() == nullptr) continue;
+                const auto resolved = shownForEdges->output()->map.resolve(*name);
+                if (!resolved || resolved->type() != kernel::ShapeType::Edge) continue;
+
+                scene.clearHighlights();
+                scene.setHighlight(slot, render::Highlight::Selected);
+                gpu.frames->submit(scene.frame());
+                auto after = backend.captureFrame();
+                if (!before || !after || before.value().size() != after.value().size()) continue;
+
+                std::size_t changed = 0;
+                const auto& a = before.value();
+                const auto& b = after.value();
+                for (std::size_t i = 0; i + 3 < a.size(); i += 4) {
+                    if (a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2]) ++changed;
+                }
+                if (changed > best) {
+                    best = changed;
+                    bestSlot = slot;
+                }
+            }
+
+            std::printf("the most visible edge (slot %u) changes %zu pixel(s) when selected\n",
+                        bestSlot, best);
+            // An unthickened edge across this view is roughly 300 pixels, and MSAA means only some
+            // of them change materially. Three times that is the point of the thickening pass.
+            if (best < 900) {
+                std::fprintf(stderr, "FAIL: selecting an edge changes only %zu pixels — that is the "
+                                     "'barely visible' complaint, measured.\n", best);
+                pickOk = false;
+            } else {
+                std::printf("PASS  a selected edge is unmistakable (%zu pixels change)\n", best);
+            }
+        }
+        scene.clearHighlights();
+    }
+
+    // ── HOW LONG A PICK TAKES ────────────────────────────────────────────────────────────
+    //
+    // Reported from the iPad as "selection is too slow". Measured here rather than guessed at,
+    // because there are two candidate costs and they have completely different fixes: re-rendering
+    // the scene into the id buffer, and reading that buffer back across the bus.
+    {
+        const auto started = std::chrono::steady_clock::now();
+        constexpr int kPicks = 20;
+        for (int i = 0; i < kPicks; ++i) {
+            std::vector<render::IPicker::ApertureHit> timing;
+            gpu.picker->pickAperture(scene.frame(), cx, cy, 44, timing);
+        }
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - started).count() / kPicks;
+        std::printf("aperture pick: %.2f ms each (%u x %u viewport)\n", ms,
+                    config.viewport.width, config.viewport.height);
+    }
+
+    // ── ARE EDGES IN THE ID BUFFER AT ALL? ───────────────────────────────────────────────
+    //
+    // Reported as "I cannot reliably select edges". They were not unreliable: the pick pass drew
+    // only the shaded batches, so an edge was never rasterised into the buffer being read and could
+    // never be under the pointer. Every apparent success was the FACE behind the edge.
+    //
+    // A wide aperture at the centre of the screen, which certainly overlaps several edges of a
+    // filleted box, and then a count of what kind each candidate resolves to.
+    std::printf("scene: %zu shaded batch(es), %zu edge batch(es), showEdges=%d\n",
+                scene.frame().batches.size(), scene.frame().edgeBatches.size(),
+                scene.frame().showEdges ? 1 : 0);
+    {
+        std::vector<render::IPicker::ApertureHit> wide;
+        gpu.picker->pickAperture(scene.frame(), cx, cy, 200, wide);
+        std::size_t faces = 0, edges = 0, other = 0;
+        const auto shownObject = doc.find(shown);
+        for (const auto& h : wide) {
+            render::IPicker::Hit raw;
+            raw.element = h.element;
+            raw.valid = true;
+            const auto name = scene.resolve(raw);
+            if (!name || shownObject == nullptr || shownObject->output() == nullptr) { ++other; continue; }
+            const auto resolved = shownObject->output()->map.resolve(*name);
+            if (!resolved) { ++other; continue; }
+            if (resolved->type() == kernel::ShapeType::Edge) ++edges;
+            else if (resolved->type() == kernel::ShapeType::Face) ++faces;
+            else ++other;
+        }
+        std::printf("wide aperture: %zu candidates — %zu face(s), %zu edge(s), %zu other\n",
+                    wide.size(), faces, edges, other);
+        if (edges == 0) {
+            std::fprintf(stderr, "FAIL: no edge is reachable by picking. Edge selection cannot "
+                                 "work — the pick pass is not drawing the edge batches.\n");
+            pickOk = false;
+        } else {
+            std::printf("PASS  edges are pickable (%zu of them under a wide aperture)\n", edges);
+        }
     }
 
     // A tap NEAR the silhouette, which is the case touch exists for: 20 pixels outside the body,

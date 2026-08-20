@@ -73,6 +73,7 @@ const char* toString(ConstraintKind k) noexcept {
         case ConstraintKind::EqualLength:   return "equallength";
         case ConstraintKind::LockX:         return "lockx";
         case ConstraintKind::LockY:         return "locky";
+        case ConstraintKind::Tangent:       return "tangent";
     }
     return "coincident";
 }
@@ -195,6 +196,9 @@ std::size_t Sketch::parallel(GeoId l1, GeoId l2) {
 std::size_t Sketch::perpendicular(GeoId l1, GeoId l2) {
     return push(constraints_,
                 {ConstraintKind::Perpendicular, l1, PointRef::Start, l2, PointRef::Start, 0.0});
+}
+std::size_t Sketch::tangent(GeoId a, PointRef ap, GeoId b, PointRef bp) {
+    return push(constraints_, {ConstraintKind::Tangent, a, ap, b, bp, 0.0});
 }
 std::size_t Sketch::distance(GeoId a, PointRef ap, GeoId b, PointRef bp, double value) {
     return push(constraints_, {ConstraintKind::Distance, a, ap, b, bp, value});
@@ -344,6 +348,21 @@ SolveReport Sketch::solve() {
         }
         return nullptr;
     };
+    // Any curve, as the base type planegcs's via-point constraints take. Lines, circles and arcs
+    // all derive from GCS::Curve; a Point does not, and returning null for one is right — a point
+    // has no direction to be tangent to.
+    const auto gcsCurve = [&](GeoId id) -> GCS::Curve* {
+        for (std::size_t i = 0; i < ids_.size(); ++i) {
+            if (ids_[i] != id) continue;
+            switch (mapping[i].kind) {
+                case GeoKind::Line:   return &lines[mapping[i].index];
+                case GeoKind::Circle: return &circles[mapping[i].index];
+                case GeoKind::Arc:    return &arcs[mapping[i].index];
+                case GeoKind::Point:  return nullptr;
+            }
+        }
+        return nullptr;
+    };
     const auto gcsRadius = [&](GeoId id) -> GCS::Circle* {
         for (std::size_t i = 0; i < ids_.size(); ++i) {
             if (ids_[i] != id) continue;
@@ -390,6 +409,20 @@ SolveReport Sketch::solve() {
                 auto* l1 = gcsLine(c.a);
                 auto* l2 = gcsLine(c.b);
                 if (l1 != nullptr && l2 != nullptr) sys.addConstraintPerpendicular(*l1, *l2, tag);
+                break;
+            }
+            case ConstraintKind::Tangent: {
+                // Tangency AT A POINT, expressed as "the angle between these two curves, measured
+                // at this point, is zero". That is how FreeCAD's own sketcher does endpoint
+                // tangency, and it is the only form planegcs offers that keeps the contact point
+                // where the user drew it: addConstraintTangent(Line&, Arc&) constrains the curves
+                // to touch SOMEWHERE, which lets the arc slide along the line.
+                auto* c1 = gcsCurve(c.a);
+                auto* c2 = gcsCurve(c.b);
+                auto* at = gcsPoint(c.a, c.aPoint);
+                if (c1 != nullptr && c2 != nullptr && at != nullptr) {
+                    sys.addConstraintAngleViaPoint(*c1, *c2, *at, value(0.0), tag);
+                }
                 break;
             }
             case ConstraintKind::Distance: {
@@ -874,6 +907,7 @@ kernel::Result<Sketch> Sketch::deserialize(std::string_view text) {
             else if (kindName == "vertical") c.kind = ConstraintKind::Vertical;
             else if (kindName == "parallel") c.kind = ConstraintKind::Parallel;
             else if (kindName == "perpendicular") c.kind = ConstraintKind::Perpendicular;
+            else if (kindName == "tangent") c.kind = ConstraintKind::Tangent;
             else if (kindName == "distance") c.kind = ConstraintKind::Distance;
             else if (kindName == "radius") c.kind = ConstraintKind::Radius;
             else if (kindName == "pointonline") c.kind = ConstraintKind::PointOnLine;

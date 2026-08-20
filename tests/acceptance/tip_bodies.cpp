@@ -115,3 +115,49 @@ TEST_CASE("two independent bodies both stay visible", "[app][tip]") {
     INFO("objects: " << after.objects << " instances: " << after.instances);
     CHECK(after.instances == 2);
 }
+
+TEST_CASE("sketching on a face does not make the body disappear", "[app][tip][sketch]") {
+    // Reported from the iPad: start a sketch on the top of a cylinder and the cylinder vanishes —
+    // and stays gone after the sketch is finished.
+    //
+    // NOT an iPad bug. The rule above hid any object that a computed dependent referred to, and a
+    // sketch placed on a face refers to its body so that the face is a real dependency rather than
+    // a string. The sketch computes fine, so the body was marked consumed.
+    //
+    // Consumption means REPLACEMENT: a fillet replaces the box it rounded. A sketch replaces
+    // nothing — it is reference geometry that happens to be attached to something. Anything that
+    // produces no solid is in the same position: datum planes, construction geometry, and every
+    // surface feature that will ever be added.
+    app::Controller c;
+    REQUIRE(run(c, "feature.cylinder"));
+    REQUIRE(c.stats().instances == 1);
+
+    const document::ObjectId bodyId = firstOfType(c, "Cylinder");
+    REQUIRE(bodyId != document::ObjectId{});
+
+    // The face name is taken from the body's own map rather than invented, so this test exercises
+    // the same reference the shell builds from a pick.
+    const auto body = c.document().find(bodyId);
+    REQUIRE(body != nullptr);
+    REQUIRE(body->output() != nullptr);
+    std::string faceName;
+    for (const auto& name : body->output()->map.allNames()) {
+        const auto shape = body->output()->map.resolve(name);
+        if (shape && shape->type() == kernel::ShapeType::Face) {
+            faceName = name.toString();
+            break;
+        }
+    }
+    REQUIRE_FALSE(faceName.empty());
+
+    const auto sketchId = c.addSketchOnFace(bodyId, faceName);
+    REQUIRE(sketchId != document::ObjectId{});
+
+    INFO("instances after sketching on the face: " << c.stats().instances);
+    CHECK(c.stats().instances >= 1);   // the body is still drawn
+
+    // And after finishing the sketch, which is when the user noticed it was permanent.
+    c.editSketch(sketchId);
+    c.finishSketch();
+    CHECK(c.stats().instances >= 1);
+}

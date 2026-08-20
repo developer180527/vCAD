@@ -18,12 +18,16 @@ struct ViewportView: UIViewRepresentable {
     /// evaluated exactly once — before the view has been laid out, so necessarily before the
     /// renderer can have started — and never again unless some other state happens to change.
     let onStarted: (Bool, String) -> Void
+    /// Offered a tap before selection sees it, in view points. Returns true when it was consumed —
+    /// which is how "the next tap chooses the sketch plane" works without a mode inside the bridge.
+    let onPlaneTap: (CGFloat, CGFloat) -> Bool
 
     func makeUIView(context: Context) -> CadViewportView {
         let view = CadViewportView(frame: .zero)
         view.onStatus = { onStatus($0) }
         view.onDocumentChanged = { onDocumentChanged() }
         view.onStarted = { ok, error in onStarted(ok, error) }
+        view.onTap = { x, y in onPlaneTap(x, y) }
         // `start()` is NOT called here. A view has no size until it is laid out, and a renderer
         // brought up against a zero-sized drawable initialises into nothing. The view starts itself
         // from `layoutSubviews`, which is also what makes rotation and Slide Over work.

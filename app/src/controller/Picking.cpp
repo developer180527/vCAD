@@ -135,6 +135,7 @@ void Controller::alignViewTo(const sketch::SketchFrame& frame) {
 
 const char* toString(Controller::SelectionLevel level) noexcept {
     switch (level) {
+        case Controller::SelectionLevel::Auto:   return "Auto";
         case Controller::SelectionLevel::Body:   return "Body";
         case Controller::SelectionLevel::Face:   return "Face";
         case Controller::SelectionLevel::Edge:   return "Edge";
@@ -149,6 +150,8 @@ namespace {
 /// piece of geometry, which is why it is handled separately everywhere below.
 std::optional<kernel::ShapeType> topologyFor(Controller::SelectionLevel level) {
     switch (level) {
+        // Auto has no fixed answer: what it resolves to is decided per pick, by what was hit.
+        case Controller::SelectionLevel::Auto: return std::nullopt;
         case Controller::SelectionLevel::Face:   return kernel::ShapeType::Face;
         case Controller::SelectionLevel::Edge:   return kernel::ShapeType::Edge;
         case Controller::SelectionLevel::Vertex: return kernel::ShapeType::Vertex;
@@ -266,6 +269,31 @@ Controller::ClickResult Controller::applyPick(const Pick& pick, bool additive) {
     // user first switching the selection filter to Face.
     if (!pick.object.isNull() && !pick.element.isNull()) {
         lastPicked_ = ElementSelection{pick.object, pick.element, pick.slot};
+    }
+
+    // Auto selects the ELEMENT that was hit — the vertex, edge or face the ranking chose — rather
+    // than asking the user to declare a level first. Body remains reachable through the level
+    // parameter, which is what a double tap uses.
+    if (selectionLevel_ == SelectionLevel::Auto && !pick.element.isNull() && !pick.object.isNull()) {
+        const auto object = history_.current().find(pick.object);
+        if (object && object->output() != nullptr) {
+            if (const auto shape = object->output()->map.resolve(pick.element)) {
+                if (!additive) elementSelection_.clear();
+                const auto same = [&](const ElementSelection& e) { return e.element == pick.element; };
+                const auto it = std::find_if(elementSelection_.begin(), elementSelection_.end(), same);
+                if (it != elementSelection_.end()) {
+                    elementSelection_.erase(it);
+                    out.message = "Deselected";
+                } else {
+                    elementSelection_.push_back({pick.object, pick.element, pick.slot});
+                    out.message = std::string("Selected ") + kernel::toString(shape->type());
+                }
+                out.changed = true;
+                refreshHighlights();
+                notifyDocument();
+                return out;
+            }
+        }
     }
 
     if (selectionLevel_ == SelectionLevel::Body) {
@@ -414,6 +442,19 @@ std::vector<Controller::Candidate> Controller::candidatesAt(std::uint32_t x, std
 }
 
 Controller::ClickResult Controller::tapAt(std::uint32_t x, std::uint32_t y,
+                                          std::uint32_t radiusPixels, bool additive,
+                                          SelectionLevel level) {
+    // Swapped for the duration of the call rather than duplicating applyPick. The level is what
+    // "resolves to" MEANS, and threading it through every function below would be the same
+    // substitution written four more times.
+    const SelectionLevel previous = selectionLevel_;
+    selectionLevel_ = level;
+    auto out = tapAt(x, y, radiusPixels, additive);
+    selectionLevel_ = previous;
+    return out;
+}
+
+Controller::ClickResult Controller::tapAt(std::uint32_t x, std::uint32_t y,
                                           std::uint32_t radiusPixels, bool additive) {
     const auto candidates = candidatesAt(x, y, radiusPixels);
 
@@ -426,6 +467,7 @@ Controller::ClickResult Controller::tapAt(std::uint32_t x, std::uint32_t y,
         pick.depth = candidates.front().depth;
     }
     auto out = applyPick(pick, additive);
+    out.candidates = candidates.size();
     // Said out loud when the tap was ambiguous, because that is when a shell should be offering
     // the rest of the list — and when a user who got the wrong thing needs to know there was a
     // choice rather than concluding the picker is inaccurate.
@@ -435,10 +477,23 @@ Controller::ClickResult Controller::tapAt(std::uint32_t x, std::uint32_t y,
     return out;
 }
 
-bool Controller::hoverAt(std::uint32_t x, std::uint32_t y) {
-    const Pick pick = pickAt(x, y);
-    const std::optional<std::uint32_t> now =
-        pick.hit ? std::optional<std::uint32_t>{pick.slot} : std::nullopt;
+bool Controller::hoverAt(std::uint32_t x, std::uint32_t y) { return hoverAt(x, y, 0); }
+
+bool Controller::hoverAt(std::uint32_t x, std::uint32_t y, std::uint32_t radiusPixels) {
+    // The SAME aperture and the SAME ranking a click uses.
+    //
+    // Hover and click must agree, and with a one-pixel hover they could not: the pointer would
+    // pre-highlight the face while the click a moment later selected the edge crossing it, because
+    // only one of the two had a tolerance. Pre-highlight exists to answer "what will this click
+    // take" — an answer arrived at by a different rule is not an answer.
+    std::optional<std::uint32_t> now;
+    if (radiusPixels == 0) {
+        const Pick pick = pickAt(x, y);
+        if (pick.hit) now = pick.slot;
+    } else {
+        const auto candidates = candidatesAt(x, y, radiusPixels);
+        if (!candidates.empty()) now = candidates.front().slot;
+    }
     if (now == hoveredSlot_) return false;   // the shell repaints on the return value, not per event
     hoveredSlot_ = now;
     refreshHighlights();

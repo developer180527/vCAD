@@ -144,6 +144,13 @@ enum class ConstraintKind : std::uint8_t {
     EqualLength,    ///< two lines, same length
     LockX,          ///< a point's x is fixed at `value`
     LockY,          ///< a point's y is fixed at `value`
+    /// Two curves meet smoothly where their named points coincide.
+    ///
+    /// AT A POINT, not "tangent somewhere". The plain form — a line touching a circle anywhere —
+    /// is a different constraint with different behaviour, and the one a chain needs is this one:
+    /// the arc leaves the line in the direction the line was already going. Appended rather than
+    /// inserted, because the ABI's CAD_CON_* values are positional.
+    Tangent,
 };
 
 struct Constraint {
@@ -237,6 +244,13 @@ public:
     std::size_t equalLength(GeoId l1, GeoId l2);
     std::size_t lockX(GeoId g, PointRef pp, double value);
     std::size_t lockY(GeoId g, PointRef pp, double value);
+
+    /// Makes `a` and `b` meet smoothly at the point where `ap` and `bp` coincide.
+    ///
+    /// Does NOT imply coincidence — the caller adds that too, and both are needed: tangency alone
+    /// aligns the directions of two curves that may be nowhere near each other. Applied together
+    /// they are what makes a rounded corner behave like a corner when a dimension changes.
+    std::size_t tangent(GeoId a, PointRef ap, GeoId b, PointRef bp);
 
     [[nodiscard]] const std::vector<Constraint>& constraints() const noexcept {
         return constraints_;

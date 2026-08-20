@@ -68,6 +68,34 @@ NS_ASSUME_NONNULL_BEGIN
 /// One row per model-tree item: `label`, `kind`, `state`.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)tree;
 
+/// Whether a stylus has been used at any point in this session.
+///
+/// # Stylus-preferred, not stylus-only
+///
+/// The pen draws and the hand navigates — that is the rule, and it needs no modes and no timers.
+/// But an iPad with no stylus, or an Android tablet whose stylus does not report as one, would then
+/// have NO way to sketch at all, which is a dead end rather than a degraded experience.
+///
+/// So: once a stylus has touched the screen, a finger never draws again — the user has an
+/// instrument and the roles are fixed. Until then, inside the sketch environment, one finger draws
+/// and two navigate. The rule is still "what is touching the screen", never "for how long".
+@property(nonatomic, readonly) BOOL stylusSeen;
+
+/// Whether a sketch is open, so the shell can show the sketch chrome.
+@property(nonatomic, readonly) BOOL sketching;
+
+/// Starts a sketch on the face or plane under a point, in POINTS.
+///
+/// The order every CAD application uses: pick the surface, then draw on it. Returns NO and reports
+/// why through `onStatus` when the target is not something a sketch can sit on — a curved face, an
+/// edge, or empty space.
+/// Takes a POINT rather than two coordinates so Swift imports it as `beginSketch(at:)`. The
+/// two-argument form arrives as `beginSketchAtX(_:y:)`, which reads like a typo at every call site.
+- (BOOL)beginSketchAt:(CGPoint)point;
+
+- (void)finishSketch;
+- (void)cancelSketch;
+
 /// Tears down the renderer and the document, deterministically.
 ///
 /// **bgfx is a process-wide singleton.** One context, one `bgfx::init`. So a viewport that is still
@@ -89,6 +117,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// — ranking the candidates, honouring the selection level, toggling an already-selected element —
 /// is `Controller::tapAt`, shared. See docs/design/SELECTION.md.
 - (void)tapAtX:(CGFloat)x y:(CGFloat)y;
+
+/// A double tap selects the whole BODY under the point.
+///
+/// The tablet convention, and the reason a single tap can be finer-grained: one tap takes the
+/// vertex, edge or face you touched; two take the part it belongs to. Without the second gesture a
+/// tablet needs a persistent selection-filter control, which is the desktop's answer and costs
+/// screen a tablet cannot spare.
+- (void)doubleTapAtX:(CGFloat)x y:(CGFloat)y;
 
 /// Everything under a point, best first: `label`, `slot`, `kind`.
 ///
@@ -121,6 +157,13 @@ NS_ASSUME_NONNULL_BEGIN
 ///
 /// Which is worse than the bug it was added to catch: it makes a working renderer look broken.
 @property(nonatomic, copy, nullable) void (^onStarted)(BOOL ok, NSString *error);
+
+/// Offered every tap BEFORE selection sees it, in view points. Return YES to consume it.
+///
+/// The seam that lets "the next tap chooses a sketch plane" live in the shell, where the button
+/// that started it lives, rather than as a mode flag inside this class. A bridge that knew about
+/// pending UI intentions would be a second place where interaction state lives.
+@property(nonatomic, copy, nullable) BOOL (^onTap)(CGFloat x, CGFloat y);
 
 /// Called after the document changes, so the shell can refresh its tree without polling.
 @property(nonatomic, copy, nullable) void (^onDocumentChanged)(void);

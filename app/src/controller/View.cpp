@@ -84,6 +84,13 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     // resizes, and keeping it Apple-only means Windows and X11 silently render at 1.0 on a
     // high-DPI display.
     viewportScale_ = scale;
+    // Into the VIEWPORT as well, not only kept beside it.
+    //
+    // `Viewport::devicePixelRatio` existed and was never assigned, so every consumer read 1.0 on
+    // every platform — a field that describes the display and always lies about it. The selection
+    // halo scales by it, which is how the omission surfaced: the highlight came out a half-point
+    // hair on exactly the Retina screens it was widened for.
+    viewport_.devicePixelRatio = static_cast<float>(scale);
 
 #if defined(__APPLE__)
     // A CAMetalLayer, never the view: bgfx::init parks the calling thread waiting for the render
@@ -102,6 +109,9 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     config.offscreen = surface_ == nullptr;
     config.viewport.width = w;
     config.viewport.height = h;
+    // The backend needs the display's scale, not only its pixel count: the selection halo is sized
+    // in logical pixels and expands by this.
+    config.viewport.devicePixelRatio = static_cast<float>(scale);
 
     if (auto r = gpu->initialise(config); !r) {
         releaseSurface();

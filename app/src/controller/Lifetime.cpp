@@ -248,13 +248,29 @@ void Controller::refresh() {
         const auto object = doc.find(id);
         if (!object || object->output() == nullptr) continue;
 
-        // Consumed if anything that depends on it actually produced a body. A dependent that FAILED
-        // consumes nothing, so its input stays visible — otherwise a broken fillet would make the
-        // part disappear, which is the worst possible response to a failed operation.
+        // Consumed if a dependent produced a SOLID that stands in this one's place.
+        //
+        // Two conditions, and both were learned from a bug:
+        //
+        // A dependent that FAILED consumes nothing, so its input stays visible — otherwise a broken
+        // fillet makes the part disappear, which is the worst possible response to a failed
+        // operation.
+        //
+        // A dependent that produced no SOLID consumes nothing either, and this is the one that was
+        // missing. Consumption means REPLACEMENT: a fillet replaces the box it rounded. A sketch
+        // placed on a face refers to its body — deliberately, so the face is a real dependency and
+        // not a string — and replaces nothing at all. Under the old rule, starting a sketch on a
+        // face made the body vanish, and finishing the sketch did not bring it back, because the
+        // reference is permanent. Reported from the iPad as "the sketch is corrupting the data";
+        // the data was intact and only the drawing was wrong.
+        //
+        // Measured by volume rather than by feature type, so this stays right for everything that
+        // comes later: datum planes, construction geometry, and every surface feature that will
+        // ever exist are all reference rather than replacement, and none of them has a volume.
         bool consumed = false;
         for (const ObjectId dependent : doc.dependents(id)) {
             const auto other = doc.find(dependent);
-            if (other && other->output() != nullptr) {
+            if (other && other->output() != nullptr && other->output()->shape.volume() > 0.0) {
                 consumed = true;
                 break;
             }

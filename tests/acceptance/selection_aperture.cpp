@@ -126,3 +126,33 @@ TEST_CASE("a tap with no aperture hit clears the selection like a click", "[sele
     CHECK_FALSE(result.hit);
     CHECK(controller.selection().empty());
 }
+
+TEST_CASE("Auto selects the element hit; Body selects the whole part", "[selection][auto]") {
+    // The rule both shells now use, and the reason neither needs its own version of it. The iPad
+    // reaches Body through a double tap and the desktop through a double click or the filter bar;
+    // underneath, both are this one call with a different level.
+    Controller controller;
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+    controller.clearSelection();
+
+    // The null picker has no rasteriser by design, so the slot is scripted — what this exercises is
+    // everything ABOVE the pick: resolving a slot to an element, and what each level does with it.
+    controller.scriptNextPick(0, true);
+    controller.setSelectionLevel(Controller::SelectionLevel::Auto);
+    const auto autoTap = controller.tapAt(100, 100, 44, /*additive=*/false);
+    INFO("auto: " << autoTap.message);
+    CHECK(autoTap.hit);
+    CHECK_FALSE(controller.elementSelection().empty());   // a face or an edge, not the body
+
+    controller.clearSelection();
+    controller.scriptNextPick(0, true);
+    const auto bodyTap =
+        controller.tapAt(100, 100, 44, /*additive=*/false, Controller::SelectionLevel::Body);
+    INFO("body: " << bodyTap.message);
+    CHECK(bodyTap.hit);
+    CHECK_FALSE(controller.selection().empty());          // the object itself
+
+    // And the override is temporary: the level the user chose is still in force afterwards.
+    CHECK(controller.selectionLevel() == Controller::SelectionLevel::Auto);
+}
