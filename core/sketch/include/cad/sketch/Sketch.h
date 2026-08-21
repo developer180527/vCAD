@@ -257,6 +257,13 @@ public:
     }
     void removeConstraint(std::size_t index);
 
+    /// Changes a dimension's value: the number a Distance or Radius drives the geometry to.
+    ///
+    /// This is what makes a dimension a PARAMETER rather than a record of how something was drawn.
+    /// Returns false for an index that is not a dimension, because silently ignoring the call would
+    /// leave the caller believing the model changed.
+    bool setConstraintValue(std::size_t index, double value);
+
     // ── solving ───────────────────────────────────────────────────────────────────────────
 
     /// Solves in place: on success the geometry holds the solved positions.

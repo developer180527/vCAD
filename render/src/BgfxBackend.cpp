@@ -815,12 +815,18 @@ void BgfxBackend::Impl::applyShadingUniforms() {
 }
 
 void BgfxBackend::Impl::syncHighlights(std::span<const Highlight> highlights) {
-    // Recorded so the thickening pass below can be skipped entirely when nothing is selected,
-    // which is most of the time. A scan of the table is a byte compare per element — cheap beside
-    // an extra pass over every line in the scene.
+    // SELECTION only, not hover.
+    //
+    // The thickening pass draws the whole edge stream eight more times, so what turns it on decides
+    // what it costs. Hover changes on every pointer move, so keying it on "anything highlighted"
+    // meant that resting the pointer on an 8k-part scene submitted 1.19M lines nine times per frame
+    // — for a halo around one element.
+    //
+    // Selection is a state the user chose and left behind; hover is a transient preview and the
+    // recolour alone carries it. So the halo follows the selection.
     highlightsActive = false;
     for (const Highlight h : highlights) {
-        if (h != Highlight::None) {
+        if (h == Highlight::Selected || h == Highlight::Error) {
             highlightsActive = true;
             break;
         }

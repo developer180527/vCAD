@@ -93,6 +93,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// two-argument form arrives as `beginSketchAtX(_:y:)`, which reads like a typo at every call site.
 - (BOOL)beginSketchAt:(CGPoint)point;
 
+/// Chooses the drawing tool while a sketch is open: "line", "circle" or "rectangle".
+///
+/// Strings rather than an enum, for the same reason commands are addressed by id: the shell should
+/// not carry a second copy of a vocabulary the shared layer already owns.
+- (void)setSketchTool:(NSString *)tool;
+
+/// Which tool is active, or an empty string outside a sketch.
+@property(nonatomic, readonly, copy) NSString *sketchTool;
+
 - (void)finishSketch;
 - (void)cancelSketch;
 

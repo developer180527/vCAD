@@ -152,6 +152,67 @@ int main(int argc, char** argv) {
         check(selected, "clicking the viewport selects what is under the pointer");
     }
 
+    // ── drawing in the viewport ──────────────────────────────────────────────────────────
+    //
+    // Reported from the desktop: "multiple lines appear when drawing". Three clicks along a chain
+    // must produce exactly two segments, and counting them is the only way to tell a rendering
+    // artefact from geometry that is really there.
+    //
+    // NOT gated on canPick, unlike the block above, because drawing does not go through the picker.
+    // A click in a sketch reaches `Controller::sketchPointAt`, which intersects a camera ray with
+    // the sketch plane -- pure maths, needing no renderer, no id buffer and no instances on screen.
+    //
+    // It WAS gated on canPick, and on a machine where the renderer comes up null that skipped these
+    // two checks while the probe still printed "all shell wiring checks passed". A check that
+    // quietly does not run is worth less than no check, because it is counted as evidence. This
+    // block needs a controller and a viewport with a size, and both were asserted above.
+    {
+        for (const auto& command : controller->commands()) {
+            if (command.id == "feature.sketch" && command.invoke) {
+                command.invoke();
+                break;
+            }
+        }
+        QApplication::processEvents();
+        check(controller->environment() == cad::app::Environment::Sketch, "Start Sketch opens one");
+        controller->setSketchTool(cad::app::Controller::SketchTool::Line);
+
+        const double w = viewport->width();
+        const double h = viewport->height();
+        click(viewport, QPointF(w * 0.35, h * 0.40));
+        QApplication::processEvents();
+        click(viewport, QPointF(w * 0.60, h * 0.40));
+        QApplication::processEvents();
+        click(viewport, QPointF(w * 0.60, h * 0.62));
+        QApplication::processEvents();
+
+        const auto* sketch = controller->activeSketch();
+        const std::size_t drawn = sketch != nullptr ? sketch->geometry().size() : 0;
+        std::printf("     three clicks produced %zu piece(s) of geometry\n", drawn);
+        check(drawn == 2, "three chained clicks draw exactly two segments");
+
+        // Finish, then re-open the same sketch. While it is being edited the overlay draws its
+        // curves — so if the FEATURE is drawn as well, every line is on screen twice.
+        controller->finishSketch();
+        QApplication::processEvents();
+        cad::document::ObjectId sketchId;
+        for (const auto& item : controller->tree()) {
+            if (item.type == "Sketch") sketchId = item.id;
+        }
+        if (sketchId != cad::document::ObjectId{}) {
+            controller->editSketch(sketchId);
+            QApplication::processEvents();
+            bool featureDrawn = false;
+            for (const auto& item : controller->tree()) {
+                if (item.id == sketchId) featureDrawn = item.visible;
+            }
+            std::printf("     while editing, the sketch feature is %s\n",
+                        featureDrawn ? "ALSO drawn" : "hidden");
+            check(!featureDrawn, "the sketch being edited is not drawn twice");
+            controller->finishSketch();
+        }
+    }
+
     std::printf("\n%s\n", failures == 0 ? "all shell wiring checks passed"
                                         : "SHELL WIRING IS BROKEN");
     return failures == 0 ? 0 : 1;

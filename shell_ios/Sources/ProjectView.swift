@@ -57,6 +57,8 @@ struct ProjectView: View {
     /// Whether a sketch is open, and whether the next tap picks the plane to open it on.
     @State private var sketching = false
     @State private var choosingPlane = false
+    /// Which drawing tool is active while a sketch is open.
+    @State private var sketchTool = "line"
 
     private var labels: Bool { settings.toolLabels || revealingLabels }
 
@@ -160,6 +162,7 @@ struct ProjectView: View {
                 if viewport?.beginSketch(at: CGPoint(x: x, y: y)) == true {
                     choosingPlane = false
                     sketching = true
+                    sketchTool = viewport?.sketchTool ?? "line"
                     status = stylusHint
                 }
                 return true
@@ -309,6 +312,21 @@ struct ProjectView: View {
                 } : nil)
     }
 
+    /// A rail item that chooses a drawing tool, rather than running a command.
+    ///
+    /// Tools are not commands: a command happens once, a tool changes what the NEXT gesture means.
+    /// Keeping them apart is why the rail can show which one is active.
+    private func tool(_ title: String, _ symbol: String, _ id: String) -> RailItem {
+        RailItem(
+            title, symbol, selected: sketchTool == id,
+            action: viewport == nil
+                ? nil
+                : {
+                    viewport?.setSketchTool(id)
+                    sketchTool = id
+                })
+    }
+
     private func refreshCommandState() {
         guard let viewport else { return }
         var next: [String: Bool] = [:]
@@ -371,6 +389,20 @@ struct ProjectView: View {
         // canvas when labels are shown, and a fixed width would clip it — which is what put
         // "Display Modes" half off the right side of the screen.
         VStack(alignment: .leading, spacing: 12) {
+            // The SKETCH tools, present only while a sketch is open.
+            //
+            // A contextual group rather than a permanent one: outside a sketch these do nothing,
+            // and a rail of tools that are usually inert teaches the user to ignore the rail. The
+            // desktop does the same thing by swapping to a Sketch ribbon tab.
+            if sketching {
+                RailGroup(
+                    items: [
+                        tool("Line", "line.diagonal", "line"),
+                        tool("Rectangle", "rectangle", "rectangle"),
+                        tool("Circle", "circle", "circle"),
+                    ], showLabels: labels, edge: .leading)
+            }
+
             RailGroup(
                 items: [
                     command("Box", "cube", "feature.box"),

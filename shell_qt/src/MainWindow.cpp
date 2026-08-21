@@ -567,6 +567,10 @@ void MainWindow::rebuildRibbon() {
                 cad::app::Controller::SketchTool::Line, QStringLiteral("L"));
         addTool(tr("Circle"), QStringLiteral("circle"),
                 cad::app::Controller::SketchTool::Circle, QStringLiteral("C"));
+        // R for rectangle, as every CAD application binds it. Two clicks for opposite corners, or
+        // one drag — the same tool either way.
+        addTool(tr("Rectangle"), QStringLiteral("rectangle"),
+                cad::app::Controller::SketchTool::Rectangle, QStringLiteral("R"));
 
         // Look At: re-aim at the sketch plane. Entering a sketch already does this, but a user
         // orbits away to see the part in context and then wants back — without it the only way

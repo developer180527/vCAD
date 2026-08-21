@@ -278,7 +278,14 @@ Controller::ClickResult Controller::applyPick(const Pick& pick, bool additive) {
         const auto object = history_.current().find(pick.object);
         if (object && object->output() != nullptr) {
             if (const auto shape = object->output()->map.resolve(pick.element)) {
-                if (!additive) elementSelection_.clear();
+                if (!additive) {
+                    elementSelection_.clear();
+                    // AND the object selection. Leaving it made a replaced selection only look
+                    // replaced: a body selected by an earlier double tap stayed in selection_,
+                    // which is what commands like Fillet act on — so the next Fillet rounded a
+                    // body the user believed they had deselected.
+                    selection_.clear();
+                }
                 const auto same = [&](const ElementSelection& e) { return e.element == pick.element; };
                 const auto it = std::find_if(elementSelection_.begin(), elementSelection_.end(), same);
                 if (it != elementSelection_.end()) {

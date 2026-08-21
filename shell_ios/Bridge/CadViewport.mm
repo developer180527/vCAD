@@ -119,10 +119,18 @@
                                                          action:@selector(handleDoubleTap:)];
     _doubleTap.numberOfTapsRequired = 2;
     [self addGestureRecognizer:_doubleTap];
-    // The single tap waits for the double to fail, or every double tap would first select the face
-    // it landed on and then the body — two selections from one gesture, the first of them visible
-    // for a moment and wrong.
-    [_tap requireGestureRecognizerToFail:_doubleTap];
+
+    // NO requireGestureRecognizerToFail HERE, deliberately.
+    //
+    // Making the single tap wait for the double to fail is the textbook arrangement and it costs
+    // every single tap the double-tap timeout — about a third of a second before anything happens.
+    // Selection is the most frequent action in the application, and a third of a second of nothing
+    // reads as the app being slow to respond. It was reported exactly that way.
+    //
+    // So the single tap fires immediately and the double tap ESCALATES: the first tap selects the
+    // face or edge under the finger, and if a second follows, the whole body replaces it. The
+    // intermediate state is visible for an instant, which is the correct trade — instant feedback
+    // that is sometimes refined beats correct feedback that is always late.
 
     // Pinch and two-finger pan must run together: a real hand does both at once, and a recognizer
     // that wins exclusively makes the view feel like it is fighting back.
@@ -471,6 +479,30 @@
     return YES;
 }
 
+- (void)setSketchTool:(NSString *)tool {
+    if (_controller == nullptr) return;
+    using Tool = cad::app::SketchDrawing::Tool;
+    if ([tool isEqualToString:@"circle"]) {
+        _controller->setSketchTool(Tool::Circle);
+    } else if ([tool isEqualToString:@"rectangle"]) {
+        _controller->setSketchTool(Tool::Rectangle);
+    } else {
+        _controller->setSketchTool(Tool::Line);
+    }
+    _dirty = YES;
+}
+
+- (NSString *)sketchTool {
+    if (_controller == nullptr || ![self sketching]) return @"";
+    switch (_controller->sketchTool()) {
+        case cad::app::SketchDrawing::Tool::Circle:    return @"circle";
+        case cad::app::SketchDrawing::Tool::Rectangle: return @"rectangle";
+        case cad::app::SketchDrawing::Tool::Line:      return @"line";
+        case cad::app::SketchDrawing::Tool::Select:    return @"select";
+    }
+    return @"line";
+}
+
 - (void)finishSketch {
     if (_controller == nullptr) return;
     _controller->finishSketch();
@@ -645,14 +677,32 @@
 
 - (void)doubleTapAtX:(CGFloat)x y:(CGFloat)y {
     if (!_attached || _controller == nullptr || [self sketching]) return;
+    // REPLACES what the first tap of this gesture just selected. Without this the element the
+    // single tap took would stay selected alongside the body, and the user would have selected two
+    // things by tapping one place twice.
+    _controller->clearSelection();
     const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
                                                        : UIScreen.mainScreen.scale;
     const auto result = _controller->tapAt(static_cast<std::uint32_t>(MAX(0.0, x * scale)),
                                            static_cast<std::uint32_t>(MAX(0.0, y * scale)),
-                                           [self fingerRadiusPixels], /*additive=*/true,
+                                           [self fingerRadiusPixels], /*additive=*/false,
                                            cad::app::Controller::SelectionLevel::Body);
     if (!result.message.empty() && self.onStatus) {
         self.onStatus([NSString stringWithUTF8String:result.message.c_str()]);
+    }
+    // A tap on EMPTY SPACE clears the selection.
+    //
+    // The shared layer keeps a selection when a miss arrives with `additive` set, which is right
+    // for a desktop: ctrl-clicking past the model while accumulating a selection must not throw it
+    // away. A tablet has no modifier, so this shell passes additive on every tap — and the two
+    // rules together meant a tap on empty space did nothing at all, leaving no gesture anywhere in
+    // the app that could clear a selection.
+    //
+    // Handled here rather than by changing that rule, because the difference is genuinely this
+    // shell's: on touch a tap means "toggle", and a toggle against nothing means "none".
+    if (!result.hit) {
+        _controller->clearSelection();
+        _dirty = YES;
     }
     if (result.changed) _dirty = YES;
 }

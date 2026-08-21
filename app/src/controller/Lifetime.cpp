@@ -80,10 +80,16 @@ std::vector<TreeItem> Controller::tree() const {
         item.state = object->state();
         item.error = object->error().message;
         item.selected = std::find(selection_.begin(), selection_.end(), id) != selection_.end();
-        item.visible = std::none_of(placements_.begin(), placements_.end(),
-                                    [&](const render::Placement& p) {
-                                        return p.object == id && !p.visible;
-                                    });
+        // Drawn means HAS a placement and that placement is visible.
+        //
+        // This used to be "no placement says otherwise", which reports visible for an object with
+        // no placement at all — and there are two such kinds: a body consumed by a later feature,
+        // and the sketch currently being edited. Both are absent from the viewport while the
+        // browser drew an open eye beside them.
+        item.visible = std::any_of(placements_.begin(), placements_.end(),
+                                   [&](const render::Placement& p) {
+                                       return p.object == id && p.visible;
+                                   });
         // Decided by TYPE here rather than by the shell, so a second shell cannot put the datums
         // somewhere else. When work planes and axes arrive they join this list and nothing else
         // has to change.
@@ -276,9 +282,17 @@ void Controller::refresh() {
             }
         }
 
+        // The sketch being EDITED is drawn by the overlay, so its feature must not be drawn too.
+        //
+        // Both draw the same curves, a fraction apart in depth, and the result is every line
+        // doubled — reported as "multiple lines appear when drawing". The overlay is the live one:
+        // it follows each click, and the feature holds the geometry as it was when the sketch was
+        // last finished. Showing both means showing the sketch's past and present at once.
+        const bool editingThis = environment_ == Environment::Sketch && editingId_ == id;
+
         const auto existing = std::find_if(placements_.begin(), placements_.end(),
                                            [&](const render::Placement& p) { return p.object == id; });
-        if (consumed) {
+        if (consumed || editingThis) {
             if (existing != placements_.end()) placements_.erase(existing);
             continue;
         }

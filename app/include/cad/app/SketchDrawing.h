@@ -43,7 +43,14 @@ namespace cad::app {
 class SketchDrawing {
 public:
     /// Which drawing tool the next click means.
-    enum class Tool : std::uint8_t { Select, Line, Circle };
+    /// Rectangle is FOUR CONSTRAINED LINES, not a shape.
+    ///
+    /// `core/sketch` has no rectangle and should not: every CAD application stores one as its
+    /// segments, because the moment a user drags one corner it stops being a rectangle. What the
+    /// tool contributes is the constraints — two horizontal, two vertical, four coincident — which
+    /// is exactly what makes it stay rectangular until someone says otherwise, and exactly the
+    /// tedium it saves over drawing four lines by hand.
+    enum class Tool : std::uint8_t { Select, Line, Circle, Rectangle };
 
     /// A point in the sketch's own 2D coordinates, in millimetres.
     using Point = std::array<double, 2>;
@@ -182,9 +189,27 @@ private:
     /// only case where a smooth meeting is what the hand meant.
     void join(const Context&, sketch::GeoId next, sketch::PointRef nextPoint, bool smooth = false);
 
+    /// Closes the loop: constrains the chain's final endpoint to where the chain began.
+    ///
+    /// Snapping already puts the two at the same coordinates, which is what makes the profile LOOK
+    /// closed. Only the constraint keeps them together — without it the run has one fewer
+    /// coincidence than it has corners, and the first dimension edit springs the profile open.
+    void closeChain(const Context&);
+
     /// What the chain drew last, and which end of it the next segment starts from.
     std::optional<sketch::GeoId> lastGeo_;
     sketch::PointRef lastPoint_ = sketch::PointRef::End;
+
+    /// Where the chain STARTED, for the closing constraint above.
+    std::optional<sketch::GeoId> firstGeo_;
+    sketch::PointRef firstPoint_ = sketch::PointRef::Start;
+
+    /// Builds a rectangle between two opposite corners, fully constrained.
+    ///
+    /// Returns false for a degenerate one — a corner dragged back onto itself, or a drag along a
+    /// single axis — because four lines of zero width are geometry the user cannot see, cannot
+    /// select, and cannot delete except through the tree.
+    bool addRectangle(const Context&, Point a, Point b);
 
     /// The nearest snappable point within `kSnapPixels` of `at`, or nothing.
     [[nodiscard]] std::optional<Point> snap(const Context&, Point at) const;

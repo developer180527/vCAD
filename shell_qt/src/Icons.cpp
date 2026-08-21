@@ -404,6 +404,15 @@ bool paintCadGlyph(QPainter& g, const QString& name, int size) {
         g.setPen(QPen(kAccent, pen.widthF() * 1.4));
         const qreal marker = back ? size * 0.57 : size * 0.35;
         g.drawLine(QPointF(size * 0.14, marker), QPointF(size * 0.86, marker));
+    } else if (name == "rectangle") {
+        // Drawn rather than left to the placeholder, because this is the sketch tool a user reaches
+        // for most and a tool strip of glyphs with one blank in it reads as a broken build.
+        g.setPen(QPen(kLine, pen.widthF()));
+        g.drawRect(QRectF(size * 0.20, size * 0.28, size * 0.60, size * 0.44));
+        // The two corners the tool asks for, which is what distinguishes it from a drawn box.
+        g.setPen(QPen(kAccent, pen.widthF() * 1.4));
+        g.drawPoint(QPointF(size * 0.20, size * 0.28));
+        g.drawPoint(QPointF(size * 0.80, size * 0.72));
     } else {
         // Not one of ours. proshell falls through to the next provider, and finally to its own
         // placeholder -- so a missing glyph still looks missing rather than silently empty.

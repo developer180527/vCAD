@@ -221,6 +221,19 @@ std::size_t Sketch::lockY(GeoId g, PointRef pp, double value) {
     return push(constraints_, {ConstraintKind::LockY, g, pp, kNoGeo, PointRef::Start, value});
 }
 
+bool Sketch::setConstraintValue(std::size_t index, double value) {
+    if (index >= constraints_.size()) return false;
+    Constraint& c = constraints_[index];
+    // Only the kinds that HAVE a value. Setting one on a horizontal constraint would be stored and
+    // ignored by the solver, which is the kind of write that looks like it worked.
+    if (c.kind != ConstraintKind::Distance && c.kind != ConstraintKind::Radius
+        && c.kind != ConstraintKind::LockX && c.kind != ConstraintKind::LockY) {
+        return false;
+    }
+    c.value = value;
+    return true;
+}
+
 void Sketch::removeConstraint(std::size_t index) {
     if (index < constraints_.size()) {
         constraints_.erase(constraints_.begin() + static_cast<std::ptrdiff_t>(index));

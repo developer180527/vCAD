@@ -7,7 +7,10 @@
 
 #include "Internal.h"
 
+#include <limits>
+
 #include "cad/io/Format.h"
+#include "cad/kernel/Guard.h"
 #include "cad/kernel/Primitives.h"
 
 #include "cad/render/MetalSurface.h"
@@ -103,6 +106,11 @@ bool Controller::editSketch(ObjectId id) {
     // stroke rotates the model instead, which reads as the sketch tools not working -- and the mode
     // is one toggle away when they do want to turn the part around.
     orbitMode_ = false;
+
+    // Rebuilt so the feature being edited stops being drawn: its placement is decided in refresh,
+    // and entering the sketch environment is exactly the moment that decision changes. Without this
+    // the overlay and the feature draw the same curves until something else happens to refresh.
+    refresh();
 
     alignCameraToSketch();
     pushSketchOverlay();
@@ -253,6 +261,134 @@ sketch::Sketch* Controller::activeSketch() noexcept {
 
 const sketch::Sketch* Controller::activeSketch() const noexcept {
     return editing_.has_value() ? &*editing_ : nullptr;
+}
+
+std::optional<sketch::GeoId> Controller::sketchGeometryAt(float x, float y,
+                                                          float radiusPixels) const {
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr) return std::nullopt;
+    const auto point = sketchPointAt(x, y);
+    if (!point) return std::nullopt;
+
+    // The tolerance travels with the pointer, not with the model: a radius in pixels converted
+    // here, so the same aperture means the same thing at any zoom — the rule SELECTION.md sets out
+    // for picking solids, applied to curves.
+    const double tolerance = camera_.worldPerPixel(viewport_) * radiusPixels;
+    const double px = (*point)[0];
+    const double py = (*point)[1];
+
+    std::optional<sketch::GeoId> best;
+    double nearest = tolerance;
+    const auto& ids = active->ids();
+    const auto& geometry = active->geometry();
+    for (std::size_t i = 0; i < geometry.size() && i < ids.size(); ++i) {
+        const auto& g = geometry[i];
+        double distance = std::numeric_limits<double>::max();
+        switch (g.kind) {
+            case sketch::GeoKind::Point:
+                distance = std::hypot(g.p[0] - px, g.p[1] - py);
+                break;
+            case sketch::GeoKind::Line: {
+                // Distance to the SEGMENT, not to the infinite line: the extension of a short line
+                // would otherwise be pickable halfway across the sketch.
+                const double ax = g.p[0], ay = g.p[1], bx = g.p[2], by = g.p[3];
+                const double dx = bx - ax, dy = by - ay;
+                const double lengthSq = dx * dx + dy * dy;
+                double t = 0.0;
+                if (lengthSq > 1e-18) {
+                    t = std::clamp(((px - ax) * dx + (py - ay) * dy) / lengthSq, 0.0, 1.0);
+                }
+                distance = std::hypot(px - (ax + dx * t), py - (ay + dy * t));
+                break;
+            }
+            case sketch::GeoKind::Circle:
+            case sketch::GeoKind::Arc:
+                // To the RIM. A circle is picked by its outline, as it is drawn — picking by the
+                // centre would make the whole disc a target and swallow anything inside it.
+                distance = std::abs(std::hypot(px - g.p[0], py - g.p[1]) - g.p[2]);
+                break;
+        }
+        if (distance <= nearest) {
+            nearest = distance;
+            best = ids[i];
+        }
+    }
+    return best;
+}
+
+std::optional<std::size_t> Controller::dimensionSketchGeometry(sketch::GeoId id) {
+    if (!editing_) return std::nullopt;
+    const auto* g = editing_->find(id);
+    if (g == nullptr) return std::nullopt;
+
+    std::optional<std::size_t> index;
+    switch (g->kind) {
+        case sketch::GeoKind::Line: {
+            const double length = std::hypot(g->p[2] - g->p[0], g->p[3] - g->p[1]);
+            if (length < 1e-9) return std::nullopt;
+            index = editing_->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End,
+                                       length);
+            break;
+        }
+        case sketch::GeoKind::Circle:
+        case sketch::GeoKind::Arc:
+            if (g->p[2] < 1e-9) return std::nullopt;
+            index = editing_->radius(id, g->p[2]);
+            break;
+        case sketch::GeoKind::Point:
+            // A point has no size to dimension. Its POSITION does, and that is LockX/LockY — a
+            // different tool, because "where" and "how big" are different questions.
+            status("A point has no dimension. Constrain its position instead.");
+            return std::nullopt;
+    }
+
+    lastSketchSolve_ = editing_->solve();
+    // Reported even on success: a dimension that makes a sketch over-constrained solves to a
+    // conflict, and the user needs to hear that from the action that caused it.
+    status(lastSketchSolve_.message);
+    pushSketchOverlay();
+    notifyDocument();
+    notifyView();
+    return index;
+}
+
+bool Controller::setSketchDimension(std::size_t constraint, double millimetres) {
+    if (!editing_) return false;
+    const auto& constraints = editing_->constraints();
+    if (constraint >= constraints.size()) return false;
+
+    // Rejected everywhere: every comparison with NaN is false, so a NaN stored here would reach the
+    // solver, whose convergence test is a comparison — and it would report the system SOLVED.
+    if (!kernel::isFinite(millimetres)) return false;
+
+    // Validated by KIND, because "positive" is only right for some of them.
+    //
+    // Distance and Radius are sizes and a non-positive one is not a size. LockX and LockY are
+    // POSITIONS, and x = 0 or x = -10 is an ordinary place for a point to be. A single `> 0` guard
+    // over both refuses half the values the sketch can legitimately hold — latent while nothing
+    // creates a lock through here, and wrong the moment something does.
+    switch (constraints[constraint].kind) {
+        case sketch::ConstraintKind::Distance:
+        case sketch::ConstraintKind::Radius:
+            if (!kernel::isPositiveFinite(millimetres)) return false;
+            break;
+        default:
+            // setConstraintValue below refuses any kind that has no value at all, so this does not
+            // need to enumerate them — and a new dimension kind gets the finite check for free
+            // rather than falling through a `> 0` it may not want.
+            break;
+    }
+
+    if (!editing_->setConstraintValue(constraint, millimetres)) return false;
+
+    lastSketchSolve_ = editing_->solve();
+    status(lastSketchSolve_.message);
+    pushSketchOverlay();
+    notifyDocument();
+    notifyView();
+    // The value was applied whatever the solver made of it. A caller that wants to know whether the
+    // sketch is still consistent asks the solve report, which is a different question.
+    return true;
 }
 
 void Controller::selectSketchGeometry(sketch::GeoId id, bool additive) {

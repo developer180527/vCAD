@@ -213,3 +213,96 @@ picking is now done.
 The characteristic risk this audit measures is the one `COMPETITIVE_REVIEW.md` §5 named: architecture
 outrunning features. Three implemented-but-unreachable capabilities is what that looks like from the
 inside.
+
+---
+
+# Amendment, 20 Aug 2026: after selection, sketching and the iPad shell
+
+Recounted from the source rather than from the last amendment. Where a number moved, the reason is
+given; where it did not move, that is itself a finding.
+
+## What changed since 18 Aug
+
+| Measured | Then | Now | Note |
+|---|---|---|---|
+| Feature types that compute | 11 | **14** | Revolve, Hole and Plane joined them |
+| Commands in the catalogue | 19 | **19** | **unchanged — see §A** |
+| Sketch constraint kinds | 11 | **12** | Tangent, at a point |
+| Sketch drawing tools | 2 | **3** | Line, Circle, and a stroke that decides between line and arc |
+| Ribbon entries | 66 | **70** | of which **47 are stand-ins** → 23 live, **33%** |
+| Export reachable by a user | none | **STEP, IGES, STL** | and DXF for a sketch |
+| Shells | 1 | **2** | the iPad shell renders, selects and sketches |
+| C plugin ABI | 1.21 | **1.22** | `CAD_CON_TANGENT` |
+| Tests | 110 cases | **194 cases**, 11,212 assertions | plus a shell wiring probe |
+
+## A. Three features compute correctly and no user can reach them
+
+The single cheapest gap in the project. `Revolve`, `Hole` and `Translate` are implemented, tested,
+and reachable only from C++ or the plugin ABI, because **nothing added them to the command
+catalogue** — and both shells build their tools from that catalogue by design.
+
+| Feature | Needs | Missing |
+|---|---|---|
+| **Revolve** | a profile and a straight edge for the axis | a command, and a way to pick the axis |
+| **Hole** | a face, a diameter, a depth | a command and a parameter panel |
+| **Translate** | dx, dy, dz | a command; arguably a drag handle |
+| **Plane** (datum) | a plane index and a size | seeded automatically, never creatable |
+
+Hole is the most-used feature in mechanical CAD. It computes. It has been unreachable for two days.
+
+## B. Sketching is a line, a circle, and nothing else
+
+`core/sketch` stores Point, Line, Circle and Arc, solves twelve constraint kinds, and reads and
+writes DXF. What a user can actually DRAW is a line, a circle, and — with a stylus — an arc.
+
+Absent, in rough order of how often a mechanical engineer reaches for them: **rectangle**, trim,
+offset, **a dimension tool for geometry that already exists**, construction geometry, mirror,
+polygon, slot, fillet-in-sketch, spline.
+
+Rectangle is the one that matters most: today a rectangular profile is four strokes and the
+constraints that come with them, when every CAD application makes it one drag.
+
+The constraint gap is the same shape. Twelve kinds solve; the UI can apply **five** (coincident and
+tangent automatically on a join, horizontal/vertical by inference, distance by typing). Parallel,
+perpendicular, equal length, point-on-line and the axis locks have no way in at all — a user cannot
+fully constrain a sketch they can draw.
+
+## C. Modify tools barely exist
+
+Booleans, fillet and chamfer are there. Everything a part actually needs after its first solid is
+not: **shell**, draft, **linear and circular pattern**, **mirror**, split, move/rotate a body,
+thicken, sweep, loft.
+
+Pattern and mirror are the two that change how long a real job takes, because they are how one
+feature becomes twenty.
+
+## D. Inspection is a kernel API with no UI
+
+`kernel::Shape` already reports volume, and `measure()` gives mass and centroid — area and centroid
+for a face, length and midpoint for an edge. So distance, length, area and volume are all one call
+away from geometry the user can already select, and there is **no Measure command**. The Inspect
+ribbon tab is four stand-ins.
+
+## E. What "parametric" still does not mean here
+
+Dimensions drive geometry — that part works. What is missing is the layer above: **named
+parameters** and expressions between them. A user can type `12+34` into a dimension; they cannot
+write `width` and then `width*2`, which is what makes a model change shape when one number moves.
+
+---
+
+## The order this suggests
+
+1. **Reach what already computes** — commands for Revolve, Hole, Translate, plus a datum Plane.
+   Days of work at most, and it triples the modelling vocabulary.
+2. **Rectangle, then a dimension tool, then trim/offset.** Sketching is the floor everything else
+   stands on, and it is currently a line and a circle.
+3. **The constraint menu** — the five that cannot be applied. Directly blocks fully-constrained
+   sketches, which is the difference between a drawing and a model.
+4. **Pattern and mirror.** The largest multiplier on real work.
+5. **Measure.** Cheap, entirely missing, and every engineer expects it.
+6. **Shell and draft.** The two most-missed modifiers after patterns.
+7. **Named parameters.** The thing that makes the history worth having.
+
+Assemblies and drawings are deliberately not on this list: they are new document kinds, not
+features, and the part workflow has to be worth using first.

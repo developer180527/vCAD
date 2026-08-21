@@ -766,6 +766,27 @@ public:
         return sketchSelection_;
     }
 
+    /// The sketch curve nearest a point, in DEVICE pixels, or nothing.
+    ///
+    /// Hit testing in SKETCH space rather than on screen: the point is unprojected onto the plane
+    /// first, so the same tolerance means the same thing whatever the camera is doing. Lives here
+    /// rather than in a canvas because both shells need it and neither should own the rule.
+    [[nodiscard]] std::optional<sketch::GeoId> sketchGeometryAt(float x, float y,
+                                                                float radiusPixels) const;
+
+    /// One dimension on a sketch curve, at the size it is currently drawn.
+    ///
+    /// A line gets a length, a circle or arc a radius. Created at the CURRENT value, which is what
+    /// every CAD application does: the dimension records what you drew, and typing a new number is
+    /// what changes the geometry. Creating it at zero would collapse the sketch the moment it
+    /// solved.
+    ///
+    /// Returns the constraint's index, so a shell can hand it straight to `setSketchDimension`.
+    [[nodiscard]] std::optional<std::size_t> dimensionSketchGeometry(sketch::GeoId);
+
+    /// Changes a dimension and re-solves — the moment a sketch becomes parametric.
+    bool setSketchDimension(std::size_t constraint, double millimetres);
+
     /// Deletes the selected sketch geometry, and every constraint that referred to it.
     ///
     /// Dropping the constraints is not optional: a constraint pointing at deleted geometry cannot

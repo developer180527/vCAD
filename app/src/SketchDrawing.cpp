@@ -12,6 +12,11 @@ void SketchDrawing::setTool(Tool next) {
     endChain();
 }
 
+void SketchDrawing::closeChain(const Context& ctx) {
+    if (ctx.sketch == nullptr || !lastGeo_ || !firstGeo_ || *lastGeo_ == *firstGeo_) return;
+    ctx.sketch->coincident(*lastGeo_, lastPoint_, *firstGeo_, firstPoint_);
+}
+
 void SketchDrawing::endChain() {
     pending_.reset();
     hover_.reset();
@@ -20,6 +25,7 @@ void SketchDrawing::endChain() {
     // constrained coincident to the end of a run the user has already finished — an invisible link
     // between two shapes that look separate, which the solver would then enforce.
     lastGeo_.reset();
+    firstGeo_.reset();
     // The lock belonged to the run that just ended. Carried over, it would size a segment the user
     // never asked about.
     locked_.reset();
@@ -118,6 +124,12 @@ void SketchDrawing::infer(const Context& ctx, sketch::GeoId id, Point from, Poin
 
 void SketchDrawing::join(const Context& ctx, sketch::GeoId next, sketch::PointRef nextPoint,
                          bool smooth) {
+    // The first segment of a run has nothing to join to, and that is exactly when to remember where
+    // the run began — every path that extends a chain comes through here.
+    if (!lastGeo_) {
+        firstGeo_ = next;
+        firstPoint_ = nextPoint;
+    }
     if (ctx.sketch == nullptr || !lastGeo_) return;
     ctx.sketch->coincident(*lastGeo_, lastPoint_, next, nextPoint);
 
@@ -133,6 +145,68 @@ void SketchDrawing::join(const Context& ctx, sketch::GeoId next, sketch::PointRe
     if (previous == nullptr || current == nullptr) return;
     if (previous->kind == sketch::GeoKind::Point || current->kind == sketch::GeoKind::Point) return;
     ctx.sketch->tangent(*lastGeo_, lastPoint_, next, nextPoint);
+}
+
+bool SketchDrawing::addRectangle(const Context& ctx, Point a, Point b) {
+    if (ctx.sketch == nullptr) return false;
+
+    // A locked length sizes the DIAGONAL, because that is the number the preview is showing.
+    //
+    // A rectangle has two dimensions and Tab supplies one, so something has to decide what the one
+    // number means. `measure()` already reports the corner-to-corner distance and its angle for
+    // this tool, and its own comment says the rubber band and the result must not disagree — so the
+    // locked value is the thing on screen, and the drag direction still chooses the proportions.
+    //
+    // Honouring it at all is the fix: the lock used to be dropped in silence by endChain(), which
+    // is the same "the padlock the shell was showing meant nothing" bug already fixed for strokes.
+    if (locked_) {
+        const double dx = b[0] - a[0];
+        const double dy = b[1] - a[1];
+        const double drawn = std::hypot(dx, dy);
+        if (drawn > 1e-9) {
+            const double scale = *locked_ / drawn;
+            b = Point{a[0] + dx * scale, a[1] + dy * scale};
+        }
+    }
+
+    // Degenerate in either axis is not a rectangle. Refused rather than drawn, because a
+    // zero-width one is four invisible lines the user can neither see nor select. Checked AFTER the
+    // scaling above, which cannot rescue a drag that was already flat in one axis but must not be
+    // allowed to introduce one either.
+    if (std::abs(b[0] - a[0]) < 1e-9 || std::abs(b[1] - a[1]) < 1e-9) return false;
+
+    // Corners in order, so consecutive lines share an endpoint and the run closes.
+    const Point corners[4]{{a[0], a[1]}, {b[0], a[1]}, {b[0], b[1]}, {a[0], b[1]}};
+    sketch::GeoId ids[4]{};
+    for (int i = 0; i < 4; ++i) {
+        const Point& from = corners[i];
+        const Point& to = corners[(i + 1) % 4];
+        ids[i] = ctx.sketch->addLine(from[0], from[1], to[0], to[1]);
+        // Horizontal and vertical by CONSTRUCTION, not by inference: the tool knows which is which,
+        // so there is no tolerance to get wrong and no chance of a rectangle that is a degree off.
+        if (i % 2 == 0) {
+            ctx.sketch->horizontal(ids[i]);
+        } else {
+            ctx.sketch->vertical(ids[i]);
+        }
+    }
+    // Four corners, four coincidences — including the last back to the first, which is what keeps
+    // the profile closed when a dimension moves later.
+    for (int i = 0; i < 4; ++i) {
+        ctx.sketch->coincident(ids[i], sketch::PointRef::End, ids[(i + 1) % 4],
+                               sketch::PointRef::Start);
+    }
+
+    if (locked_) {
+        // DRIVING, for the same reason the line path gives: a locked length the solver may undo was
+        // never locked. Corner 0 is ids[0]'s start and corner 2 is ids[2]'s start, so this is the
+        // diagonal the scaling above produced. It leaves three degrees of freedom — position and
+        // one proportion — which is a rectangle of a fixed size, not an over-constrained one.
+        ctx.sketch->distance(ids[0], sketch::PointRef::Start, ids[2], sketch::PointRef::Start,
+                             *locked_);
+        locked_.reset();
+    }
+    return true;
 }
 
 SketchDrawing::Outcome SketchDrawing::stroke(const Context& ctx, std::span<const Point> points) {
@@ -165,6 +239,45 @@ SketchDrawing::Outcome SketchDrawing::stroke(const Context& ctx, std::span<const
         return out;
     }
 
+    // The RECTANGLE tool means a rectangle, from the stroke's two ends — one drag, which is what
+    // every other CAD application makes it and what four separate lines are not.
+    if (tool_ == Tool::Rectangle) {
+        if (!addRectangle(ctx, fit.start, fit.end)) {
+            out.status = "A rectangle needs two opposite corners.";
+            return out;
+        }
+        endChain();
+        out.geometryChanged = true;
+        out.status = "Rectangle";
+        return out;
+    }
+
+    // The CIRCLE tool means a circle, whatever shape the stroke was.
+    //
+    // Only Select was rejected above, so a stroke drawn with the circle tool active silently came
+    // out as a line — the tool the user chose ignored, and the status bar cheerfully reporting
+    // "Line". Dragged from the centre outwards, which is the same thing the two-click form means.
+    if (tool_ == Tool::Circle) {
+        const double radius = std::hypot(fit.end[0] - fit.start[0], fit.end[1] - fit.start[1]);
+        if (radius < 1e-9) {
+            out.status = "A circle needs a radius.";
+            return out;
+        }
+        const auto id = ctx.sketch->addCircle(fit.start[0], fit.start[1], radius);
+        if (locked_) {
+            ctx.sketch->radius(id, *locked_);
+            locked_.reset();
+        }
+        endChain();
+        out.geometryChanged = true;
+        out.status = "Circle";
+        return out;
+    }
+
+    // Where the segment actually ENDED, which the locked-length branch below may move away from
+    // the stroke's own last point. The chain continues from here.
+    Point end = fit.end;
+
     if (fit.kind == StrokeKind::Arc) {
         const auto id = ctx.sketch->addArc(fit.centre[0], fit.centre[1], fit.radius, fit.startAngle,
                                            fit.endAngle);
@@ -182,21 +295,39 @@ SketchDrawing::Outcome SketchDrawing::stroke(const Context& ctx, std::span<const
         lastPoint_ = startIsFirst ? sketch::PointRef::End : sketch::PointRef::Start;
         out.status = "Arc";
     } else {
-        const auto id = ctx.sketch->addLine(fit.start[0], fit.start[1], fit.end[0], fit.end[1]);
-        infer(ctx, id, fit.start, fit.end);
+        // A LOCKED length applies to a stroke exactly as it applies to a click: the hand chose the
+        // direction, Tab chose the size. Dropping it silently — which is what this did — made the
+        // padlock the shell was showing mean nothing.
+        Point at = fit.end;
+        const double drawn = std::hypot(at[0] - fit.start[0], at[1] - fit.start[1]);
+        if (locked_ && drawn > 1e-9) {
+            const double scale = *locked_ / drawn;
+            at = Point{fit.start[0] + (at[0] - fit.start[0]) * scale,
+                       fit.start[1] + (at[1] - fit.start[1]) * scale};
+        }
+
+        const auto id = ctx.sketch->addLine(fit.start[0], fit.start[1], at[0], at[1]);
+        infer(ctx, id, fit.start, at);
         join(ctx, id, sketch::PointRef::Start);
         lastGeo_ = id;
         lastPoint_ = sketch::PointRef::End;
+        if (locked_) {
+            // DRIVING, as in click(): a locked length the solver may undo was never locked.
+            ctx.sketch->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End, *locked_);
+            locked_.reset();
+        }
+        end = at;
         out.status = "Line";
     }
 
     out.geometryChanged = true;
-    pending_ = fit.end;
-    hover_ = fit.end;
+    pending_ = end;
+    hover_ = end;
     input_.clear();
-    locked_.reset();
 
-    if (closesLoop(ctx, fit.end)) {
+    if (closesLoop(ctx, end)) {
+        // The constraint that makes "closed" survive an edit, not merely look right today.
+        closeChain(ctx);
         endChain();
         out.status += ": profile closed";
     }
@@ -242,6 +373,17 @@ SketchDrawing::Outcome SketchDrawing::click(const Context& ctx, Point at) {
         return out;
     }
 
+    if (tool_ == Tool::Rectangle) {
+        if (!addRectangle(ctx, first, at)) {
+            out.status = "A rectangle needs two opposite corners.";
+            return out;
+        }
+        endChain();
+        out.geometryChanged = true;
+        out.status = "Rectangle";
+        return out;
+    }
+
     if (tool_ == Tool::Circle) {
         ctx.sketch->addCircle(first[0], first[1], length);
         endChain();
@@ -269,7 +411,10 @@ SketchDrawing::Outcome SketchDrawing::click(const Context& ctx, Point at) {
 
         // Back onto a point the chain already used: the loop is closed and the run is over. Checked
         // after the segment is added, so the closing segment itself is drawn.
-        if (closesLoop(ctx, at)) endChain();
+        if (closesLoop(ctx, at)) {
+            closeChain(ctx);
+            endChain();
+        }
     }
 
     out.geometryChanged = true;
