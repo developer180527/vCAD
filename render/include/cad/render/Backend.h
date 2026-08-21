@@ -248,8 +248,14 @@ public:
     /// cache has no way to know the old contents will never be asked for again. Keyed by owner and
     /// versioned by a digest of the data, so an editing session occupies one buffer no matter how
     /// long it runs, and a frame where nothing changed re-uploads nothing.
+    /// `EdgeVertex`, NOT bare xyz floats. This took bare floats and the buffer is created with the
+    /// edge layout, whose stride is 16 bytes — position plus the element id. Twelve-byte data read
+    /// as sixteen misaligns every vertex after the first and runs the draw off the end into
+    /// whatever the previous upload left behind, which on screen was a fan of lines radiating from
+    /// nowhere and growing with every mouse move. Typed like `uploadEdgeVertices` above so the
+    /// compiler refuses the mismatch rather than the GPU rendering it.
     virtual BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
-                                               std::span<const float>) = 0;
+                                               std::span<const EdgeVertex>) = 0;
 
     /// Triangle geometry that CHANGES, keyed and revisioned like the dynamic edges.
     ///

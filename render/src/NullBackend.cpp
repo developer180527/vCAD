@@ -71,7 +71,7 @@ BufferId NullGpuResources::uploadDynamicIndices(std::uint64_t key, std::uint64_t
 }
 
 BufferId NullGpuResources::uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
-                                                     std::span<const float> data) {
+                                                     std::span<const EdgeVertex> data) {
     if (data.empty()) return BufferId::None;
     auto& buffer = dynamicEdgeBuffers_[key];
     if (buffer.id != BufferId::None && buffer.revision == revision) {

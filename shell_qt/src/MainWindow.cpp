@@ -728,7 +728,9 @@ void MainWindow::rebuildRibbon() {
         parameterised("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
 
     auto* modify = model->addPanel(tr("Modify"));
-    modify->addLarge(planned(tr("Hole"), QStringLiteral("hole")));
+    // `parameterised`, not `planned`: Hole takes a diameter and a depth, so it opens the command
+    // panel the way Box and Cylinder do rather than drilling a size nobody chose.
+    modify->addLarge(parameterised("feature.hole", tr("Hole"), QStringLiteral("hole")));
     modify->addLarge(commandOr("feature.fillet", tr("Fillet"), QStringLiteral("fillet")));
     modify->addSmall(commandOr("feature.chamfer", tr("Chamfer"), QStringLiteral("chamfer")));
     modify->addSmall(planned(tr("Shell"), QStringLiteral("shell")));

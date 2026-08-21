@@ -136,6 +136,64 @@ void Controller::addBoolean(const std::string& type, const std::string& label) {
     status(label);
 }
 
+void Controller::addHole(double diameterMm, double depthMm) {
+    // A FACE, singular. The feature drills perpendicular to one flat face at its centre, so "which
+    // face" is the whole input and two of them is two holes -- which is a reasonable thing to want
+    // and not a reasonable thing to guess.
+    if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Face) {
+        status("Select one flat face to put the hole in.");
+        return;
+    }
+    const ElementSelection picked = elementSelection_.front();
+
+    // Refused HERE, before a feature exists, rather than by the compute.
+    //
+    // computeHole would reject a curved face too, but only after the feature had been added to the
+    // document -- leaving a failed row in the browser that the user has to find and delete. The
+    // shell knows the face already, so it can decline without leaving wreckage.
+    const auto object = history_.current().find(picked.object);
+    if (!object || object->output() == nullptr) {
+        status("That body has not been computed yet.");
+        return;
+    }
+    const auto shape = object->output()->map.resolve(picked.element);
+    if (!shape) {
+        status("That face no longer exists in the model.");
+        return;
+    }
+    if (const auto plane = kernel::planeOf(*shape); !plane) {
+        // The kernel's own words: it measured the surface and knows why. Repeating that judgement
+        // here would be a second copy of it, free to disagree.
+        status(plane.error().message);
+        return;
+    }
+
+    auto [next, id] = history_.current().add("Hole");
+    const auto created = next.find(id);
+    auto updated = created->withProperty("a_base", picked.object)
+                       .withProperty("face", picked.element)
+                       .withProperty("diameter", units::millimetres(diameterMm))
+                       .withProperty("depth", units::millimetres(depthMm));
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Hole");
+
+    selection_.clear();
+    // The face belonged to the body this hole consumed, so keeping it selected would mark geometry
+    // that no longer exists -- the same reason the edge features clear theirs.
+    elementSelection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    const auto result = history_.current().find(id);
+    if (result && result->output() == nullptr) {
+        status("Hole failed — see the feature's error in the browser.");
+    } else {
+        status("Hole " + units::format(units::millimetres(diameterMm), preferences_.displayUnits)
+               + " across, " + units::format(units::millimetres(depthMm), preferences_.displayUnits)
+               + " deep");
+    }
+}
+
 void Controller::addEdgeFeature(const std::string& type, const std::string& label,
                                 const std::string& sizeProperty, double millimetres) {
     // Picked edges first. This is what edge selection was for: before it existed the only honest

@@ -46,6 +46,19 @@ bool Controller::beginCommand(const std::string& id) {
                 {name, label, CommandParameter::Kind::Length,
                  units::format(units::millimetres(mm), preferences_.displayUnits)});
         }
+    } else if (id == "feature.hole") {
+        if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Face) {
+            status("Select one flat face to put the hole in.");
+            return false;
+        }
+        // 8 mm and 10 mm: an ordinary clearance hole rather than a round number that fits nothing.
+        // The depth is what a user changes most, so it is second and therefore focused after a Tab.
+        for (const auto& [name, label, mm] : {std::tuple{"diameter", "Diameter", 8.0},
+                                              std::tuple{"depth", "Depth", 10.0}}) {
+            commandParameters_.push_back(
+                {name, label, CommandParameter::Kind::Length,
+                 units::format(units::millimetres(mm), preferences_.displayUnits)});
+        }
     } else if (id == "feature.cylinder") {
         for (const auto& [name, label, mm] : {std::tuple{"radius", "Radius", 25.0},
                                               std::tuple{"height", "Height", 80.0}}) {
@@ -110,6 +123,9 @@ bool Controller::commitCommand() {
         ok = true;
     } else if (id == "feature.cylinder") {
         addPrimitive("Cylinder", {{"radius", lengthOf("radius")}, {"height", lengthOf("height")}});
+        ok = true;
+    } else if (id == "feature.hole") {
+        addHole(lengthOf("diameter"), lengthOf("depth"));
         ok = true;
     }
 
@@ -215,6 +231,19 @@ void Controller::registerCommands() {
     commands_.push_back({"feature.chamfer", "Chamfer", "Bevel every edge of the selected body",
                          "chamfer", oneWithEdges,
                          [this] { addEdgeFeature("Chamfer", "Chamfer", "distance", 3.0); }});
+
+    // Hole. Enabled on a single FACE, which is its entire input -- the position and the direction
+    // both come from the face, so there is nothing to pick afterwards and nothing to guess.
+    //
+    // It has computed correctly since the day it was written and no user could reach it, because
+    // nothing added it here and both shells build their tools from this catalogue. That is the
+    // cheapest kind of gap there is, and Hole is the most-used feature in mechanical CAD.
+    commands_.push_back({"feature.hole", "Hole", "Drill a hole into the selected face", "hole",
+                         [this](const CommandContext& c) {
+                             return c.selectedElements == 1
+                                    && selectionLevel_ == SelectionLevel::Face;
+                         },
+                         [this] { addHole(8.0, 10.0); }});
 
     commands_.push_back({"edit.delete", "Delete", "Delete the selected features", "delete",
                          [](const CommandContext& c) { return c.selectedObjects > 0; },

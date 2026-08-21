@@ -905,6 +905,12 @@ private:
     /// the feature type, so they share this rather than three copies of the same twelve lines.
     void addBoolean(const std::string& type, const std::string& label);
 
+    /// Drills a hole into the selected FACE, perpendicular to it and at its centre.
+    ///
+    /// A face rather than a body, because that is what the feature actually takes: the direction
+    /// and the position both come from the face, which is why picking one is the whole input.
+    void addHole(double diameterMm, double depthMm);
+
     /// Adds an edge-based feature (Fillet, Chamfer) over the selected body.
     ///
     /// Applies to EVERY edge of the body, because edge picking is not wired to the viewport yet.

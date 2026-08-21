@@ -24,7 +24,7 @@ public:
     BufferId uploadIndices(const kernel::ShapeHash&, std::span<const std::uint32_t>) override;
     BufferId uploadEdgeVertices(const kernel::ShapeHash&, std::span<const EdgeVertex>) override;
     BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
-                                       std::span<const float>) override;
+                                       std::span<const EdgeVertex>) override;
     BufferId uploadDynamicVertices(std::uint64_t key, std::uint64_t revision,
                                    std::span<const CadVertex>) override;
     BufferId uploadDynamicIndices(std::uint64_t key, std::uint64_t revision,
@@ -48,6 +48,17 @@ public:
     /// Uploads skipped because the sketch had not changed. The only way a test can tell a working
     /// revision check from one that re-sends the whole sketch on every frame.
     [[nodiscard]] std::size_t dynamicEdgeSkipCount() const noexcept { return dynamicEdgeSkips_; }
+
+    /// Bytes last uploaded for a dynamic edge buffer, or 0 for a key never uploaded.
+    ///
+    /// Exposed so a test can check the bytes against the vertex COUNT the frame draws. They must
+    /// agree exactly, and for a long time they did not: the sketch overlays passed bare xyz into a
+    /// buffer whose layout is 16 bytes per vertex, so the draw read past the data and rendered a
+    /// fan of lines out of whatever the previous upload had left there.
+    [[nodiscard]] std::uint64_t dynamicEdgeBytes(std::uint64_t key) const noexcept {
+        const auto it = dynamicEdgeBuffers_.find(key);
+        return it == dynamicEdgeBuffers_.end() ? 0u : it->second.bytes;
+    }
     void resetStats() noexcept {
         uploads_ = deduped_ = instanceUploads_ = instanceSkips_ = dynamicEdgeSkips_ = 0;
     }

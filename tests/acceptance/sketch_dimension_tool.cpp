@@ -162,3 +162,29 @@ TEST_CASE("an out-of-range constraint index is refused", "[sketch][dimension]") 
     openSketchWithLine(c);
     CHECK_FALSE(c.setSketchDimension(9999, 40.0));
 }
+
+#include <cstdio>
+TEST_CASE("DIAG preview accumulation", "[diag]") {
+    app::Controller c;
+    c.setViewportSize(800, 600);
+    REQUIRE(c.beginSketch() != document::ObjectId{});
+    c.setSketchTool(app::Controller::SketchTool::Line);
+    REQUIRE(c.sketchClickAt(400, 300));
+    // CONSTANT distance, varying angle: the preview line is the same length every time, so the dash
+    // count must not change. Growth here is accumulation, not a longer line.
+    for (int i = 0; i < 6; ++i) {
+        const double a = i * 0.7;
+        c.sketchHoverAt(static_cast<float>(400 + 150 * std::cos(a)),
+                        static_cast<float>(300 + 150 * std::sin(a)));
+        const auto& f = c.frame();
+        std::size_t edgeVerts = 0;
+        for (const auto& e : f.edgeBatches) edgeVerts += e.vertexCount;
+        std::printf("hover %d: edgeBatches=%zu totalEdgeVerts=%zu\n", i, f.edgeBatches.size(),
+                    edgeVerts);
+    }
+    // And a near one after a far one: the count must SHRINK.
+    c.sketchHoverAt(410, 305);
+    std::size_t after = 0;
+    for (const auto& e : c.frame().edgeBatches) after += e.vertexCount;
+    std::printf("after a short hover: totalEdgeVerts=%zu\n", after);
+}

@@ -273,7 +273,10 @@ std::optional<sketch::GeoId> Controller::sketchGeometryAt(float x, float y,
     // The tolerance travels with the pointer, not with the model: a radius in pixels converted
     // here, so the same aperture means the same thing at any zoom — the rule SELECTION.md sets out
     // for picking solids, applied to curves.
-    const double tolerance = camera_.worldPerPixel(viewport_) * radiusPixels;
+    // Both operands widened explicitly: the camera works in floats and this in doubles, and an
+    // implicit promotion at the boundary is the warning that hides the ones worth reading.
+    const double tolerance = static_cast<double>(camera_.worldPerPixel(viewport_))
+                             * static_cast<double>(radiusPixels);
     const double px = (*point)[0];
     const double py = (*point)[1];
 

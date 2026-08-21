@@ -289,7 +289,7 @@ public:
     }
 
     BufferId uploadDynamicEdgeVertices(std::uint64_t key, std::uint64_t revision,
-                                       std::span<const float> f) override {
+                                       std::span<const EdgeVertex> f) override {
         if (f.empty()) return BufferId::None;
         auto& slot = dynamicEdgeBuffers_[key];
         if (slot.id != BufferId::None && slot.revision == revision) return slot.id;

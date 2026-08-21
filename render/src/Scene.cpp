@@ -204,6 +204,23 @@ void SceneBuilder::setHighlight(std::uint32_t element, Highlight h) {
 
 /// Buffer key for the sketch overlay. Any value distinct from a batch key works; batch keys are
 /// derived from mesh content hashes, so a small constant cannot collide with one.
+/// xyz triples as the edge layout actually wants them.
+///
+/// The layout is position PLUS the element id — 16 bytes, not 12. The sketch overlays are the only
+/// edge geometry described in bare floats, because they are generated rather than tessellated, and
+/// handing those straight to a 16-byte buffer is what drew a fan of lines radiating from nowhere:
+/// every vertex after the first was read from the wrong offset and the draw ran past the end into
+/// the previous upload. Element id 0 — a sketch preview is not pickable, and `vs_edge` does not
+/// read the id at all.
+std::vector<EdgeVertex> asEdgeVertices(std::span<const float> xyz) {
+    std::vector<EdgeVertex> out;
+    out.reserve(xyz.size() / 3);
+    for (std::size_t i = 0; i + 2 < xyz.size(); i += 3) {
+        out.push_back(EdgeVertex{xyz[i], xyz[i + 1], xyz[i + 2], 0u});
+    }
+    return out;
+}
+
 constexpr std::uint64_t kSketchOverlayKey = 0x5E7C4000000001ull;
 constexpr std::uint64_t kSketchPreviewKey = 0x5E7C4000000002ull;
 constexpr std::uint64_t kSketchProfileKey = 0x5E7C4000000003ull;
@@ -216,13 +233,14 @@ void SceneBuilder::setSketchOverlay(std::span<const float> lineVertices, std::ui
         return;
     }
 
-    sketchVertices_ = gpu_.uploadDynamicEdgeVertices(kSketchOverlayKey, revision,
-                                                            lineVertices);
+    const auto vertices = asEdgeVertices(lineVertices);
+    sketchVertices_ = gpu_.uploadDynamicEdgeVertices(kSketchOverlayKey, revision, vertices);
     if (sketchVertices_ == BufferId::None) {
         sketchVertexCount_ = 0;
         return;
     }
-    sketchVertexCount_ = static_cast<std::uint32_t>(lineVertices.size() / 3);
+    // From the converted vertices, so the count and the bytes can never disagree.
+    sketchVertexCount_ = static_cast<std::uint32_t>(vertices.size());
 
     ensureSketchInstance();
     refreshEdgeHighlights();
@@ -353,10 +371,10 @@ void SceneBuilder::setSketchPreview(std::span<const float> lineVertices, std::ui
         return;
     }
     ensureSketchInstance();
-    previewVertices_ = gpu_.uploadDynamicEdgeVertices(kSketchPreviewKey, revision, lineVertices);
-    previewVertexCount_ = previewVertices_ == BufferId::None
-                              ? 0
-                              : static_cast<std::uint32_t>(lineVertices.size() / 3);
+    const auto vertices = asEdgeVertices(lineVertices);
+    previewVertices_ = gpu_.uploadDynamicEdgeVertices(kSketchPreviewKey, revision, vertices);
+    previewVertexCount_ =
+        previewVertices_ == BufferId::None ? 0 : static_cast<std::uint32_t>(vertices.size());
     refreshEdgeHighlights();
 }
 
