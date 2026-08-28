@@ -7,6 +7,8 @@
 
 #include "Internal.h"
 
+#include <numbers>
+
 #include "cad/io/Format.h"
 #include "cad/kernel/Primitives.h"
 
@@ -45,6 +47,28 @@ bool Controller::beginCommand(const std::string& id) {
             commandParameters_.push_back(
                 {name, label, CommandParameter::Kind::Length,
                  units::format(units::millimetres(mm), preferences_.displayUnits)});
+        }
+    } else if (id == "feature.revolve") {
+        if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Edge) {
+            status("Select one straight edge of a sketch to revolve it about.");
+            return false;
+        }
+        // A full turn, which is what a revolve usually is — and what computeRevolve defaults to
+        // when no angle is stored, so the panel and the compute agree on the same answer.
+        commandParameters_.push_back({"angle", "Angle", CommandParameter::Kind::Angle,
+                                      units::format(units::Angle::fromBase(2.0 * std::numbers::pi))});
+    } else if (id == "feature.translate") {
+        if (selection_.size() != 1) {
+            status("Select one body to move.");
+            return false;
+        }
+        // Zero, not a guess. A move is a vector the user has in mind; defaulting to something
+        // non-zero would move the part the moment the panel opened.
+        for (const auto& [name, label] : {std::pair{"dx", "X"}, std::pair{"dy", "Y"},
+                                          std::pair{"dz", "Z"}}) {
+            commandParameters_.push_back(
+                {name, label, CommandParameter::Kind::Length,
+                 units::format(units::millimetres(0.0), preferences_.displayUnits)});
         }
     } else if (id == "feature.hole") {
         if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Face) {
@@ -126,6 +150,21 @@ bool Controller::commitCommand() {
         ok = true;
     } else if (id == "feature.hole") {
         addHole(lengthOf("diameter"), lengthOf("depth"));
+        ok = true;
+    } else if (id == "feature.revolve") {
+        // Parsed as an ANGLE, not a length: "90" is degrees, "1.57rad" is not, and units::parseAngle
+        // is the one place that knows which is which.
+        double degrees = 360.0;
+        for (const auto& p : commandParameters_) {
+            if (p.name != "angle") continue;
+            if (auto parsed = units::parseAngle(p.value)) {
+                degrees = parsed.value().base() * 180.0 / std::numbers::pi;
+            }
+        }
+        addRevolve(degrees);
+        ok = true;
+    } else if (id == "feature.translate") {
+        addTranslate(lengthOf("dx"), lengthOf("dy"), lengthOf("dz"));
         ok = true;
     }
 
@@ -244,6 +283,26 @@ void Controller::registerCommands() {
                                     && selectionLevel_ == SelectionLevel::Face;
                          },
                          [this] { addHole(8.0, 10.0); }});
+
+    // Revolve. Enabled on one EDGE, which identifies the axis and the profile together: the axis is
+    // resolved in the profile's own element map, so it must be an edge of the sketch being revolved.
+    commands_.push_back({"feature.revolve", "Revolve",
+                         "Turn the selected sketch about one of its edges", "revolve",
+                         [this](const CommandContext& c) {
+                             if (c.selectedElements != 1
+                                 || selectionLevel_ != SelectionLevel::Edge) {
+                                 return false;
+                             }
+                             const auto owner =
+                                 history_.current().find(elementSelection_.front().object);
+                             return owner && owner->type() == "Sketch";
+                         },
+                         [this] { addRevolve(360.0); }});
+
+    // Move. One body, and a vector the user types.
+    commands_.push_back({"feature.translate", "Move", "Move the selected body", "move",
+                         [](const CommandContext& c) { return c.selectedObjects == 1; },
+                         [this] { addTranslate(10.0, 0.0, 0.0); }});
 
     commands_.push_back({"edit.delete", "Delete", "Delete the selected features", "delete",
                          [](const CommandContext& c) { return c.selectedObjects > 0; },

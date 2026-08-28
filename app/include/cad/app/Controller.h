@@ -612,8 +612,12 @@ public:
     /// MEANS: with a value typed, the shape is committed at that size rather than wherever the
     /// pointer happens to be, and gains a driving dimension. That is a modelling rule, and a shell
     /// holding it would have to reimplement the same rule to behave the same way.
+    /// What the user has typed so far — for the drawing tools, or for a dimension being edited.
+    ///
+    /// One accessor for both, because the shell draws one readout and should not have to know which
+    /// of the two is feeding it.
     [[nodiscard]] const std::string& sketchDimensionInput() const noexcept {
-        return drawing_.input();
+        return editingDimension_ ? dimensionInput_ : drawing_.input();
     }
 
     /// Appends a character, ignoring anything that cannot appear in a length. Returns whether it
@@ -784,6 +788,54 @@ public:
     /// Returns the constraint's index, so a shell can hand it straight to `setSketchDimension`.
     [[nodiscard]] std::optional<std::size_t> dimensionSketchGeometry(sketch::GeoId);
 
+    /// One dimension, placed where the shell should draw it.
+    struct DimensionLabel {
+        float x = 0.0f;            ///< DEVICE pixels, already projected
+        float y = 0.0f;
+        std::string text;          ///< formatted in the document's display units
+        std::size_t constraint = 0;
+        bool radius = false;       ///< a radius reads "R40"; a length reads "40 mm"
+    };
+
+    /// Every dimension in the sketch being edited, projected to the viewport.
+    ///
+    /// Projected HERE rather than in the shell because the camera and the sketch's frame both live
+    /// here, and a second shell would otherwise reimplement the same two transforms. What the shell
+    /// adds is the drawing: an offset in screen pixels, a background, a font.
+    ///
+    /// Empty outside the sketch environment. Dimensions behind the camera are omitted rather than
+    /// clamped, because a label pinned to the edge of the screen points at nothing.
+    [[nodiscard]] std::vector<DimensionLabel> sketchDimensionLabels() const;
+
+    /// A world point in DEVICE pixels, or nothing when it is behind the camera.
+    [[nodiscard]] std::optional<std::array<float, 2>> projectToViewport(
+        const std::array<double, 3>& world) const;
+
+    /// Dimensions the sketch curve at a point, in DEVICE pixels, and opens it for typing.
+    ///
+    /// Created at the size the geometry ALREADY is, which is what every CAD application does: the
+    /// dimension records what you drew, and typing a new number is what changes it. Created at zero
+    /// it would collapse the sketch the instant it solved.
+    ///
+    /// After this the typed-dimension keys — digits, backspace, Enter — drive the new dimension
+    /// rather than the drawing tools, so the shell needs no second text field.
+    bool dimensionSketchAt(float x, float y);
+
+    /// The dimension currently being typed into, if any.
+    [[nodiscard]] std::optional<std::size_t> editingDimension() const noexcept {
+        return editingDimension_;
+    }
+
+    /// Trims the sketch curve at a point, in DEVICE pixels.
+    ///
+    /// The click does two jobs: it chooses the curve, and it chooses WHICH span of it to remove —
+    /// a curve crossed twice has three spans and only the click says which one was meant. See
+    /// `sketch::trim` for the rules.
+    ///
+    /// Returns false when nothing was under the pointer or the trim was refused; the status line
+    /// carries the reason either way.
+    bool trimSketchAt(float x, float y);
+
     /// Changes a dimension and re-solves — the moment a sketch becomes parametric.
     bool setSketchDimension(std::size_t constraint, double millimetres);
 
@@ -905,6 +957,15 @@ private:
     /// the feature type, so they share this rather than three copies of the same twelve lines.
     void addBoolean(const std::string& type, const std::string& label);
 
+    /// Revolves the selected sketch about one of its own straight edges.
+    ///
+    /// The axis is picked as an EDGE, which chooses both inputs at once: the compute resolves the
+    /// axis in the profile's element map, so it has to be an edge of the sketch being revolved.
+    void addRevolve(double degrees);
+
+    /// Moves the selected body. Millimetres, because the document is.
+    void addTranslate(double dxMm, double dyMm, double dzMm);
+
     /// Drills a hole into the selected FACE, perpendicular to it and at its centre.
     ///
     /// A face rather than a body, because that is what the feature actually takes: the direction
@@ -984,6 +1045,14 @@ private:
     /// discarding it and no half-applied edit can reach the document.
     std::optional<sketch::Sketch> editing_;
     document::ObjectId editingId_;
+    /// The constraint index a typed value will be applied to, when the Dimension tool placed one.
+    ///
+    /// Separate from the drawing tools' own typed input: that one sizes the segment being DRAWN and
+    /// belongs to the chain, while this one edits a dimension that already exists. Sharing the
+    /// buffer would make Escape mean two different things.
+    std::optional<std::size_t> editingDimension_;
+    std::string dimensionInput_;
+
     sketch::SolveReport lastSketchSolve_;
     std::vector<sketch::GeoId> sketchSelection_;
 

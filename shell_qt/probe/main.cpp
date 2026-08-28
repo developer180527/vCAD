@@ -27,6 +27,7 @@
 #include <QMouseEvent>
 #include <QToolButton>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace {
@@ -210,6 +211,52 @@ int main(int argc, char** argv) {
                         featureDrawn ? "ALSO drawn" : "hidden");
             check(!featureDrawn, "the sketch being edited is not drawn twice");
             controller->finishSketch();
+        }
+    }
+
+    // ── dimensions drawn in the viewport ─────────────────────────────────────────────────
+    //
+    // The labels are separate top-level windows, because a child widget over the Metal layer paints
+    // into a surface nothing clears (see Viewport's own comment). That makes them invisible to a
+    // window grab, so a screenshot cannot prove they are on screen — this is the check that can.
+    {
+        for (const auto& command : controller->commands()) {
+            if (command.id == "feature.sketch" && command.invoke) {
+                command.invoke();
+                break;
+            }
+        }
+        QApplication::processEvents();
+
+        if (auto* sketch = controller->activeSketch()) {
+            const auto line = sketch->addLine(-40, -20, 40, -20);
+            sketch->distance(line, cad::sketch::PointRef::Start, line, cad::sketch::PointRef::End,
+                             80);
+            const auto circle = sketch->addCircle(-10, 10, 14);
+            sketch->radius(circle, 14);
+
+            viewport->markDirty();
+            viewport->repaint();
+            QApplication::processEvents();
+
+            const auto labels = viewport->visibleDimensionLabelsForProbe();
+            std::printf("     %zu dimension label(s) on screen\n", labels.size());
+            for (const QString& text : labels) {
+                std::printf("       \"%s\"\n", qPrintable(text));
+            }
+            check(labels.size() == 2, "both dimensions are drawn in the viewport");
+
+            const bool sawRadius = std::any_of(labels.begin(), labels.end(), [](const QString& s) {
+                return s.startsWith(QStringLiteral("R"));
+            });
+            check(sawRadius, "a radius dimension is marked R");
+
+            controller->finishSketch();
+            QApplication::processEvents();
+            viewport->repaint();
+            QApplication::processEvents();
+            check(viewport->visibleDimensionLabelsForProbe().empty(),
+                  "the labels go away when the sketch is finished");
         }
     }
 

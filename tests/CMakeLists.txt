@@ -60,7 +60,10 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/stroke_sketching.cpp
                                  acceptance/sketch_dimension_tool.cpp
                                  acceptance/sketch_overlay_upload.cpp
-                                 acceptance/hole_command.cpp)
+                                 acceptance/hole_command.cpp
+                                 acceptance/feature_reachability.cpp
+                                 acceptance/revolve_move_commands.cpp
+                                 acceptance/sketch_trim.cpp)
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)

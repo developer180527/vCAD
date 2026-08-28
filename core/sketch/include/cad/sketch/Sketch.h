@@ -219,6 +219,25 @@ public:
     GeoId addArc(double cx, double cy, double radius, double startAngle, double endAngle,
                  bool construction = false);
 
+    /// Removes a geometry AND every constraint that names it.
+    ///
+    /// Dropping the constraints is not optional: a constraint pointing at geometry that is gone
+    /// cannot be solved and cannot be shown, so leaving one behind would break the sketch in a way
+    /// the user cannot see or fix. Ids are never reused, so nothing else can inherit them.
+    ///
+    /// Returns false for an id this sketch does not hold.
+    bool removeGeometry(GeoId);
+
+    /// Replaces a geometry's definition, KEEPING its id.
+    ///
+    /// The id is the point: a trimmed line is still the same line as far as every constraint on it
+    /// is concerned, so shortening it must not orphan them. A caller that changes the SHAPE is
+    /// responsible for dropping constraints the new shape can no longer honour -- `sketch::trim`
+    /// does exactly that for the endpoints it moves.
+    ///
+    /// The kind may change: trimming a circle produces an arc. Returns false for an unknown id.
+    bool replaceGeometry(GeoId, const Geometry&);
+
     [[nodiscard]] const std::vector<Geometry>& geometry() const noexcept { return geometry_; }
     /// Ids, index-aligned with geometry(). Exposed so callers that walk geometry positionally can
     /// name what they found — constraint inference needs exactly this, and reconstructing it by

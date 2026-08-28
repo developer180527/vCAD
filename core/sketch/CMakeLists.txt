@@ -7,6 +7,7 @@ cad_core_library(cad_sketch
   src/Dxf.cpp
   src/DxfExport.cpp
   src/Infer.cpp
+  src/Trim.cpp
 )
 
 target_include_directories(cad_sketch PUBLIC include)

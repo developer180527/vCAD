@@ -17,6 +17,7 @@
 
 #include "cad/io/DocumentStore.h"
 #include "cad/sketch/Sketch.h"
+#include "cad/sketch/Trim.h"
 
 #include "cad/units/Units.h"
 
@@ -353,6 +354,155 @@ std::optional<std::size_t> Controller::dimensionSketchGeometry(sketch::GeoId id)
     notifyDocument();
     notifyView();
     return index;
+}
+
+namespace {
+
+/// How near a click has to be to a sketch curve to count, in DEVICE pixels.
+///
+/// Eight, matching the aperture solid picking already uses, so a curve and a solid edge are equally
+/// easy to hit. A tolerance in pixels rather than millimetres is what makes the tool feel the same
+/// at every zoom -- `sketchGeometryAt` converts it through the camera.
+constexpr float kSketchPickRadiusPixels = 8.0f;
+
+}  // namespace
+
+std::optional<std::array<float, 2>> Controller::projectToViewport(
+    const std::array<double, 3>& world) const {
+    const auto& camera = scene_->frame().camera;
+    const auto multiply = [](const float m[16], const float v[4], float out[4]) {
+        for (int i = 0; i < 4; ++i) {
+            out[i] = m[i] * v[0] + m[4 + i] * v[1] + m[8 + i] * v[2] + m[12 + i] * v[3];
+        }
+    };
+
+    const float point[4]{static_cast<float>(world[0]), static_cast<float>(world[1]),
+                         static_cast<float>(world[2]), 1.0f};
+    float eye[4];
+    float clip[4];
+    multiply(camera.view.m, point, eye);
+    multiply(camera.projection.m, eye, clip);
+
+    // w comes from the PROJECTION rather than from a guess about the camera mode: orthographic
+    // leaves it at 1 and perspective does not, and assuming either is how a viewport ends up
+    // correct in one mode and subtly wrong in the other.
+    if (!(clip[3] > 1e-6f)) return std::nullopt;
+
+    const float ndcX = clip[0] / clip[3];
+    const float ndcY = clip[1] / clip[3];
+    return std::array<float, 2>{
+        (ndcX * 0.5f + 0.5f) * static_cast<float>(viewport_.width),
+        (1.0f - (ndcY * 0.5f + 0.5f)) * static_cast<float>(viewport_.height)};
+}
+
+std::vector<Controller::DimensionLabel> Controller::sketchDimensionLabels() const {
+    std::vector<DimensionLabel> out;
+    const sketch::Sketch* active = activeSketch();
+    if (active == nullptr || !active->isPlaced()) return out;
+
+    const auto& constraints = active->constraints();
+    for (std::size_t i = 0; i < constraints.size(); ++i) {
+        const auto& c = constraints[i];
+        const bool radius = c.kind == sketch::ConstraintKind::Radius;
+        if (c.kind != sketch::ConstraintKind::Distance && !radius) continue;
+
+        // Where the label belongs, in sketch coordinates.
+        std::array<double, 2> anchor{};
+        if (radius) {
+            const auto* g = active->find(c.a);
+            if (g == nullptr) continue;
+            anchor = {g->p[0], g->p[1]};   // the centre; the shell offsets in screen pixels
+        } else {
+            const auto a = active->pointAt(c.a, c.aPoint);
+            const auto b = active->pointAt(c.b == sketch::kNoGeo ? c.a : c.b, c.bPoint);
+            if (!a || !b) continue;
+            anchor = {(a.value()[0] + b.value()[0]) * 0.5,
+                      (a.value()[1] + b.value()[1]) * 0.5};
+        }
+
+        const auto screen = projectToViewport(active->to3d(anchor[0], anchor[1]));
+        if (!screen) continue;   // behind the camera: omitted, because a clamped label points at
+                                 // nothing
+
+        DimensionLabel label;
+        label.x = (*screen)[0];
+        label.y = (*screen)[1];
+        label.constraint = i;
+        label.radius = radius;
+        // Formatted in the DOCUMENT's display units, here rather than in the shell -- the units
+        // preference is not a shell concern, and two shells must not disagree about it.
+        const std::string value = units::format(units::millimetres(c.value),
+                                                preferences_.displayUnits);
+        label.text = radius ? "R" + value : value;
+        out.push_back(std::move(label));
+    }
+    return out;
+}
+
+bool Controller::dimensionSketchAt(float x, float y) {
+    if (!editing_.has_value()) return false;
+
+    const auto target = sketchGeometryAt(x, y, kSketchPickRadiusPixels);
+    if (!target) {
+        status("Click a curve to dimension it.");
+        return false;
+    }
+
+    const auto index = dimensionSketchGeometry(*target);
+    if (!index) return false;   // it said why -- a point has no size, a zero-length line no length
+
+    // Opened for typing straight away, so the flow is one gesture: click the line, type 40, Enter.
+    // Requiring a second click to start editing would make the common case two actions.
+    editingDimension_ = *index;
+    dimensionInput_.clear();
+    notifyView();
+    return true;
+}
+
+bool Controller::trimSketchAt(float x, float y) {
+    if (!editing_.has_value()) return false;
+
+    // Which curve, from the same hit testing selection uses -- so what trim cuts is what a click
+    // would have selected, and the two cannot disagree about what is under the pointer.
+    const auto target = sketchGeometryAt(x, y, kSketchPickRadiusPixels);
+    if (!target) {
+        status("Click a curve to trim.");
+        return false;
+    }
+    const auto at = sketchPointAt(x, y);
+    if (!at) {
+        status("That click did not land on the sketch plane.");
+        return false;
+    }
+
+    const auto result = sketch::trim(*editing_, *target, *at);
+    if (!result) {
+        status(result.error().message);
+        return false;
+    }
+
+    // The trimmed curve may be gone, and a selection naming it would outlive it.
+    sketchSelection_.clear();
+
+    lastSketchSolve_ = editing_->solve();
+
+    // What happened, in the order a user cares about: the geometry first, then the constraints,
+    // because dropping a constraint is a side effect they did not ask for and would otherwise have
+    // to discover by noticing the sketch has more freedom than it did.
+    std::string message = result.value().removedWhole  ? "Removed the curve"
+                          : result.value().splitInto   ? "Trimmed, splitting the curve in two"
+                                                       : "Trimmed";
+    if (result.value().constraintsDropped > 0) {
+        message += " — dropped " + std::to_string(result.value().constraintsDropped)
+                   + (result.value().constraintsDropped == 1 ? " constraint" : " constraints")
+                   + " on the ends that moved";
+    }
+    status(message);
+
+    pushSketchOverlay();
+    notifyDocument();
+    notifyView();
+    return true;
 }
 
 bool Controller::setSketchDimension(std::size_t constraint, double millimetres) {

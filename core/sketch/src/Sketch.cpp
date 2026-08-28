@@ -234,6 +234,31 @@ bool Sketch::setConstraintValue(std::size_t index, double value) {
     return true;
 }
 
+bool Sketch::removeGeometry(GeoId id) {
+    const auto at = std::find(ids_.begin(), ids_.end(), id);
+    if (at == ids_.end()) return false;
+    const auto index = static_cast<std::size_t>(std::distance(ids_.begin(), at));
+
+    geometry_.erase(geometry_.begin() + static_cast<std::ptrdiff_t>(index));
+    ids_.erase(at);
+
+    // Every constraint that names it, in either slot. A dangling constraint cannot be solved and
+    // cannot be shown, so it would break the sketch invisibly.
+    constraints_.erase(std::remove_if(constraints_.begin(), constraints_.end(),
+                                      [id](const Constraint& c) {
+                                          return c.a == id || c.b == id;
+                                      }),
+                       constraints_.end());
+    return true;
+}
+
+bool Sketch::replaceGeometry(GeoId id, const Geometry& g) {
+    const auto at = std::find(ids_.begin(), ids_.end(), id);
+    if (at == ids_.end()) return false;
+    geometry_[static_cast<std::size_t>(std::distance(ids_.begin(), at))] = g;
+    return true;
+}
+
 void Sketch::removeConstraint(std::size_t index) {
     if (index < constraints_.size()) {
         constraints_.erase(constraints_.begin() + static_cast<std::ptrdiff_t>(index));

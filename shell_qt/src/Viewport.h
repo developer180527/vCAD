@@ -4,6 +4,7 @@
 
 #include <QImage>
 #include <QString>
+#include <QLabel>
 #include <QWidget>
 
 #include <cstdint>
@@ -58,6 +59,18 @@ public:
 
     /// Places the dimension field for `--shot`, which has no pointer to follow.
     void syncDimensionFieldForShot() { syncDimensionField(); }
+
+    /// The dimension labels currently on screen, for the wiring probe.
+    ///
+    /// They are separate top-level windows -- the only way to paint over the Metal layer -- which
+    /// means a window grab cannot see them and a screenshot cannot prove they are there. This can.
+    [[nodiscard]] std::vector<QString> visibleDimensionLabelsForProbe() const {
+        std::vector<QString> out;
+        for (const QLabel* label : dimensionLabels_) {
+            if (label->isVisible()) out.push_back(label->text());
+        }
+        return out;
+    }
 
 signals:
     /// Why a click did not select, when there is a reason worth saying — a curved face, geometry
@@ -144,6 +157,15 @@ private:
     /// keeps the sketch overlay in the scene rather than in a QPainter pass. A child widget
     /// composites over the surface instead, and costs no font atlas.
     QLabel* dimensionField_ = nullptr;
+
+    /// One label per dimension in the sketch, pooled and reused.
+    ///
+    /// Separate windows rather than one overlay covering the viewport, for the reason the header
+    /// comment beside `dimensionField_` records: a child widget over the Metal layer paints into a
+    /// surface nothing ever clears, and a full-viewport window would also have to be made
+    /// click-through. Labels are cheap and there are a handful per sketch.
+    std::vector<QLabel*> dimensionLabels_;
+    void syncDimensionLabels();
 
     /// The last rendered frame, reused until something actually changes it.
     QImage frame_;

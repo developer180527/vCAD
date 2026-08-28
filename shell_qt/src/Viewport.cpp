@@ -155,6 +155,16 @@ void Viewport::syncViewportSize() {
 }
 
 void Viewport::paintEvent(QPaintEvent*) {
+    // Here rather than beside every edit, because the labels have to follow the CAMERA too: an
+    // orbit changes where a dimension belongs on screen without changing the sketch at all. Every
+    // one of those paths already ends in a repaint, so this is the one hook that catches them all.
+    // Showing a separate top-level window does not repaint this one, so there is no recursion.
+    if (controller_.environment() == cad::app::Environment::Sketch) {
+        syncDimensionLabels();
+    } else if (!dimensionLabels_.empty()) {
+        for (QLabel* label : dimensionLabels_) label->hide();
+    }
+
     if (native_) {
         // No QPainter, no image, no readback: submit and the GPU presents. This is the whole
         // point of the native path, and the reason paintEngine() returns null.
@@ -336,12 +346,14 @@ void Viewport::hideEvent(QHideEvent* event) {
     // A top-level readout does not disappear with its owner. Left alone it floats over whatever the
     // user switches to, which is worse than not having it.
     if (dimensionField_ != nullptr) dimensionField_->hide();
+    for (QLabel* label : dimensionLabels_) label->hide();
     QWidget::hideEvent(event);
 }
 
 void Viewport::leaveEvent(QEvent* event) {
     // The pointer has left the viewport, so there is nothing for the readout to annotate.
     if (dimensionField_ != nullptr) dimensionField_->hide();
+    for (QLabel* label : dimensionLabels_) label->hide();
     // And nothing is under it any more. A hover highlight left behind claims the pointer is
     // somewhere it is not.
     if (controller_.clearHover()) markDirty();
@@ -417,6 +429,45 @@ void Viewport::keyPressEvent(QKeyEvent* event) {
         }
     }
     QWidget::keyPressEvent(event);
+}
+
+void Viewport::syncDimensionLabels() {
+    const auto labels = controller_.sketchDimensionLabels();
+
+    // Grown, never shrunk: a sketch gains and loses dimensions constantly while being drawn, and
+    // destroying windows on every edit would flicker. The surplus is hidden instead.
+    while (dimensionLabels_.size() < labels.size()) {
+        auto* label = new QLabel(this, Qt::ToolTip);
+        label->setObjectName(QStringLiteral("sketchDimensionLabel"));
+        label->setFocusPolicy(Qt::NoFocus);
+        // Never takes the pointer: a dimension sitting on a curve must not stop the curve being
+        // clicked, which is exactly where these end up.
+        label->setAttribute(Qt::WA_TransparentForMouseEvents);
+        dimensionLabels_.push_back(label);
+    }
+
+    const auto dpr = devicePixelRatioF();
+    for (std::size_t i = 0; i < dimensionLabels_.size(); ++i) {
+        QLabel* label = dimensionLabels_[i];
+        if (i >= labels.size()) {
+            label->hide();
+            continue;
+        }
+        label->setText(QString::fromStdString(labels[i].text));
+        label->adjustSize();
+
+        // The controller projects in DEVICE pixels because that is what the viewport renders in;
+        // widgets are placed in logical ones.
+        const int x = static_cast<int>(labels[i].x / dpr) - label->width() / 2;
+        const int y = static_cast<int>(labels[i].y / dpr) - label->height() - 6;
+
+        // Clamped to the viewport, so a dimension on geometry scrolled half off screen still shows
+        // where it can rather than wandering onto the ribbon.
+        const int cx = std::clamp(x, 2, std::max(2, width() - label->width() - 2));
+        const int cy = std::clamp(y, 2, std::max(2, height() - label->height() - 2));
+        label->move(mapToGlobal(QPoint(cx, cy)));
+        label->show();
+    }
 }
 
 void Viewport::syncDimensionField() {

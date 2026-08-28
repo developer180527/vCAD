@@ -572,6 +572,17 @@ void MainWindow::rebuildRibbon() {
         addTool(tr("Rectangle"), QStringLiteral("rectangle"),
                 cad::app::Controller::SketchTool::Rectangle, QStringLiteral("R"));
 
+        // Trim sits with the drawing tools because it is used in the same breath as them — draw
+        // past a corner, press T, click the overhang — and because it is modal in exactly the same
+        // way. Inventor and SolidWorks both bind T.
+        addTool(tr("Trim"), QStringLiteral("trim"),
+                cad::app::Controller::SketchTool::Trim, QStringLiteral("T"));
+
+        // Dimension is bound to D, as Inventor and SolidWorks both do. Click a curve and type: the
+        // dimension is created at the size the curve already is, and the number replaces it.
+        addTool(tr("Dimension"), QStringLiteral("dimension"),
+                cad::app::Controller::SketchTool::Dimension, QStringLiteral("D"));
+
         // Look At: re-aim at the sketch plane. Entering a sketch already does this, but a user
         // orbits away to see the part in context and then wants back — without it the only way
         // back is to leave the sketch and re-enter it.
@@ -693,7 +704,9 @@ void MainWindow::rebuildRibbon() {
     // here — we are not designing a ribbon, we are copying one people already know.
     auto* create = model->addPanel(tr("Create"));
     create->addLarge(parameterised("feature.extrude", tr("Extrude"), QStringLiteral("extrude")));
-    create->addLarge(planned(tr("Revolve"), QStringLiteral("revolve")));
+    // `parameterised`, not `planned`: Revolve takes an angle, and defaults to a full turn — the same
+    // default computeRevolve uses when none is stored, so the panel and the compute agree.
+    create->addLarge(parameterised("feature.revolve", tr("Revolve"), QStringLiteral("revolve")));
     create->addSmall(planned(tr("Sweep"), QStringLiteral("sweep")));
     create->addSmall(planned(tr("Loft"), QStringLiteral("loft")));
     create->addSmall(planned(tr("Coil"), QStringLiteral("coil")));
@@ -759,6 +772,9 @@ void MainWindow::rebuildRibbon() {
     }
     modify->addSmall(planned(tr("Thicken/Offset"), QStringLiteral("thicken")));
     modify->addSmall(planned(tr("Split"), QStringLiteral("split")));
+    // Move sits beside Direct because both edit a body's placement rather than its shape. Direct
+    // (push-pull on a face) is still a stand-in; Move is real and takes a vector.
+    modify->addSmall(parameterised("feature.translate", tr("Move"), QStringLiteral("move")));
     modify->addSmall(planned(tr("Direct"), QStringLiteral("direct")));
     modify->addSmall(planned(tr("Delete Face"), QStringLiteral("delete-face")));
     modify->addSmall(planned(tr("Mark"), QStringLiteral("mark")));

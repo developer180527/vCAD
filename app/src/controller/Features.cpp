@@ -6,6 +6,8 @@
 
 #include "Internal.h"
 
+#include <numbers>
+
 #include "cad/io/Format.h"
 #include "cad/kernel/Primitives.h"
 
@@ -134,6 +136,109 @@ void Controller::addBoolean(const std::string& type, const std::string& label) {
     selection_.push_back(id);
     refresh();
     status(label);
+}
+
+void Controller::addRevolve(double degrees) {
+    // An EDGE of the sketch, which is both the axis and the way the profile is chosen.
+    //
+    // `computeRevolve` resolves the axis name in the PROFILE's own element map, so the axis has to
+    // be an edge of the sketch being revolved -- not of some other body. Selecting the edge
+    // therefore identifies both inputs at once, and there is nothing left to guess.
+    if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Edge) {
+        status("Select one straight edge of a sketch to revolve it about.");
+        return;
+    }
+    const ElementSelection picked = elementSelection_.front();
+
+    const auto object = history_.current().find(picked.object);
+    if (!object || object->output() == nullptr) {
+        status("That sketch has not been computed yet.");
+        return;
+    }
+    if (object->type() != "Sketch") {
+        status("Revolve turns a sketch about one of its own edges.");
+        return;
+    }
+
+    // Refused before a feature exists, for the same reason Hole refuses a curved face: the compute
+    // would reject it too, but only after leaving a failed row in the browser to find and delete.
+    const auto edge = object->output()->map.resolve(picked.element);
+    if (!edge) {
+        status("That edge no longer exists in the model.");
+        return;
+    }
+    if (const auto line = kernel::lineOf(*edge); !line) {
+        // The kernel measured the curve and knows why. A second judgement here could disagree.
+        status(line.error().message);
+        return;
+    }
+
+    auto [next, id] = history_.current().add("Revolve");
+    const auto created = next.find(id);
+    auto updated = created->withProperty("a_profile", picked.object)
+                       .withProperty("axis", picked.element)
+                       .withProperty("angle", units::Angle::fromBase(
+                                                  degrees * std::numbers::pi / 180.0));
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Revolve");
+
+    selection_.clear();
+    // The axis belonged to the profile this revolve consumed.
+    elementSelection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    const auto result = history_.current().find(id);
+    if (result && result->output() == nullptr) {
+        status("Revolve failed — see the feature's error in the browser.");
+    } else {
+        status("Revolved " + units::format(units::Angle::fromBase(
+                                               degrees * std::numbers::pi / 180.0)));
+    }
+}
+
+void Controller::addTranslate(double dxMm, double dyMm, double dzMm) {
+    if (selection_.size() != 1) {
+        status("Select one body to move.");
+        return;
+    }
+    const ObjectId target = selection_.front();
+    const auto object = history_.current().find(target);
+    if (!object || object->output() == nullptr) {
+        status("That feature has not been computed yet.");
+        return;
+    }
+
+    // A move of nothing is not a move. Adding the feature anyway would put a row in the browser
+    // that changes the part not at all, which the user then has to recognise and delete.
+    if (dxMm == 0.0 && dyMm == 0.0 && dzMm == 0.0) {
+        status("Enter a distance to move by.");
+        return;
+    }
+
+    auto [next, id] = history_.current().add("Translate");
+    const auto created = next.find(id);
+    auto updated = created->withProperty("a_base", target)
+                       .withProperty("dx", units::millimetres(dxMm))
+                       .withProperty("dy", units::millimetres(dyMm))
+                       .withProperty("dz", units::millimetres(dzMm));
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Move");
+
+    selection_.clear();
+    elementSelection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    const auto result = history_.current().find(id);
+    if (result && result->output() == nullptr) {
+        status("Move failed — see the feature's error in the browser.");
+    } else {
+        const auto mm = [this](double v) {
+            return units::format(units::millimetres(v), preferences_.displayUnits);
+        };
+        status("Moved by " + mm(dxMm) + ", " + mm(dyMm) + ", " + mm(dzMm));
+    }
 }
 
 void Controller::addHole(double diameterMm, double depthMm) {

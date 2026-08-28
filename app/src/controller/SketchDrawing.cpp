@@ -58,28 +58,74 @@ void Controller::setSketchTool(SketchTool tool) {
 }
 
 Controller::PreviewMeasure Controller::sketchPreviewMeasure() const {
+    // Valid while a dimension is being edited, for the same reason as the text above: the field is
+    // shown on this and would otherwise vanish the moment the tool that needs it becomes active.
+    if (editingDimension_ && editing_.has_value()) {
+        const auto& constraints = editing_->constraints();
+        if (*editingDimension_ < constraints.size()) {
+            return PreviewMeasure{true, false, constraints[*editingDimension_].value, 0.0};
+        }
+    }
     const auto measure = drawing_.measure();
     return PreviewMeasure{measure.valid, measure.circle, measure.length, measure.angle};
 }
 
 Controller::PreviewText Controller::sketchPreviewText() const {
+    // A dimension being edited owns the readout. The drawing preview is not running then -- there
+    // is no chain and no rubber band -- so without this the field would hide itself and the user
+    // would type into nothing visible.
+    if (editingDimension_ && editing_.has_value()) {
+        const auto& constraints = editing_->constraints();
+        if (*editingDimension_ < constraints.size()) {
+            const std::string current = units::format(
+                units::millimetres(constraints[*editingDimension_].value),
+                preferences_.displayUnits);
+            return PreviewText{true, dimensionInput_.empty() ? current : dimensionInput_, ""};
+        }
+    }
     const auto text = drawing_.text(preferences_.displayUnits);
     return PreviewText{text.valid, text.length, text.angle};
 }
 
 bool Controller::typeSketchDimension(char c) {
+    // A dimension being edited takes the keys. Both paths accept the same characters, because both
+    // end at units::parseLength -- "40", "40mm" and "1.5in" have to mean the same thing whether the
+    // number sizes a segment being drawn or one drawn ten minutes ago.
+    if (editingDimension_) {
+        const bool digit = c >= '0' && c <= '9';
+        const bool separator = c == '.' || c == ',';
+        const bool unit = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (!digit && !separator && !unit) return false;
+        dimensionInput_.push_back(c);
+        notifyView();
+        return true;
+    }
     if (!drawing_.type(c)) return false;
     notifyView();
     return true;
 }
 
 void Controller::backspaceSketchDimension() {
+    if (editingDimension_) {
+        if (dimensionInput_.empty()) return;
+        dimensionInput_.pop_back();
+        notifyView();
+        return;
+    }
     if (drawing_.input().empty()) return;
     drawing_.backspace();
     notifyView();
 }
 
 void Controller::clearSketchDimension() {
+    if (editingDimension_) {
+        // Escape ends the EDIT, leaving the dimension itself in place at the size it was created
+        // with. Removing it would make Escape destructive, and the user asked for a dimension.
+        editingDimension_.reset();
+        dimensionInput_.clear();
+        notifyView();
+        return;
+    }
     if (drawing_.input().empty()) return;
     drawing_.clearInput();
     notifyView();
@@ -98,6 +144,25 @@ bool Controller::lockSketchDimension() {
 
 bool Controller::commitSketchDimension() {
     if (!editing_.has_value()) return false;
+
+    if (editingDimension_) {
+        // Enter on an empty field means "leave it as it is", not "set it to nothing".
+        if (dimensionInput_.empty()) {
+            editingDimension_.reset();
+            return true;
+        }
+        const auto parsed = units::parseLength(dimensionInput_, preferences_.displayUnits);
+        if (!parsed) {
+            status("That is not a length.");
+            return false;
+        }
+        const bool applied = setSketchDimension(*editingDimension_, parsed.value().base());
+        editingDimension_.reset();
+        dimensionInput_.clear();
+        notifyView();
+        return applied;
+    }
+
     const auto outcome = drawing_.commitTyped(drawingContext());
     if (!outcome.status.empty()) status(outcome.status);
     if (!outcome.used) return false;
@@ -135,6 +200,13 @@ void Controller::clearSketch() {
 }
 bool Controller::sketchClickAt(float x, float y) {
     if (environment_ != Environment::Sketch || !editing_.has_value()) return false;
+
+    // Trim is routed out BEFORE the drawing tools, because it is not one: it consumes a click and
+    // produces no geometry, and `SketchDrawing` has nothing to contribute to it. Keeping it here
+    // rather than inside the drawing state machine also keeps that class about drawing, which is
+    // what makes its chain and lock logic readable.
+    if (drawing_.tool() == SketchTool::Trim) return trimSketchAt(x, y);
+    if (drawing_.tool() == SketchTool::Dimension) return dimensionSketchAt(x, y);
 
     const auto point = sketchPointAt(x, y);
     // Refused rather than snapped to something arbitrary. A click that missed the plane — edge-on,
@@ -519,7 +591,13 @@ void Controller::alignCameraToSketch() {
     // draws is oriented the way the sketch's coordinates say it is -- not the way the world's
     // happen to fall.
     camera_.alignTo(origin.data(), normal.data(), up.data());
-    notifyView();
+
+    // cameraChanged, NOT notifyView. Mutating `camera_` changes nothing anyone can see: the scene
+    // holds its own copy of the matrices, and until they are pushed the viewport renders from the
+    // old ones. This is the same trap Controller::cameraChanged's own comment records for orbiting,
+    // and it meant entering a sketch left the view wherever it was -- the alignment was computed,
+    // stored, and never reached the screen until the next unrelated camera event pushed it.
+    cameraChanged();
 }
 
 std::optional<std::array<double, 2>> Controller::sketchPointAt(float x, float y) const {

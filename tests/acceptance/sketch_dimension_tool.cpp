@@ -18,6 +18,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -187,4 +188,175 @@ TEST_CASE("DIAG preview accumulation", "[diag]") {
     std::size_t after = 0;
     for (const auto& e : c.frame().edgeBatches) after += e.vertexCount;
     std::printf("after a short hover: totalEdgeVerts=%zu\n", after);
+}
+
+// ── the Dimension TOOL, through the shell's path ────────────────────────────────────────
+//
+// The tests above drive `dimensionSketchGeometry` directly, which is where the rules live. These
+// drive the tool: choose it, click a PIXEL, type, press Enter. That path is what was missing — the
+// core has been able to do this for days and neither shell could reach it.
+
+namespace {
+
+/// Opens a sketch with one horizontal line and aims the camera at it.
+sketch::GeoId sketchWithLine(app::Controller& c) {
+    c.setViewportSize(800, 600);
+    REQUIRE(c.beginSketch() != document::ObjectId{});
+    auto* sketch = c.activeSketch();
+    REQUIRE(sketch != nullptr);
+    return sketch->addLine(-40, 0, 40, 0);
+}
+
+/// Clicks the first pixel whose sketch point lands on the line, and reports whether it worked.
+bool clickOnTheLine(app::Controller& c) {
+    for (int px = 0; px < 800; px += 4) {
+        for (int py = 0; py < 600; py += 4) {
+            const auto at = c.sketchPointAt(static_cast<float>(px), static_cast<float>(py));
+            if (!at) continue;
+            if (std::abs((*at)[0]) > 20.0 || std::abs((*at)[1]) > 0.5) continue;
+            if (c.sketchClickAt(static_cast<float>(px), static_cast<float>(py))) return true;
+        }
+    }
+    return false;
+}
+
+}   // namespace
+
+TEST_CASE("the Dimension tool places a dimension and takes the keys", "[sketch][dimension][tool]") {
+    app::Controller c;
+    const auto line = sketchWithLine(c);
+    c.setSketchTool(app::Controller::SketchTool::Dimension);
+
+    REQUIRE(clickOnTheLine(c));
+
+    // Created at the size the line already is, and opened for typing in one gesture — requiring a
+    // second click to start editing would make the common case two actions.
+    REQUIRE(c.editingDimension());
+    const auto& constraints = c.activeSketch()->constraints();
+    REQUIRE(*c.editingDimension() < constraints.size());
+    CHECK(constraints[*c.editingDimension()].kind == sketch::ConstraintKind::Distance);
+    CHECK(constraints[*c.editingDimension()].value == Approx(80.0));
+
+    // The readout shows the current value until something is typed, then what is being typed.
+    CHECK(c.sketchPreviewText().length.find("80") != std::string::npos);
+    REQUIRE(c.typeSketchDimension('4'));
+    REQUIRE(c.typeSketchDimension('0'));
+    CHECK(c.sketchDimensionInput() == "40");
+
+    REQUIRE(c.commitSketchDimension());
+    CHECK_FALSE(c.editingDimension());
+
+    const auto* g = c.activeSketch()->find(line);
+    REQUIRE(g != nullptr);
+    CHECK(std::hypot(g->p[2] - g->p[0], g->p[3] - g->p[1]) == Approx(40.0).margin(1e-6));
+}
+
+TEST_CASE("Escape leaves the dimension it just placed", "[sketch][dimension][tool]") {
+    // Escape ends the EDIT, not the dimension. The user asked for a dimension, and removing it
+    // would make Escape destructive in a way no other tool is.
+    app::Controller c;
+    sketchWithLine(c);
+    c.setSketchTool(app::Controller::SketchTool::Dimension);
+    REQUIRE(clickOnTheLine(c));
+    const std::size_t before = c.activeSketch()->constraints().size();
+
+    c.typeSketchDimension('9');
+    c.clearSketchDimension();
+
+    CHECK_FALSE(c.editingDimension());
+    CHECK(c.activeSketch()->constraints().size() == before);
+    CHECK(c.activeSketch()->constraints().back().value == Approx(80.0));   // unchanged
+}
+
+TEST_CASE("Enter on an empty field leaves the value alone", "[sketch][dimension][tool]") {
+    app::Controller c;
+    sketchWithLine(c);
+    c.setSketchTool(app::Controller::SketchTool::Dimension);
+    REQUIRE(clickOnTheLine(c));
+
+    REQUIRE(c.commitSketchDimension());
+    CHECK_FALSE(c.editingDimension());
+    CHECK(c.activeSketch()->constraints().back().value == Approx(80.0));
+}
+
+TEST_CASE("the Dimension tool draws nothing", "[sketch][dimension][tool]") {
+    // The routing. Every tool the drawing state machine does not know used to fall through and
+    // quietly draw a line — the bug the circle tool had. A dimension click that hits no curve must
+    // leave the sketch exactly as it was.
+    app::Controller c;
+    sketchWithLine(c);
+    const std::size_t before = c.activeSketch()->geometry().size();
+    c.setSketchTool(app::Controller::SketchTool::Dimension);
+
+    std::string lastStatus;
+    c.onStatus([&lastStatus](const std::string& s) { lastStatus = s; });
+    c.sketchClickAt(5, 5);
+    c.sketchClickAt(9, 9);
+
+    INFO("status: " << lastStatus);
+    CHECK(c.activeSketch()->geometry().size() == before);
+    CHECK_FALSE(c.editingDimension());
+}
+
+TEST_CASE("dimensions are projected into the viewport", "[sketch][dimension][labels]") {
+    // What the shell draws. The labels themselves are separate top-level windows (the only way to
+    // paint over the Metal layer), which `--shot` cannot capture — so this is the check that they
+    // are being produced at all, and where.
+    app::Controller c;
+    c.setViewportSize(800, 600);
+    REQUIRE(c.beginSketch() != document::ObjectId{});
+    auto* sketch = c.activeSketch();
+    REQUIRE(sketch != nullptr);
+
+    const auto line = sketch->addLine(-40, -20, 40, -20);
+    const auto circle = sketch->addCircle(-10, 10, 14);
+    sketch->distance(line, sketch::PointRef::Start, line, sketch::PointRef::End, 80);
+    sketch->radius(circle, 14);
+
+    const auto labels = c.sketchDimensionLabels();
+    REQUIRE(labels.size() == 2);
+
+    // A radius reads R, a length does not — the drawing convention, and the only way to tell them
+    // apart once they are just numbers on screen.
+    const auto isRadius = [](const app::Controller::DimensionLabel& l) { return l.radius; };
+    const auto radiusLabel = std::find_if(labels.begin(), labels.end(), isRadius);
+    REQUIRE(radiusLabel != labels.end());
+    CHECK(radiusLabel->text.rfind("R", 0) == 0);
+    CHECK(radiusLabel->text.find("14") != std::string::npos);
+
+    const auto lengthLabel = std::find_if(labels.begin(), labels.end(),
+                                          [](const auto& l) { return !l.radius; });
+    REQUIRE(lengthLabel != labels.end());
+    CHECK(lengthLabel->text.find("80") != std::string::npos);
+
+    // Inside the viewport, in device pixels. A label projected outside it would be clamped to an
+    // edge by the shell and point at nothing.
+    for (const auto& label : labels) {
+        INFO("label " << label.text << " at " << label.x << ", " << label.y);
+        CHECK(label.x >= 0.0f);
+        CHECK(label.x <= 800.0f);
+        CHECK(label.y >= 0.0f);
+        CHECK(label.y <= 600.0f);
+    }
+
+    // The length label sits on the line's midpoint, which is below the circle's centre in sketch
+    // space — and the camera looks at the plane with +v up, so it is BELOW on screen too.
+    CHECK(lengthLabel->y > radiusLabel->y);
+}
+
+TEST_CASE("there are no dimension labels outside a sketch", "[sketch][dimension][labels]") {
+    // The shell hides them on this. Left showing, they would float over the model with nothing to
+    // attach to.
+    app::Controller c;
+    c.setViewportSize(800, 600);
+    CHECK(c.sketchDimensionLabels().empty());
+
+    REQUIRE(c.beginSketch() != document::ObjectId{});
+    auto* sketch = c.activeSketch();
+    const auto line = sketch->addLine(0, 0, 50, 0);
+    sketch->distance(line, sketch::PointRef::Start, line, sketch::PointRef::End, 50);
+    CHECK(c.sketchDimensionLabels().size() == 1);
+
+    c.finishSketch();
+    CHECK(c.sketchDimensionLabels().empty());
 }

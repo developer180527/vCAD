@@ -404,6 +404,41 @@ bool paintCadGlyph(QPainter& g, const QString& name, int size) {
         g.setPen(QPen(kAccent, pen.widthF() * 1.4));
         const qreal marker = back ? size * 0.57 : size * 0.35;
         g.drawLine(QPointF(size * 0.14, marker), QPointF(size * 0.86, marker));
+    } else if (name == "dimension") {
+        // Extension lines with an arrowed dimension line between them: the drawing convention,
+        // which is what makes this glyph readable to anyone who has used a technical drawing.
+        g.setPen(QPen(kLine, pen.widthF()));
+        g.drawLine(QPointF(size * 0.22, size * 0.28), QPointF(size * 0.22, size * 0.72));
+        g.drawLine(QPointF(size * 0.78, size * 0.28), QPointF(size * 0.78, size * 0.72));
+        g.setPen(QPen(kAccent, pen.widthF() * 1.2));
+        g.drawLine(QPointF(size * 0.22, size * 0.50), QPointF(size * 0.78, size * 0.50));
+        g.drawLine(QPointF(size * 0.22, size * 0.50), QPointF(size * 0.34, size * 0.42));
+        g.drawLine(QPointF(size * 0.22, size * 0.50), QPointF(size * 0.34, size * 0.58));
+        g.drawLine(QPointF(size * 0.78, size * 0.50), QPointF(size * 0.66, size * 0.42));
+        g.drawLine(QPointF(size * 0.78, size * 0.50), QPointF(size * 0.66, size * 0.58));
+    } else if (name == "trim") {
+        // A line with its overhang shown cut away: the solid part is what survives, the dashed
+        // stub past the crossing is what a click removes. Drawn rather than a generic scissors,
+        // because the crossing is the whole idea -- trim cuts back TO something.
+        g.setPen(QPen(kLine, pen.widthF()));
+        g.drawLine(QPointF(size * 0.14, size * 0.62), QPointF(size * 0.60, size * 0.62));
+        g.drawLine(QPointF(size * 0.60, size * 0.24), QPointF(size * 0.60, size * 0.80));
+        QPen cut(kAccent, pen.widthF());
+        cut.setStyle(Qt::DotLine);
+        g.setPen(cut);
+        g.drawLine(QPointF(size * 0.62, size * 0.62), QPointF(size * 0.88, size * 0.62));
+    } else if (name == "move") {
+        // A body with an arrow off it: the shape stays, the position changes. Drawn rather than
+        // left to the placeholder, because a live command with a blank glyph beside three drawn
+        // stand-ins reads as the build being broken rather than the feature being new.
+        g.setPen(QPen(kLine, pen.widthF()));
+        g.drawRect(QRectF(size * 0.16, size * 0.34, size * 0.34, size * 0.34));
+        g.setPen(QPen(kAccent, pen.widthF() * 1.2));
+        const QPointF tail(size * 0.56, size * 0.51);
+        const QPointF head(size * 0.86, size * 0.51);
+        g.drawLine(tail, head);
+        g.drawLine(head, QPointF(size * 0.76, size * 0.41));
+        g.drawLine(head, QPointF(size * 0.76, size * 0.61));
     } else if (name == "rectangle") {
         // Drawn rather than left to the placeholder, because this is the sketch tool a user reaches
         // for most and a tool strip of glyphs with one blank in it reads as a broken build.

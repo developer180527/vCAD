@@ -50,7 +50,14 @@ public:
     /// tool contributes is the constraints — two horizontal, two vertical, four coincident — which
     /// is exactly what makes it stay rectangular until someone says otherwise, and exactly the
     /// tedium it saves over drawing four lines by hand.
-    enum class Tool : std::uint8_t { Select, Line, Circle, Rectangle };
+    /// Trim is an EDITING tool, not a drawing one: it consumes a click without producing
+    /// geometry, so `SketchDrawing` routes it out rather than handling it. The curve it cuts and
+    /// the span it removes both come from where the click landed, which is why it needs the
+    /// sketch's own hit testing and therefore lives on `Controller`.
+    /// Dimension, like Trim, is an EDITING tool that consumes a click and produces no geometry, so
+    /// `Controller` handles it and `SketchDrawing` never sees it. It needs the sketch's own hit
+    /// testing to find the curve, which lives a layer up.
+    enum class Tool : std::uint8_t { Select, Line, Circle, Rectangle, Trim, Dimension };
 
     /// A point in the sketch's own 2D coordinates, in millimetres.
     using Point = std::array<double, 2>;
