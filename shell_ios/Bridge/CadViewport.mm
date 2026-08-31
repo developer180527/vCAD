@@ -5,6 +5,7 @@
 
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <chrono>
 #include <string>
 
 /// The shared layer, driven from UIKit.
@@ -61,6 +62,10 @@
     NSString *_lastStrokeReport;
     /// The last tap's result, for the diagnostics panel.
     NSString *_lastTapReport;
+    /// How long the last sketch edit took inside the model.
+    NSString *_lastEditReport;
+    /// The labels last handed to the shell, so an unchanged set is not pushed again.
+    NSArray *_lastLabels;
 }
 
 + (Class)layerClass {
@@ -145,6 +150,12 @@
     // deleted in `dealloc`, so a callback cannot outlive the object it points at. A retained capture
     // would be the actual bug, making the view own a callback that owns the view.
     __unsafe_unretained CadViewportView *me = self;
+    // Marks dirty and NOTHING ELSE.
+    //
+    // This briefly called the shell back, which read the live readout — and reading it re-enters
+    // the Controller, from inside a notification the Controller emits part-way through its own
+    // work. Re-entering an object that is mid-edit is how a sketch gets read while it is being
+    // rewritten. The readout is picked up by the frame tick instead, which is outside all of it.
     _controller->onViewChanged([me] { me->_dirty = YES; });
     _controller->onDocumentChanged([me] {
         me->_dirty = YES;
@@ -167,6 +178,7 @@
     self.onStatus = nil;
     self.onDocumentChanged = nil;
     self.onStarted = nil;
+    self.onDimensions = nil;
     self.onTap = nil;
     // Deleting the Controller is what shuts bgfx down (see its destructor: backend first, then the
     // surface). Nulled rather than left dangling because every method here checks it.
@@ -189,6 +201,8 @@
     [_lastError release];
     [_lastTapReport release];
     [_lastStrokeReport release];
+    [_lastEditReport release];
+    [_lastLabels release];
     [_strokePoints release];
     [super dealloc];
 }
@@ -309,7 +323,21 @@
 }
 
 - (void)tick:(CADisplayLink *)link {
-    if (!_attached || !_dirty) return;
+    if (!_attached || _controller == nullptr) return;
+
+    // The dimension labels, once per frame rather than once per pointer event, and from OUTSIDE any
+    // model notification — see onViewChanged. Compared before pushing, so a still pen costs nothing
+    // and SwiftUI is not re-rendered sixty times a second.
+    if (self.onDimensions) {
+        NSArray *labels = [self dimensionLabels];
+        if (![labels isEqualToArray:_lastLabels ?: @[]]) {
+            [_lastLabels release];
+            _lastLabels = [labels retain];
+            self.onDimensions(labels);
+        }
+    }
+
+    if (!_dirty) return;
     _dirty = NO;
     _controller->presentFrame();
 }
@@ -523,6 +551,68 @@
     return @"line";
 }
 
+namespace {
+
+/// The one place the two vocabularies meet. Names rather than an enum for the same reason commands
+/// are addressed by id: a second copy of the enum in Swift would be a second thing to keep in step.
+NSString *constraintName(cad::sketch::ConstraintKind kind) {
+    switch (kind) {
+        case cad::sketch::ConstraintKind::Horizontal:    return @"horizontal";
+        case cad::sketch::ConstraintKind::Vertical:      return @"vertical";
+        case cad::sketch::ConstraintKind::Parallel:      return @"parallel";
+        case cad::sketch::ConstraintKind::Perpendicular: return @"perpendicular";
+        case cad::sketch::ConstraintKind::EqualLength:   return @"equal";
+        case cad::sketch::ConstraintKind::Tangent:       return @"tangent";
+        default:                                         return @"";
+    }
+}
+
+}   // namespace
+
+- (NSArray<NSString *> *)applicableConstraints {
+    NSMutableArray *out = [NSMutableArray array];
+    if (_controller == nullptr) return out;
+    for (const auto kind : _controller->applicableConstraints()) {
+        NSString *name = constraintName(kind);
+        if (name.length > 0) [out addObject:name];
+    }
+    return out;
+}
+
+- (BOOL)applyConstraint:(NSString *)name {
+    if (_controller == nullptr) return NO;
+    for (const auto kind : _controller->applicableConstraints()) {
+        if (![constraintName(kind) isEqualToString:name]) continue;
+        const bool ok = _controller->applySketchConstraint(kind);
+        _dirty = YES;
+        return ok ? YES : NO;
+    }
+    return NO;
+}
+
+- (NSInteger)sketchSelectionCount {
+    return _controller == nullptr ? 0
+                                  : static_cast<NSInteger>(_controller->sketchSelection().size());
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)dimensionLabels {
+    NSMutableArray *out = [NSMutableArray array];
+    if (_controller == nullptr || ![self sketching]) return out;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    for (const auto &label : _controller->sketchDimensionLabels()) {
+        // Back to POINTS: the model places labels in device pixels, because that is what the
+        // viewport is measured in, and UIKit lays out in points.
+        [out addObject:@{
+            @"x" : [NSString stringWithFormat:@"%.1f", label.x / scale],
+            @"y" : [NSString stringWithFormat:@"%.1f", label.y / scale],
+            @"text" : [NSString stringWithUTF8String:label.text.c_str()],
+            @"preview" : label.preview ? @"1" : @"0",
+        }];
+    }
+    return out;
+}
+
 - (NSString *)pendingDimension {
     if (_controller == nullptr || !_controller->editingDimension()) return @"";
     // Seeded with what the dimension currently READS, so the field opens showing the size that is
@@ -570,30 +660,92 @@
 /// classifier measures how far the stroke departs from its own chord, so dropping the samples in
 /// the middle is dropping exactly the evidence it uses.
 - (void)collectStroke:(UIPanGestureRecognizer *)g {
+    const CGPoint at = [g locationInView:self];
     switch (g.state) {
         case UIGestureRecognizerStateBegan:
             if (_strokePoints == nil) _strokePoints = [[NSMutableArray alloc] init];
             [_strokePoints removeAllObjects];
             // Touch-down first, then where the recogniser noticed. See `touchesBegan`.
             if (_haveTouchDown) [_strokePoints addObject:[NSValue valueWithCGPoint:_touchDown]];
-            [_strokePoints addObject:[NSValue valueWithCGPoint:[g locationInView:self]]];
+            [_strokePoints addObject:[NSValue valueWithCGPoint:at]];
+            // PEN DOWN IS THE FIRST CLICK.
+            //
+            // The desktop draws well because it is click, move, click: the move gives a rubber band
+            // and a live size, and the second click commits. The pen used to take a different path
+            // entirely — collect a stroke, show nothing, commit on lift — so the tablet had no
+            // guide at all while the mouse had a good one, and the two shells drew by different
+            // rules. Now the pen drives the SAME path, and the guide comes with it.
+            [self sketchClickAt:_haveTouchDown ? _touchDown : at];
             break;
         case UIGestureRecognizerStateChanged:
-            [_strokePoints addObject:[NSValue valueWithCGPoint:[g locationInView:self]]];
+            [_strokePoints addObject:[NSValue valueWithCGPoint:at]];
+            // The move, which is what draws the rubber band and updates the size readout.
+            [self sketchHoverAt:at];
             break;
-        case UIGestureRecognizerStateEnded:
-            [_strokePoints addObject:[NSValue valueWithCGPoint:[g locationInView:self]]];
-            [self commitStroke];
-            _strokeIsDrawing = NO;
-            break;
-        default:
-            // Cancelled or failed: the stroke is abandoned rather than half-committed. A gesture
-            // the system took away from us did not finish, and guessing what it would have been is
-            // how a stray segment appears from nowhere.
+        case UIGestureRecognizerStateEnded: {
+            [_strokePoints addObject:[NSValue valueWithCGPoint:at]];
+            // LIFT COMMITS WHAT THE GUIDE PROMISED.
+            //
+            // The pen used to decide between a line and an arc from the path it travelled, which
+            // contradicted the rubber band: the band drew a straight segment and the lift committed
+            // a curve. Every drag that bowed slightly became a semi-circle, and the user had no way
+            // to predict which they would get — reported as the line tool being cursed.
+            //
+            // A guide that promises one shape and delivers another is worse than no guide. So the
+            // second click commits, exactly as it does with a mouse. Freehand arc recognition is a
+            // TOOL of its own (Shapr3D's Automatic Line/Arc, docs/design/SKETCHING_IPAD.md), not a
+            // surprise inside the line tool; `Controller::strokeIsCurved` is what it will ask.
             [_strokePoints removeAllObjects];
+            [self sketchClickAt:at];
             _strokeIsDrawing = NO;
+            break;
+        }
+        default:
+            // Cancelled or failed: the gesture did not finish, so nothing is committed and the
+            // half-drawn shape is abandoned rather than guessed at.
+            [_strokePoints removeAllObjects];
+            if (_controller != nullptr) _controller->endSketchChain();
+            _strokeIsDrawing = NO;
+            _dirty = YES;
             break;
     }
+}
+
+/// One click into the shared drawing path, in view points.
+- (void)sketchClickAt:(CGPoint)at {
+    if (_controller == nullptr) return;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    _controller->sketchClickAt(static_cast<float>(MAX(0.0, at.x * scale)),
+                               static_cast<float>(MAX(0.0, at.y * scale)));
+    _dirty = YES;
+}
+
+- (void)sketchHoverAt:(CGPoint)at {
+    if (_controller == nullptr) return;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    if (_controller->sketchHoverAt(static_cast<float>(MAX(0.0, at.x * scale)),
+                                   static_cast<float>(MAX(0.0, at.y * scale)))) {
+        _dirty = YES;
+    }
+}
+
+/// Whether the path the pen travelled is an arc rather than a straight drag.
+///
+/// The question is the MODEL's: it owns the tolerance and the classifier, so a shell that answered
+/// it itself would be a second opinion about the same stroke.
+- (BOOL)strokeCurved {
+    if (_controller == nullptr || _strokePoints.count < 3) return NO;
+    const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                       : UIScreen.mainScreen.scale;
+    std::vector<std::array<float, 2>> points;
+    points.reserve(_strokePoints.count);
+    for (NSValue *value in _strokePoints) {
+        const CGPoint p = value.CGPointValue;
+        points.push_back({static_cast<float>(p.x * scale), static_cast<float>(p.y * scale)});
+    }
+    return _controller->strokeIsCurved(points) ? YES : NO;
 }
 
 /// Sends the collected stroke to the shared layer.
@@ -618,6 +770,8 @@
     // several indistinguishable causes: the gesture never fired, the points missed the plane, or
     // the geometry landed and is not being drawn.
     [_lastStrokeReport release];
+    [_lastEditReport release];
+    [_lastLabels release];
     _lastStrokeReport =
         [[NSString stringWithFormat:@"%@ %zu pts -> %@", [self pointerName], collected,
                                     ok ? @"drawn" : @"refused"] retain];
@@ -667,8 +821,21 @@
             || tool == cad::app::SketchDrawing::Tool::Dimension) {
             const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
                                                                : UIScreen.mainScreen.scale;
+            // TIMED, because "it renders slowly" has to become a number before it can be fixed.
+            // The model call and the shell's response to it are different costs with different
+            // cures, and this measures the first so the second can be inferred.
+            const auto started = std::chrono::steady_clock::now();
             _controller->sketchClickAt(static_cast<float>(MAX(0.0, x * scale)),
                                        static_cast<float>(MAX(0.0, y * scale)));
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - started).count();
+            [_lastEditReport release];
+    [_lastLabels release];
+            _lastEditReport = [[NSString stringWithFormat:@"%@ %.1f ms",
+                                                          tool == cad::app::SketchDrawing::Tool::Trim
+                                                              ? @"trim"
+                                                              : @"dimension",
+                                                          ms] retain];
             _dirty = YES;
             return;
         }
@@ -900,6 +1067,7 @@
         @"error" : _lastError ?: @"",
         @"lastTap" : _lastTapReport ?: @"none yet",
         @"lastStroke" : _lastStrokeReport ?: @"none yet",
+        @"lastEdit" : _lastEditReport ?: @"none yet",
         @"sketching" : [self sketching] ? @"yes" : @"no",
         @"stylusSeen" : _stylusSeen ? @"yes" : @"no",
         @"sketchGeometry" :

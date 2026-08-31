@@ -12,6 +12,8 @@ struct ViewportView: UIViewRepresentable {
     @Binding var handle: CadViewportView?
     let onStatus: (String) -> Void
     let onDocumentChanged: () -> Void
+    /// The sketch's dimension labels, delivered as they change.
+    let onDimensions: ([[String: String]]) -> Void
     /// Whether the renderer came up, and why not if it did not.
     ///
     /// Pushed rather than polled. `CadViewportView.attached` read inside a SwiftUI body is
@@ -26,6 +28,7 @@ struct ViewportView: UIViewRepresentable {
         let view = CadViewportView(frame: .zero)
         view.onStatus = { onStatus($0) }
         view.onDocumentChanged = { onDocumentChanged() }
+        view.onDimensions = { labels in onDimensions(labels) }
         view.onStarted = { ok, error in onStarted(ok, error) }
         view.onTap = { x, y in onPlaneTap(x, y) }
         // `start()` is NOT called here. A view has no size until it is laid out, and a renderer

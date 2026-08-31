@@ -37,6 +37,13 @@ struct Arity {
     std::size_t count = 1;
     bool linesOnly = false;
     bool roundOnly = false;   ///< circle or arc
+    /// Applies to EVERY selected item rather than to exactly `count` of them.
+    ///
+    /// Horizontal and vertical are per-line properties, so selecting six lines and pressing
+    /// Horizontal means all six — which is what every CAD application does and how a rectangle full
+    /// of nearly-straight lines gets tidied in one action. Parallel and the rest relate two
+    /// specific curves and cannot be spread over a selection.
+    bool eachOfThem = false;
     const char* wants = "";
 };
 
@@ -44,15 +51,20 @@ Arity arityOf(sketch::ConstraintKind kind) {
     switch (kind) {
         case sketch::ConstraintKind::Horizontal:
         case sketch::ConstraintKind::Vertical:
-            return {1, true, false, "one line"};
+            return {1, true, false, true, "one or more lines"};
         case sketch::ConstraintKind::Parallel:
         case sketch::ConstraintKind::Perpendicular:
         case sketch::ConstraintKind::EqualLength:
-            return {2, true, false, "two lines"};
+            return {2, true, false, false, "two lines"};
         case sketch::ConstraintKind::Radius:
-            return {1, false, true, "one circle or arc"};
+            return {1, false, true, false, "one circle or arc"};
+        case sketch::ConstraintKind::Tangent:
+            // Two curves, at least one of them round — checked below rather than here, because
+            // "not both straight" is not a property either flag can express. Two straight lines
+            // that share a direction at a point are one line, not a tangency.
+            return {2, false, false, false, "two curves, one of them round"};
         default:
-            return {0, false, false, ""};   // not applicable from geometry selection
+            return {0, false, false, false, ""};   // not applicable from geometry selection
     }
 }
 
@@ -431,7 +443,7 @@ namespace {
 /// Eight, matching the aperture solid picking already uses, so a curve and a solid edge are equally
 /// easy to hit. A tolerance in pixels rather than millimetres is what makes the tool feel the same
 /// at every zoom -- `sketchGeometryAt` converts it through the camera.
-constexpr float kSketchPickRadiusPixels = 8.0f;
+
 
 }  // namespace
 
@@ -467,6 +479,44 @@ std::vector<Controller::DimensionLabel> Controller::sketchDimensionLabels() cons
     std::vector<DimensionLabel> out;
     const sketch::Sketch* active = activeSketch();
     if (active == nullptr || !active->isPlaced()) return out;
+
+    // ── the shape being drawn ────────────────────────────────────────────────────────────
+    //
+    // On the EDGES, which is where every CAD puts them: a rectangle reads its width along the
+    // bottom and its height up the side, so the number sits beside the thing it measures. A single
+    // "60 x 40 mm" chip beside the cursor says the same in one place and makes the user work out
+    // which number is which.
+    const auto pending = drawing_.pending();
+    const auto aimed = drawing_.aimed();
+    const auto live = drawing_.measure();
+    if (pending && aimed && live.valid) {
+        const auto place = [&](std::array<double, 2> at, const std::string& text) {
+            const auto world = active->to3d(at[0], at[1]);
+            if (const auto screen = projectToViewport(world)) {
+                DimensionLabel label;
+                label.x = (*screen)[0];
+                label.y = (*screen)[1];
+                label.text = text;
+                label.preview = true;
+                out.push_back(std::move(label));
+            }
+        };
+        const double x0 = (*pending)[0], y0 = (*pending)[1];
+        const double x1 = (*aimed)[0], y1 = (*aimed)[1];
+        const auto units = preferences_.displayUnits;
+
+        if (live.rectangle) {
+            place({(x0 + x1) * 0.5, y0},
+                  units::format(units::millimetres(live.width), units));
+            place({x0, (y0 + y1) * 0.5},
+                  units::format(units::millimetres(live.height), units));
+        } else if (live.circle) {
+            place({x0, y0}, "R " + units::format(units::millimetres(live.length), units));
+        } else {
+            place({(x0 + x1) * 0.5, (y0 + y1) * 0.5},
+                  units::format(units::millimetres(live.length), units));
+        }
+    }
 
     const auto& constraints = active->constraints();
     for (std::size_t i = 0; i < constraints.size(); ++i) {
@@ -612,6 +662,41 @@ bool Controller::setSketchDimension(std::size_t constraint, double millimetres) 
     return true;
 }
 
+std::vector<sketch::ConstraintKind> Controller::applicableConstraints() const {
+    std::vector<sketch::ConstraintKind> out;
+    if (!editing_ || sketchSelection_.empty()) return out;
+
+    // Built from arityOf, the SAME table `applySketchConstraint` refuses by. Two lists would drift,
+    // and the visible symptom of the drift is a button that is offered and then refuses — worse
+    // than one that is greyed out, because the user believes it.
+    std::size_t lines = 0;
+    std::size_t round = 0;
+    for (const auto id : sketchSelection_) {
+        const auto* g = editing_->find(id);
+        if (g == nullptr) continue;
+        if (g->kind == sketch::GeoKind::Line) ++lines;
+        if (g->kind == sketch::GeoKind::Circle || g->kind == sketch::GeoKind::Arc) ++round;
+    }
+    const std::size_t selected = sketchSelection_.size();
+
+    for (const auto kind : {sketch::ConstraintKind::Horizontal, sketch::ConstraintKind::Vertical,
+                            sketch::ConstraintKind::Parallel,
+                            sketch::ConstraintKind::Perpendicular,
+                            sketch::ConstraintKind::EqualLength,
+                            sketch::ConstraintKind::Tangent}) {
+        const Arity arity = arityOf(kind);
+        if (arity.count == 0) continue;
+        if (arity.eachOfThem ? selected < arity.count : selected != arity.count) continue;
+        if (arity.linesOnly && lines != selected) continue;
+        if (arity.roundOnly && round != selected) continue;
+        // Tangency is the one rule the flags cannot express: it needs a curve that HAS a varying
+        // direction, so at least one of the two must be round.
+        if (kind == sketch::ConstraintKind::Tangent && round == 0) continue;
+        out.push_back(kind);
+    }
+    return out;
+}
+
 void Controller::selectSketchGeometry(sketch::GeoId id, bool additive) {
     if (!additive) sketchSelection_.clear();
     const auto it = std::find(sketchSelection_.begin(), sketchSelection_.end(), id);
@@ -703,7 +788,9 @@ bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
         status("That constraint needs points selected, which is not supported yet.");
         return false;
     }
-    if (sketchSelection_.size() != arity.count) {
+    const bool enough = arity.eachOfThem ? sketchSelection_.size() >= arity.count
+                                         : sketchSelection_.size() == arity.count;
+    if (!enough) {
         status(std::string("Select ") + arity.wants + " first.");
         return false;
     }
@@ -723,20 +810,38 @@ bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
     const sketch::GeoId a = sketchSelection_.front();
     const sketch::GeoId b = sketchSelection_.size() > 1 ? sketchSelection_[1] : sketch::kNoGeo;
     switch (kind) {
-        case sketch::ConstraintKind::Horizontal:    editing_->horizontal(a); break;
-        case sketch::ConstraintKind::Vertical:      editing_->vertical(a); break;
+        case sketch::ConstraintKind::Horizontal:
+            for (const sketch::GeoId id : sketchSelection_) editing_->horizontal(id);
+            break;
+        case sketch::ConstraintKind::Vertical:
+            for (const sketch::GeoId id : sketchSelection_) editing_->vertical(id);
+            break;
         case sketch::ConstraintKind::Parallel:      editing_->parallel(a, b); break;
         case sketch::ConstraintKind::Perpendicular: editing_->perpendicular(a, b); break;
         case sketch::ConstraintKind::EqualLength:   editing_->equalLength(a, b); break;
+        case sketch::ConstraintKind::Tangent:
+            // At the ends that meet: tangency needs a point, and the point a user means when they
+            // select two joined curves is the join.
+            editing_->tangent(a, sketch::PointRef::End, b, sketch::PointRef::Start);
+            break;
         default: return false;
     }
 
     const auto report = solveSketch();
+    // SOLVED TWICE, because one solve does not detect this.
+    //
+    // planegcs reports success on the first solve of a system that cannot hold: starting from
+    // geometry that already satisfies most of it, it converges to something and only says
+    // "conflicting" when asked again from there. Perpendicular between two lines already
+    // constrained horizontal does exactly that, so the message below never appeared for it and the
+    // sketch quietly stopped solving.
+    const auto verified = solveSketch();
+
     // A constraint that makes the sketch unsatisfiable is reported and KEPT, not silently dropped.
     // The solver names which constraints conflict, so the user can remove the one they mean --
     // rolling this one back automatically would hide the fact that the sketch was already close to
     // over-constrained.
-    if (!report.conflicting.empty()) {
+    if (!report.conflicting.empty() || !verified.conflicting.empty() || !verified.solved) {
         status("Added, but the sketch is now over-constrained: " + report.message);
     } else {
         status(std::string(sketch::toString(kind)) + " applied. " + report.message);

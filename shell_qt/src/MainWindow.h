@@ -164,6 +164,8 @@ private:
     /// Lights the active drawing tool and greys them all outside the sketch environment.
     void refreshSketchToolStates();
 
+    /// The constraint buttons, paired with what each applies. Enabled from the model's own
+    /// applicability list so the panel and the Controller cannot disagree.
     void declareSettings();
 
     /// Loads installed plugins, once, before any UI reads what they contribute.
@@ -237,10 +239,11 @@ private:
     std::vector<SketchCanvas*> sketchCanvases_;
     /// Constrain buttons plus what each needs selected. Rebuilt with the ribbon, because the
     /// actions are owned by the tab that is destroyed on every environment change.
+    /// A constraint button and what it applies. The applicability rules are the MODEL's — see
+    /// refreshSketchConstraintStates — so nothing about which selections suit it lives here.
     struct SketchConstraintAction {
         QAction* action = nullptr;
-        std::size_t needs = 1;
-        bool linesOnly = true;
+        cad::sketch::ConstraintKind kind{};
     };
     std::vector<SketchConstraintAction> sketchConstraintActions_;
 

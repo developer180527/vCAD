@@ -620,8 +620,7 @@ void MainWindow::rebuildRibbon() {
         // can offer themselves before canvas selection existed.
         auto* constrain = sketchTab->addPanel(tr("Constrain"));
         const auto addConstraint = [&](const QString& label, const QString& iconName,
-                                       cad::sketch::ConstraintKind kind, std::size_t needs,
-                                       bool linesOnly) {
+                                       cad::sketch::ConstraintKind kind, std::size_t needs) {
             auto* action = new QAction(icon(iconName), label, this);
             action->setToolTip(needs == 1 ? tr("%1 — select one curve").arg(label)
                                           : tr("%1 — select two curves").arg(label));
@@ -629,16 +628,18 @@ void MainWindow::rebuildRibbon() {
                 if (auto* ctl = controller()) ctl->applySketchConstraint(kind);
                 refreshStatus();
             });
-            sketchConstraintActions_.push_back({action, needs, linesOnly});
+            sketchConstraintActions_.push_back({action, kind});
             constrain->addSmall(action);
         };
         using CK = cad::sketch::ConstraintKind;
-        addConstraint(tr("Horizontal"), QStringLiteral("horizontal"), CK::Horizontal, 1, true);
-        addConstraint(tr("Vertical"), QStringLiteral("vertical"), CK::Vertical, 1, true);
-        addConstraint(tr("Parallel"), QStringLiteral("parallel"), CK::Parallel, 2, true);
-        addConstraint(tr("Perpendicular"), QStringLiteral("perpendicular"), CK::Perpendicular, 2,
-                      true);
-        addConstraint(tr("Equal"), QStringLiteral("equal"), CK::EqualLength, 2, true);
+        addConstraint(tr("Horizontal"), QStringLiteral("horizontal"), CK::Horizontal, 1);
+        addConstraint(tr("Vertical"), QStringLiteral("vertical"), CK::Vertical, 1);
+        addConstraint(tr("Parallel"), QStringLiteral("parallel"), CK::Parallel, 2);
+        addConstraint(tr("Perpendicular"), QStringLiteral("perpendicular"), CK::Perpendicular, 2);
+        addConstraint(tr("Equal"), QStringLiteral("equal"), CK::EqualLength, 2);
+        // TANGENT, which had no button at all: the kind exists, the solver handles it, and until
+        // now it could only arrive automatically when an arc was drawn onto a chain.
+        addConstraint(tr("Tangent"), QStringLiteral("tangent"), CK::Tangent, 2);
         {
             // Radius carries a VALUE, so it asks. A dialog is the honest stopgap until the command
             // property panel exists (DESKTOP_UX 3.2), which is where a value belongs.
@@ -653,7 +654,7 @@ void MainWindow::rebuildRibbon() {
                 if (ok) ctl->applySketchRadius(r);
                 refreshStatus();
             });
-            sketchConstraintActions_.push_back({action, 1, false});
+            sketchConstraintActions_.push_back({action, cad::sketch::ConstraintKind::Radius});
             constrain->addSmall(action);
         }
 
@@ -1405,6 +1406,7 @@ void MainWindow::refreshSketchToolStates() {
 
     auto* c = controller();
     const bool sketching = c != nullptr && c->environment() == cad::app::Environment::Sketch;
+
     for (const auto& [action, tool] : sketchToolActions_) {
         action->setEnabled(sketching);
         // Checked from the CONTROLLER rather than from which button was last pressed: the tool can
@@ -1826,19 +1828,21 @@ void MainWindow::refreshProperties() {
 }
 
 void MainWindow::refreshSketchConstraintStates() {
+    // ASKS THE MODEL what applies, rather than re-deriving it here.
+    //
+    // This used to count the selection and check the geometry kinds itself — the same rules the
+    // Controller enforces when the button is pressed, written a second time. Two copies of a rule
+    // drift, and the drift is visible as a button that is enabled and then refuses, which is worse
+    // than one greyed out because the user believes it.
+    //
+    // `applicableConstraints` is built from the same table `applySketchConstraint` refuses by, so
+    // the panel and the model cannot disagree by construction.
     auto* c = controller();
-    const std::size_t selected = c != nullptr ? c->sketchSelection().size() : 0;
+    const auto applicable = c != nullptr ? c->applicableConstraints()
+                                         : std::vector<cad::sketch::ConstraintKind>{};
     for (const auto& entry : sketchConstraintActions_) {
-        bool enabled = selected == entry.needs;
-        // Type is checked here as well as in the Controller, so the button greys out rather than
-        // enabling and then refusing -- the rule the model ribbon already follows.
-        if (enabled && entry.linesOnly && c != nullptr) {
-            for (const auto id : c->sketchSelection()) {
-                const auto* g = c->activeSketch() ? c->activeSketch()->find(id) : nullptr;
-                if (g == nullptr || g->kind != cad::sketch::GeoKind::Line) enabled = false;
-            }
-        }
-        entry.action->setEnabled(enabled);
+        entry.action->setEnabled(std::find(applicable.begin(), applicable.end(), entry.kind)
+                                 != applicable.end());
     }
 }
 

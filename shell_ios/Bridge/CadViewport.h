@@ -110,6 +110,28 @@ NS_ASSUME_NONNULL_BEGIN
 /// Which tool is active, or an empty string outside a sketch.
 @property(nonatomic, readonly, copy) NSString *sketchTool;
 
+/// Which constraints the current sketch selection can take: "horizontal", "vertical", "parallel",
+/// "perpendicular", "equal", "tangent".
+///
+/// The list is the MODEL's, so the rail cannot offer something that would then be refused — the
+/// menu adapts to the selection, which is what stops it being a wall of buttons that mostly produce
+/// error messages.
+- (NSArray<NSString *> *)applicableConstraints;
+
+/// Applies one by name. Returns NO when it did not apply; the reason arrives through `onStatus`.
+- (BOOL)applyConstraint:(NSString *)name;
+
+/// How many sketch curves are selected, so the shell can prompt for more.
+@property(nonatomic, readonly) NSInteger sketchSelectionCount;
+
+/// Every dimension in the sketch, positioned: `x`, `y` in VIEW POINTS, `text`, and `preview`
+/// ("1" while the shape is still being drawn).
+///
+/// Placed by the model, which owns the camera and the sketch's frame; the shell only draws. That is
+/// what puts the width along the bottom of a rectangle and the height up its side on both shells
+/// without either one working out where.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)dimensionLabels;
+
 /// The dimension waiting to be typed into, and what it currently reads.
 ///
 /// A desktop takes the number from the keyboard that is already there; a tablet has to put a field
@@ -195,6 +217,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// that started it lives, rather than as a mode flag inside this class. A bridge that knew about
 /// pending UI intentions would be a second place where interaction state lives.
 @property(nonatomic, copy, nullable) BOOL (^onTap)(CGFloat x, CGFloat y);
+
+/// The sketch's dimension labels, pushed when they change.
+///
+/// Delivered rather than fetched: a shell that asked for them from inside a model notification would
+/// be re-entering the Controller part-way through its own work. Fired from the frame tick, which is
+/// outside all of that.
+@property(nonatomic, copy, nullable) void (^onDimensions)(NSArray<NSDictionary<NSString *, NSString *> *> *);
 
 /// Called after the document changes, so the shell can refresh its tree without polling.
 @property(nonatomic, copy, nullable) void (^onDocumentChanged)(void);

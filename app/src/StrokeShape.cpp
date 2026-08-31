@@ -1,6 +1,8 @@
 #include "cad/app/StrokeShape.h"
 
+#include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace cad::app {
 
@@ -16,6 +18,19 @@ namespace {
 /// 2% of the chord is a sagitta of 2mm over 100mm, which is a visible curve and about the smallest
 /// one a person draws deliberately.
 constexpr double kMinSagittaRatio = 0.02;
+
+/// An arc has to actually turn. Below this it is a line drawn by a hand.
+///
+/// The rule the other two could not express. A stroke's straightness was judged only against a
+/// pixel tolerance and a fraction of its own length, and neither protects a SHORT stroke: five
+/// pixels of stylus wobble over fifty is more than four pixels and more than 2% of the chord, so it
+/// fitted an arc — of enormous radius, drawn as a wild curve across the sketch. Reported as "random
+/// curves and circles get sketched when I try to draw a line", and it is the single worst thing a
+/// sketcher can do, because the user has to notice and delete each one.
+///
+/// Twenty degrees is well below any arc a person draws deliberately — a quarter circle is ninety —
+/// and well above what a hand produces by accident.
+constexpr double kMinSweptRadians = 20.0 * std::numbers::pi / 180.0;
 
 double distanceBetween(const StrokePoint& a, const StrokePoint& b) {
     const double dx = b[0] - a[0];
@@ -117,6 +132,20 @@ StrokeFit fitStroke(std::span<const StrokePoint> points, double tolerance) {
     // would draw the complement of the arc: the long way round, through the wrong side of the
     // circle, which is a spectacular and entirely silent failure.
     if (area < 0.0) std::swap(from, to);
+
+    // HOW FAR IT TURNS, which is what separates an arc from a wobble. Measured after the fit
+    // because it needs the centre: a nearly straight stroke fits a circle whose radius is enormous
+    // and whose swept angle is a degree or two.
+    double swept = to - from;
+    while (swept <= 0.0) swept += 2.0 * std::numbers::pi;
+    while (swept > 2.0 * std::numbers::pi) swept -= 2.0 * std::numbers::pi;
+    // The short way round: `from` and `to` were ordered for a counter-clockwise sweep, so a
+    // near-straight clockwise stroke reads as almost a full turn rather than almost none.
+    const double turn = std::min(swept, 2.0 * std::numbers::pi - swept);
+    if (turn < kMinSweptRadians) {
+        fit.kind = StrokeKind::Line;
+        return fit;
+    }
 
     fit.kind = StrokeKind::Arc;
     fit.startAngle = from;

@@ -221,7 +221,9 @@ SketchDrawing::Outcome SketchDrawing::stroke(const Context& ctx, std::span<const
     // The tolerance is the HAND's, in pixels, converted here. A wobble of a few pixels is not an
     // arc at any zoom; a fixed millimetre tolerance would call everything an arc when zoomed out
     // and everything a line when zoomed in.
-    constexpr double kStraightPixels = 4.0;
+    // EIGHT pixels, not four. Four is a mouse tolerance; a stylus on glass, moving at speed, wobbles
+    // further than that and every one of those wobbles used to become an arc.
+    constexpr double kStraightPixels = 8.0;
     const double tolerance = ctx.worldPerPixel * kStraightPixels;
 
     // Endpoints snapped, interior points left alone. The ends are what joins to other geometry;

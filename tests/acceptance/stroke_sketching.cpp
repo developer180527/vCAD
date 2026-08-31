@@ -582,3 +582,33 @@ TEST_CASE("the rectangle tool previews the shape it will draw", "[stroke][rectan
     CHECK(text.length.find("x") != std::string::npos);
     CHECK(text.angle.empty());   // a rectangle has no angle to report
 }
+
+TEST_CASE("a short wobbly stroke is a line, not a huge arc", "[stroke]") {
+    // Reported from the iPad: "random curves and circles get sketched when I try to draw a line".
+    //
+    // Neither of the other two rules protects a SHORT stroke. Five millimetres of wobble over fifty
+    // is more than the straightness tolerance and more than 2% of the chord, so a circle was fitted
+    // — one of enormous radius, drawn as a wild curve across the sketch. The user then has to
+    // notice each one and delete it, which is worse than the tool refusing to draw at all.
+    std::vector<StrokePoint> points;
+    for (int i = 0; i <= 12; ++i) {
+        const double t = static_cast<double>(i) / 12.0;
+        // A single gentle bow, which is the shape a hand actually makes — alternating noise would
+        // be caught by the S-curve rule instead and prove nothing.
+        points.push_back({50.0 * t, 2.0 * std::sin(std::numbers::pi * t)});
+    }
+    const auto fit = fitStroke(points, kTolerance);
+    INFO("deviation " << fit.deviation << " over a chord of 50");
+    CHECK(fit.kind == StrokeKind::Line);
+}
+
+TEST_CASE("an arc has to turn far enough to be one", "[stroke]") {
+    // The boundary, stated as angles because that is what the rule is about. Ten degrees of sweep is
+    // a hand not holding still; sixty is a deliberate curve.
+    const auto barely = fitStroke(along(200.0, 0.0, 10.0 * std::numbers::pi / 180.0), kTolerance);
+    CHECK(barely.kind == StrokeKind::Line);
+
+    const auto deliberate = fitStroke(along(50.0, 0.0, 60.0 * std::numbers::pi / 180.0), kTolerance);
+    CHECK(deliberate.kind == StrokeKind::Arc);
+    CHECK(deliberate.radius == Approx(50.0).margin(1.0));
+}

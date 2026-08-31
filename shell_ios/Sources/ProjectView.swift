@@ -61,6 +61,10 @@ struct ProjectView: View {
     @State private var sketchTool = "line"
     /// The dimension being typed into, and its text. Nil when none is open.
     @State private var dimensionText: String?
+    /// Which constraints the current sketch selection can take, from the model.
+    @State private var constraints: [String] = []
+    /// Dimension labels, placed by the model in view points.
+    @State private var dimensions: [[String: String]] = []
 
     private var labels: Bool { settings.toolLabels || revealingLabels }
 
@@ -87,7 +91,22 @@ struct ProjectView: View {
             )
 
             VStack {
-                documentChip
+                // The sketch bar REPLACES the document chip while a sketch is open.
+                //
+                // Entering a sketch is a mode, and the way out has to be the most visible thing on
+                // screen — Fusion puts a large FINISH SKETCH at the end of its toolbar, Shapr3D an
+                // Exit Sketching in the rail, and the desktop shell an Exit panel. The iPad had no
+                // way out at all except finishing the app, which is the worst possible version of a
+                // mode.
+                //
+                // It takes the chip's place rather than sitting beside it because the document's
+                // name and Share are not what a user is looking for mid-sketch, and two bars
+                // competing for the top of a tablet screen is one too many.
+                if sketching {
+                    sketchBar
+                } else {
+                    documentChip
+                }
                 Spacer()
             }
             .padding(.top, 12)
@@ -104,6 +123,22 @@ struct ProjectView: View {
                 .overlay(alignment: .bottom) { statusLine }
             }
             .padding(12)
+
+            // THE DIMENSIONS, ON THE GEOMETRY. Positioned by the model, which owns the camera and
+            // the sketch's frame — so the width sits along the bottom of a rectangle and the height
+            // up its side, exactly as it does on the desktop and in every CAD.
+            ForEach(Array(dimensions.enumerated()), id: \.offset) { _, label in
+                let x = Double(label["x"] ?? "0") ?? 0
+                let y = Double(label["y"] ?? "0") ?? 0
+                Text(label["text"] ?? "")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(label["preview"] == "1" ? Palette.secondaryText : Palette.text)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Palette.chrome.opacity(0.92), in: RoundedRectangle(cornerRadius: 4))
+                    .position(x: x, y: y)
+                    .allowsHitTesting(false)
+            }
 
             if let text = dimensionText {
                 VStack {
@@ -164,6 +199,7 @@ struct ProjectView: View {
                 // The shared layer decides when a dimension is waiting to be typed into — clicking
                 // a curve with the Dimension tool opens one. The field follows that state rather
                 // than the shell guessing when to show itself.
+                constraints = viewport?.applicableConstraints() ?? []
                 let pending = viewport?.pendingDimension ?? ""
                 if pending.isEmpty {
                     dimensionText = nil
@@ -171,6 +207,7 @@ struct ProjectView: View {
                     dimensionText = pending
                 }
             },
+            onDimensions: { labels in dimensions = labels },
             onStarted: { ok, error in
                 rendererStarted = ok
                 rendererError = error
@@ -248,6 +285,53 @@ struct ProjectView: View {
             .padding(.vertical, 6)
             .background(Palette.chrome, in: Capsule())
             .overlay(Capsule().stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    /// The way out of the sketch environment, and what it is called.
+    private var sketchBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                viewport?.finishSketch()
+                leftSketch()
+            } label: {
+                Label("Finish Sketch", systemImage: "checkmark")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Palette.accent)
+            .controlSize(.small)
+
+            // Cancel is SECONDARY and says what it does. A sketch abandoned by accident is work
+            // lost, so it does not get equal weight with the button beside it.
+            Button {
+                viewport?.cancelSketch()
+                leftSketch()
+            } label: {
+                Label("Cancel", systemImage: "xmark")
+                    .font(.subheadline)
+            }
+            .tint(Palette.secondaryText)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Palette.chrome, in: Capsule())
+        .overlay(Capsule().stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    /// Clears everything that only means something inside a sketch.
+    ///
+    /// Read back FROM the model rather than assumed: finishing can fail — a sketch on a face whose
+    /// reference is gone refuses — and a shell that switched its chrome anyway would show the
+    /// modelling tools while the Controller was still in the sketch environment.
+    private func leftSketch() {
+        sketching = viewport?.sketching ?? false
+        if !sketching {
+            constraints = []
+            dimensions = []
+            dimensionText = nil
+            sketchTool = "line"
+        }
+        refreshCommandState()
     }
 
     // MARK: - Document chip
@@ -373,6 +457,31 @@ struct ProjectView: View {
         }
     }
 
+    /// Names the model uses, in the words a person reads.
+    private func constraintLabel(_ name: String) -> String {
+        switch name {
+        case "horizontal": return "Horizontal"
+        case "vertical": return "Vertical"
+        case "parallel": return "Parallel"
+        case "perpendicular": return "Perpendicular"
+        case "equal": return "Equal"
+        case "tangent": return "Tangent"
+        default: return name.capitalized
+        }
+    }
+
+    private func constraintSymbol(_ name: String) -> String {
+        switch name {
+        case "horizontal": return "arrow.left.and.right"
+        case "vertical": return "arrow.up.and.down"
+        case "parallel": return "equal"
+        case "perpendicular": return "perspective"
+        case "equal": return "equal.square"
+        case "tangent": return "circle.and.line.horizontal"
+        default: return "questionmark"
+        }
+    }
+
     /// A rail item that chooses a drawing tool, rather than running a command.
     ///
     /// Tools are not commands: a command happens once, a tool changes what the NEXT gesture means.
@@ -455,9 +564,27 @@ struct ProjectView: View {
             // A contextual group rather than a permanent one: outside a sketch these do nothing,
             // and a rail of tools that are usually inert teaches the user to ignore the rail. The
             // desktop does the same thing by swapping to a Sketch ribbon tab.
+            // CONSTRAINTS, shown only when the selection can take one.
+            //
+            // The list comes from the model, so this cannot offer something that would then be
+            // refused — and it disappears entirely when nothing is selected, rather than sitting
+            // there greyed out. On a tablet a permanently dead group is screen spent on nothing.
+            if sketching && !constraints.isEmpty {
+                RailGroup(
+                    items: constraints.map { name in
+                        RailItem(
+                            constraintLabel(name), constraintSymbol(name),
+                            action: {
+                                _ = viewport?.applyConstraint(name)
+                                constraints = viewport?.applicableConstraints() ?? []
+                            })
+                    }, showLabels: labels, edge: .leading)
+            }
+
             if sketching {
                 RailGroup(
                     items: [
+                        tool("Select", "cursorarrow", "select"),
                         tool("Line", "line.diagonal", "line"),
                         tool("Rectangle", "rectangle", "rectangle"),
                         tool("Circle", "circle", "circle"),

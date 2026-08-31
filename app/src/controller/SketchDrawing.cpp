@@ -198,8 +198,26 @@ void Controller::clearSketch() {
     pushSketchOverlay();
     notifyDocument();
 }
-bool Controller::sketchClickAt(float x, float y) {
+bool Controller::sketchClickAt(float x, float y, bool additive) {
     if (environment_ != Environment::Sketch || !editing_.has_value()) return false;
+
+    // SELECT picks sketch geometry, which nothing in the viewport could do before: the tool existed,
+    // the selection existed, and only the 2D canvas ever filled it. Without this there is no way to
+    // choose the two lines a constraint applies to, so the constraint menu had nothing to act on.
+    if (drawing_.tool() == SketchTool::Select) {
+        const auto target = sketchGeometryAt(x, y, kSketchPickRadiusPixels);
+        if (!target) {
+            // Empty space clears, as it does for the model selection — and for the same reason:
+            // the alternative is a selection the user cannot get rid of.
+            if (!additive && !sketchSelection_.empty()) {
+                clearSketchSelection();
+                return true;
+            }
+            return false;
+        }
+        selectSketchGeometry(*target, additive);
+        return true;
+    }
 
     // Trim is routed out BEFORE the drawing tools, because it is not one: it consumes a click and
     // produces no geometry, and `SketchDrawing` has nothing to contribute to it. Keeping it here
@@ -232,6 +250,55 @@ bool Controller::sketchClickAt(float x, float y) {
     return true;
 }
 
+bool Controller::strokeIsCurved(std::span<const std::array<float, 2>> devicePoints) const {
+    if (environment_ != Environment::Sketch || devicePoints.size() < 3) return false;
+
+    std::vector<SketchDrawing::Point> onPlane;
+    onPlane.reserve(devicePoints.size());
+    for (const auto& p : devicePoints) {
+        if (const auto point = sketchPointAt(p[0], p[1])) onPlane.push_back(*point);
+    }
+    if (onPlane.size() < 3) return false;
+
+    // The same eight pixels the stroke path calls straight, converted the same way. A second
+    // constant here would be a second definition of "the hand wobbled".
+    constexpr double kStraightPixels = 8.0;
+    const double tolerance = camera_.worldPerPixel(viewport_) * kStraightPixels;
+    return fitStroke(onPlane, tolerance).kind == StrokeKind::Arc;
+}
+
+void Controller::showStrokeInk(std::span<const std::array<float, 2>> devicePoints) {
+    if (environment_ != Environment::Sketch || !editing_.has_value()) return;
+
+    strokeInk_.clear();
+    const sketch::Sketch* active = activeSketch();
+    if (active != nullptr && devicePoints.size() >= 2) {
+        // A LINE LIST: every segment carries both of its endpoints, because the preview buffer is
+        // drawn as separate lines. A strip over these points would join this stroke's end to
+        // whatever came next.
+        std::optional<std::array<double, 2>> previous;
+        for (const auto& p : devicePoints) {
+            const auto point = sketchPointAt(p[0], p[1]);
+            if (!point) {
+                previous.reset();   // the pen crossed off the plane; do not bridge the gap
+                continue;
+            }
+            if (previous) {
+                for (const auto& end : {*previous, *point}) {
+                    const auto world = active->to3d(end[0], end[1]);
+                    strokeInk_.insert(strokeInk_.end(),
+                                      {static_cast<float>(world[0]), static_cast<float>(world[1]),
+                                       static_cast<float>(world[2])});
+                }
+            }
+            previous = *point;
+        }
+    }
+    ++strokeInkRevision_;
+    pushSketchOverlay();
+    notifyView();
+}
+
 bool Controller::sketchStrokeAt(std::span<const std::array<float, 2>> devicePoints) {
     if (environment_ != Environment::Sketch || !editing_.has_value()) return false;
 
@@ -256,6 +323,9 @@ bool Controller::sketchStrokeAt(std::span<const std::array<float, 2>> devicePoin
         status("That stroke did not land on the sketch plane.");
         return false;
     }
+
+    strokeInk_.clear();
+    ++strokeInkRevision_;
 
     const auto outcome = drawing_.stroke(drawingContext(), onPlane);
     if (!outcome.used) return false;
@@ -497,8 +567,11 @@ void Controller::pushSketchOverlay() {
     // The line overlay is kept for the PREVIEW only, which is dashed and thin by design — a
     // proposal should not look as solid as committed geometry.
     scene_->setSketchOverlay({}, 0);
-    const auto preview = sketchPreviewVertices();
-    scene_->setSketchPreview(preview, sketchPreviewRevision());
+    auto preview = sketchPreviewVertices();
+    // The pen's own trail, on the same channel: both are proposals rather than geometry, and both
+    // are drawn dashed and thin for that reason.
+    preview.insert(preview.end(), strokeInk_.begin(), strokeInk_.end());
+    scene_->setSketchPreview(preview, sketchPreviewRevision() ^ (strokeInkRevision_ * 1099511628211ull));
     pushSketchProfile();
 }
 

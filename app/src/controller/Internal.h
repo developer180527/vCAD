@@ -14,6 +14,14 @@
 
 namespace cad::app {
 
+/// How near a click has to be to a sketch curve to pick it, in pixels.
+///
+/// Shared by every path that turns a click into a curve — select, trim, dimension — because they
+/// must agree: a trim that cuts something a click would not have selected is a trim the user did
+/// not ask for. See docs/design/SELECTION.md for why the tolerance is in pixels rather than
+/// millimetres.
+inline constexpr float kSketchPickRadiusPixels = 8.0f;
+
 using document::ObjectId;
 using document::ObjectState;
 

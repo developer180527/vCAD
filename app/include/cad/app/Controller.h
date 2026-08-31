@@ -602,7 +602,39 @@ public:
     /// identically and neither can forget to clear it. Returns whether the click was used: a click
     /// that missed the plane (edge-on, or outside the sketch environment) is refused rather than
     /// snapped to something arbitrary.
-    bool sketchClickAt(float x, float y);
+    bool sketchClickAt(float x, float y, bool additive = false);
+
+    /// Which constraints the current sketch selection could take.
+    ///
+    /// The menu ADAPTS to the selection rather than offering everything and failing — Shapr3D's
+    /// constraints menu "automatically highlights valid options based on your selected elements",
+    /// and the alternative is a wall of buttons that mostly produce error messages.
+    ///
+    /// Computed from what is selected, so a shell that shows these cannot offer something the model
+    /// would refuse.
+    [[nodiscard]] std::vector<sketch::ConstraintKind> applicableConstraints() const;
+
+    // Applying one is `applySketchConstraint`, below.
+
+    /// Whether the path a pointer travelled is an arc rather than a straight drag.
+    ///
+    /// Asked by a shell on pen-up, to decide between committing the straight segment its rubber
+    /// band has been promising and committing an arc. The tolerance is a hand's, derived from the
+    /// camera here so the shells do not each need the camera to ask the question — and so "curved"
+    /// means one thing in this application rather than one thing per shell.
+    [[nodiscard]] bool strokeIsCurved(std::span<const std::array<float, 2>> devicePoints) const;
+
+    /// The stroke SO FAR, in DEVICE pixels, drawn as ink while the pen is still down.
+    ///
+    /// A stroke is one gesture and its geometry only exists when the pen lifts — so without this
+    /// the user draws blind and finds out what they drew afterwards. Every sketcher with a pen
+    /// shows the trail; ours showed nothing, which is the single thing that made drawing on the
+    /// tablet feel like guessing.
+    ///
+    /// The ink is the RAW path, not the fitted line or arc: showing a straightened preview would
+    /// promise a shape the classifier has not decided on yet, and the promise would sometimes be
+    /// wrong. Pass an empty span to clear it — a cancelled gesture must leave no trail.
+    void showStrokeInk(std::span<const std::array<float, 2>> devicePoints);
 
     /// A whole pen stroke, in DEVICE pixels: the points the pointer travelled through.
     ///
@@ -835,6 +867,14 @@ public:
         std::string text;          ///< formatted in the document's display units
         std::size_t constraint = 0;
         bool radius = false;       ///< a radius reads "R40"; a length reads "40 mm"
+        /// A dimension of the shape being DRAWN, which does not exist yet.
+        ///
+        /// The live numbers a CAD shows on the edges while you drag — "100 mm" along the bottom of
+        /// a rectangle and "80 mm" up its side. They are not constraints and cannot be clicked or
+        /// edited; a shell must draw them and leave them alone. Distinguished by a flag rather than
+        /// by a separate list because a shell places all dimensions the same way, and two lists
+        /// would mean two placement routines that drift apart.
+        bool preview = false;
     };
 
     /// Every dimension in the sketch being edited, projected to the viewport.
@@ -1090,6 +1130,9 @@ private:
     /// Separate from the drawing tools' own typed input: that one sizes the segment being DRAWN and
     /// belongs to the chain, while this one edits a dimension that already exists. Sharing the
     /// buffer would make Escape mean two different things.
+    /// The pen's trail while a stroke is in progress: world-space line pairs, cleared on commit.
+    std::vector<float> strokeInk_;
+    std::uint64_t strokeInkRevision_ = 0;
     bool awaitingSketchPlane_ = false;
     std::optional<std::size_t> editingDimension_;
     std::string dimensionInput_;
