@@ -122,3 +122,45 @@ TEST_CASE("extruding open curves fails against the extrude, not the sketch", "[s
     }
     CHECK(sawExtrude);
 }
+
+TEST_CASE("an open sketch with SEVERAL curves names every one of them", "[sketch][open]") {
+    // One open curve was already covered; several was not, and the difference is the whole bug.
+    //
+    // The edges and vertices of a face-less sketch are named by sorting them into a canonical
+    // order. That sort used `measureFace`, which reads SURFACE properties -- zero area and the
+    // origin for every edge and every vertex. So with one curve nothing could go wrong, and with
+    // two or more every curve measured identically: the sort did nothing and the persistent name
+    // was the element's index in OCCT's traversal order. Reorder the sketch and every reference
+    // into it moves.
+    //
+    // That is the index-based identity ADR 0005 exists to abolish, and a Revolve names its axis
+    // this way.
+    app::Controller controller;
+    controller.setViewportSize(1000, 800);
+
+    const document::ObjectId id = controller.beginSketchOn(cad::sketch::Plane::XY);
+    REQUIRE(id != document::ObjectId{});
+    controller.alignCameraToSketch();
+    controller.setSketchTool(app::Controller::SketchTool::Line);
+
+    // A chain of three segments, left open.
+    REQUIRE(controller.sketchClickAt(200.0f, 200.0f));
+    REQUIRE(controller.sketchClickAt(500.0f, 200.0f));
+    REQUIRE(controller.sketchClickAt(700.0f, 450.0f));
+    REQUIRE(controller.sketchClickAt(300.0f, 600.0f));
+    controller.finishSketch();
+
+    const auto sketch = controller.document().find(id);
+    REQUIRE(sketch != nullptr);
+    INFO("sketch error: " << sketch->error().message << " | " << sketch->error().detail);
+    CHECK(sketch->state() == document::ObjectState::Clean);
+    REQUIRE(sketch->output() != nullptr);
+
+    // Every edge named, and named DISTINCTLY -- the two halves of the guarantee. A traversal-order
+    // name satisfies the first and says nothing about stability; a colliding name fails the second.
+    const auto& map = sketch->output()->map;
+    const auto edges = sketch->output()->shape.subShapes(kernel::ShapeType::Edge);
+    REQUIRE(edges.size() >= 3);
+    CHECK(map.collisions().empty());
+    CHECK(map.unnamed(sketch->output()->shape).empty());
+}

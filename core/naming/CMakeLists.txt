@@ -2,6 +2,8 @@ cad_core_library(cad_naming
   src/ElementName.cpp
   src/ElementMap.cpp
   src/NamingContext.cpp
+  src/Measure.cpp
+  src/ClaimResolver.cpp
 )
 
 target_include_directories(cad_naming PUBLIC include)

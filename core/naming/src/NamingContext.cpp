@@ -3,6 +3,9 @@
 #include "cad/kernel/Guard.h"
 #include "cad/kernel/internal/Occt.h"
 
+#include "ClaimResolver.h"
+#include "Measure.h"
+
 #include <BRep_Tool.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
@@ -22,48 +25,16 @@
 #include <unordered_map>
 
 namespace cad::naming {
+
+// The measurement vocabulary lives in Measure.h now: five places need it, and one of them is a
+// separate translation unit.
+using internal::FaceMetric;
+using internal::measureFace;
+using internal::midpointOf;
+using internal::Point3;
+using internal::quantise;
+
 namespace {
-
-inline std::int64_t q(double v) { return static_cast<std::int64_t>(std::llround(v * 1e7)); }
-
-struct FaceMetric {
-    std::int64_t area, cx, cy, cz;
-    bool operator==(const FaceMetric&) const = default;
-    bool operator<(const FaceMetric& o) const {
-        return std::tie(area, cx, cy, cz) < std::tie(o.area, o.cx, o.cy, o.cz);
-    }
-};
-
-FaceMetric measureFace(const TopoDS_Shape& f) {
-    GProp_GProps p;
-    BRepGProp::SurfaceProperties(f, p);
-    const gp_Pnt c = p.CentreOfMass();
-    return {q(p.Mass()), q(c.X()), q(c.Y()), q(c.Z())};
-}
-
-struct Point3 {
-    std::int64_t x, y, z;
-    bool operator<(const Point3& o) const {
-        return std::tie(x, y, z) < std::tie(o.x, o.y, o.z);
-    }
-};
-
-Point3 midpointOf(const TopoDS_Shape& s) {
-    // A vertex has no mass, so GProp would report the origin for every one of them and the
-    // sibling ordering would collapse. Read the point directly.
-    if (s.ShapeType() == TopAbs_VERTEX) {
-        const gp_Pnt c = BRep_Tool::Pnt(TopoDS::Vertex(s));
-        return {q(c.X()), q(c.Y()), q(c.Z())};
-    }
-    GProp_GProps p;
-    if (s.ShapeType() == TopAbs_EDGE) {
-        BRepGProp::LinearProperties(s, p);
-    } else {
-        BRepGProp::SurfaceProperties(s, p);
-    }
-    const gp_Pnt c = p.CentreOfMass();
-    return {q(c.X()), q(c.Y()), q(c.Z())};
-}
 
 }  // namespace
 
@@ -115,12 +86,12 @@ struct NamingContext::Impl {
                 // stable under the parameter changes we care about but is not stable in
                 // general: a change that swaps two siblings' positions swaps their
                 // discriminators. When that matters we will need a stronger invariant.
-                std::sort(siblings.begin(), siblings.end(),
-                          [](const TopoDS_Shape& a, const TopoDS_Shape& b) {
-                              return midpointOf(a) < midpointOf(b);
-                          });
-
                 const bool needsDiscriminator = siblings.size() > 1;
+                const auto ordered =
+                    needsDiscriminator
+                        ? internal::canonicalOrder(std::move(siblings), internal::midpointOf)
+                        : internal::CanonicalOrder{std::move(siblings), false};
+                siblings = ordered.elements;
                 for (std::size_t k = 0; k < siblings.size(); ++k) {
                     NameStep step;
                     // featureSerial/opTag are deliberately left at 0 for boundary names.
@@ -200,21 +171,21 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
         // still far more useful than an explorer index, which changes on every read.
         //
         // Primitives that CAN expose tagged faces should; see the note in computeCylinder.
-        std::vector<std::pair<FaceMetric, TopoDS_Shape>> faces;
+        std::vector<TopoDS_Shape> faces;
         for (const auto& f : result.subShapes(kernel::ShapeType::Face)) {
-            const TopoDS_Shape& of = kernel::occt(const_cast<kernel::Shape&>(f));
-            faces.emplace_back(measureFace(of), of);
+            faces.push_back(kernel::occt(const_cast<kernel::Shape&>(f)));
         }
-        std::sort(faces.begin(), faces.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-
-        for (std::size_t i = 0; i < faces.size(); ++i) {
+        // Ambiguous leaves them unnamed, which `unnamed()` below turns into NamingLost. Two faces
+        // of one area and one centroid cannot be told apart, and a name that says otherwise is a
+        // reference that will one day resolve to the wrong one.
+        const auto ordered = internal::canonicalOrder(std::move(faces), internal::measureFace);
+        for (std::size_t i = 0; i < ordered.elements.size(); ++i) {
             NameStep step;
             step.featureSerial = impl_->featureSerial;
             step.opTag = impl_->opTag;
             step.provenance = Provenance::Primitive;
             step.discriminator = static_cast<std::uint32_t>(i);
-            map.bind(kernel::wrap(faces[i].second), ElementName({step}));
+            map.bind(kernel::wrap(ordered.elements[i]), ElementName({step}));
         }
     }
 
@@ -227,14 +198,18 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
     //
     // Without this an open sketch is NamingLost, which is how "draw one line" became an error.
     if (result.subShapes(kernel::ShapeType::Face).empty()) {
-        std::vector<std::pair<FaceMetric, TopoDS_Shape>> curves;
+        // MIDPOINT, not measureFace. measureFace reads SURFACE properties, which are zero for an
+        // edge and zero for a vertex -- so every curve in an open sketch measured (0,0,0,0), the
+        // sort was a no-op, and the discriminator was the element's position in OCCT's traversal
+        // order. That is an index-based identity wearing a derivation chain's clothes, and it is
+        // exactly what ADR 0005 exists to abolish: reorder the sketch and every reference into it
+        // moves, silently. A revolve names its axis this way.
+        std::vector<TopoDS_Shape> curveShapes;
         for (const auto& e : result.subShapes(kernel::ShapeType::Edge)) {
-            const TopoDS_Shape& oe = kernel::occt(const_cast<kernel::Shape&>(e));
-            curves.emplace_back(measureFace(oe), oe);
+            curveShapes.push_back(kernel::occt(const_cast<kernel::Shape&>(e)));
         }
-        std::sort(curves.begin(), curves.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-        for (std::size_t i = 0; i < curves.size(); ++i) {
+        const auto curves = internal::canonicalOrder(std::move(curveShapes), internal::midpointOf);
+        for (std::size_t i = 0; i < curves.elements.size(); ++i) {
             NameStep step;
             step.featureSerial = impl_->featureSerial;
             step.opTag = impl_->opTag;
@@ -242,32 +217,70 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
             // Offset past the face discriminators so an edge can never collide with a face name
             // in a shape that has both.
             step.discriminator = static_cast<std::uint32_t>(i) + 0x40000000u;
-            map.bind(kernel::wrap(curves[i].second), ElementName({step}));
+            map.bind(kernel::wrap(curves.elements[i]), ElementName({step}));
         }
         // Vertices too, and directly: deriveBoundaries walks a face's boundary, so with no faces
         // it has nothing to walk and every endpoint would stay unnamed.
-        std::vector<std::pair<FaceMetric, TopoDS_Shape>> points;
+        // Vertices by the EDGES THEY BOUND, not by position.
+        //
+        // Position alone cannot name them. `toEdges` produces a compound of independent curves, so
+        // a three-segment chain has six vertices, not four: each joint carries two coincident
+        // endpoints, one per edge. They are topologically distinct and geometrically identical, so
+        // any ordering by coordinate ties and nothing can be numbered.
+        //
+        // Which is the same answer the rest of the scheme already gives one dimension up: an edge
+        // of a solid is named by the faces it bounds. Here a vertex is named by the edges it
+        // bounds, so the two endpoints at a joint differ because they belong to different curves.
+        TopTools_IndexedDataMapOfShapeListOfShape vertexOwners;
+        TopExp::MapShapesAndAncestors(kernel::occt(const_cast<kernel::Shape&>(result)),
+                                      TopAbs_VERTEX, TopAbs_EDGE, vertexOwners);
+
+        std::map<std::vector<std::uint64_t>, std::vector<TopoDS_Shape>> byOwners;
         for (const auto& v : result.subShapes(kernel::ShapeType::Vertex)) {
             const TopoDS_Shape& ov = kernel::occt(const_cast<kernel::Shape&>(v));
-            points.emplace_back(measureFace(ov), ov);
+            std::vector<std::uint64_t> owners;
+            if (vertexOwners.Contains(ov)) {
+                for (const auto& e : vertexOwners.FindFromKey(ov)) {
+                    if (const auto n = map.nameOf(kernel::wrap(e))) owners.push_back(n->digest());
+                }
+            }
+            if (owners.empty()) continue;   // no named edge to derive from; left for `unnamed()`
+            std::sort(owners.begin(), owners.end());
+            owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+            byOwners[owners].push_back(ov);
         }
-        std::sort(points.begin(), points.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-        for (std::size_t i = 0; i < points.size(); ++i) {
-            NameStep step;
-            step.featureSerial = impl_->featureSerial;
-            step.opTag = impl_->opTag;
-            step.provenance = Provenance::Primitive;
-            step.discriminator = static_cast<std::uint32_t>(i) + 0x60000000u;
-            map.bind(kernel::wrap(points[i].second), ElementName({step}));
+
+        for (auto& [owners, siblings] : byOwners) {
+            // Two endpoints of one curve share its owner set, so they still need separating -- and
+            // those two are at genuinely different positions, so a midpoint tells them apart.
+            const auto ordered = siblings.size() > 1
+                                     ? internal::canonicalOrder(siblings, internal::midpointOf)
+                                     : internal::CanonicalOrder{siblings, false};
+            for (std::size_t i = 0; i < ordered.elements.size(); ++i) {
+                NameStep step;
+                step.provenance = Provenance::Boundary;
+                step.parents = owners;
+                step.discriminator =
+                    (ordered.elements.size() > 1 ? static_cast<std::uint32_t>(i + 1) : 0u)
+                    + 0x60000000u;
+                map.bind(kernel::wrap(ordered.elements[i]), ElementName({step}));
+            }
         }
     }
 
     if (const auto missing = map.unnamed(result); !missing.empty()) {
         return kernel::Error{kernel::ErrorCode::NamingLost,
                              "Some geometry could not be identified.",
-                             std::to_string(missing.size()) +
-                                 " unnamed sub-elements after naming a primitive"};
+                             std::to_string(missing.size())
+                                 + " unnamed sub-elements after naming a primitive; shape has "
+                                 + std::to_string(result.subShapes(kernel::ShapeType::Face).size())
+                                 + " faces, "
+                                 + std::to_string(result.subShapes(kernel::ShapeType::Edge).size())
+                                 + " edges, "
+                                 + std::to_string(
+                                       result.subShapes(kernel::ShapeType::Vertex).size())
+                                 + " vertices; first unnamed is type "
+                                 + std::to_string(static_cast<int>(missing.front().type()))};
     }
     // A primitive should never collide with itself, so this is a check on the tagging rather than
     // on the geometry: two faces given one tag would otherwise be indistinguishable for good.
@@ -338,149 +351,15 @@ kernel::Result<ElementMap> NamingContext::propagate(
     // last claimant and the earlier faces became unreachable, with `unnamed()` reporting nothing
     // wrong because every face did have a name. Fusing two overlapping boxes lost eight elements
     // that way, and had done since booleans existed.
-    struct Claim {
-        TopoDS_Shape face;      ///< the RESULT face being claimed
-        ElementName name;
-        TopoDS_Shape parent;    ///< the INPUT element the name came from
-    };
-    std::vector<Claim> claims;
+    std::vector<internal::Claim> claims;
     TopTools_MapOfShape claimedFaces;   ///< so pass 2 can ask what is spoken for before any binding
     const auto claim = [&](const TopoDS_Shape& face, ElementName name, const TopoDS_Shape& parent) {
         claimedFaces.Add(face);
-        claims.push_back(Claim{face, std::move(name), parent});
+        claims.push_back(internal::Claim{face, std::move(name), parent});
     };
 
-    // Binds everything collected, discriminating split siblings. Called once, after the reporting
-    // and fallback passes have had their say.
-    const auto settleClaims = [&] {
-        // Grouped by NAME AND PARENT, and the parent half is what keeps this honest.
-        //
-        // Several result faces sharing a name mean one of two completely different things:
-        //
-        //   * they came from the SAME input face, which split. They are pieces of one element and
-        //     numbering them is right.
-        //   * they came from DIFFERENT input faces that happen to carry the same name -- which is
-        //     what an unstamped COPY produces. Those are two unrelated elements that the naming
-        //     layer cannot tell apart, and numbering them by area order would assign a user's
-        //     reference to one of two bodies by geometric accident. That must stay a collision so
-        //     the guard refuses it.
-        //
-        // Grouping on the name alone conflates the two and silently "fixes" the second, which is
-        // the more dangerous of them.
-        struct Siblings {
-            std::uint64_t name = 0;
-            TopoDS_Shape parent;
-            std::vector<TopoDS_Shape> faces;
-        };
-        std::vector<Siblings> groups;
-        const auto groupFor = [&](const Claim& c) -> Siblings& {
-            for (auto& g : groups) {
-                if (g.name == c.name.digest() && g.parent.IsSame(c.parent)) return g;
-            }
-            groups.push_back(Siblings{c.name.digest(), c.parent, {}});
-            return groups.back();
-        };
-        for (const auto& c : claims) {
-            auto& group = groupFor(c);
-            const bool seen = std::any_of(group.faces.begin(), group.faces.end(),
-                                          [&](const TopoDS_Shape& f) { return f.IsSame(c.face); });
-            if (!seen) group.faces.push_back(c.face);
-        }
-
-        // Canonical order within each split, so the pieces are numbered the same way on every
-        // rebuild and on every machine. Measure order -- area then centroid, quantised -- is what
-        // the rest of this file already uses for exactly this purpose.
-        //
-        // It inherits that scheme's known weakness: two pieces of identical area and centroid
-        // cannot be separated, and a change that swaps two pieces' positions swaps their names.
-        // That is the same fragility ADR 0005 records for split edges, and no stronger invariant
-        // is available without a change to the naming scheme itself.
-        for (auto& group : groups) {
-            if (group.faces.size() < 2) continue;
-            std::sort(group.faces.begin(), group.faces.end(),
-                      [](const TopoDS_Shape& a, const TopoDS_Shape& b) {
-                          return measureFace(a) < measureFace(b);
-                      });
-            // A TIE means the ordering is not defined by anything in this code -- std::sort leaves
-            // equal elements in an unspecified order, and the discriminator is taken straight from
-            // that order. Numbering them anyway would hand a user's reference to one of two
-            // indistinguishable pieces by whatever the standard library happened to do, and would
-            // do it silently and differently on another machine.
-            //
-            // So the group is left UNDISCRIMINATED. Its pieces then share a name, `collisions()`
-            // sees it, and the operation fails with NamingLost -- which is the honest answer: we
-            // cannot tell these two apart, and ADR 0005 is explicit that a wrong reference is worse
-            // than a failed one.
-            const bool tied = std::adjacent_find(group.faces.begin(), group.faces.end(),
-                                                 [](const TopoDS_Shape& a, const TopoDS_Shape& b) {
-                                                     return measureFace(a) == measureFace(b);
-                                                 }) != group.faces.end();
-            if (tied) group.faces.clear();
-        }
-
-        // The final name for a claim: unchanged when the name has one claimant, and derived with a
-        // sibling index when it has several. Unchanged is the important half -- a face that did not
-        // split keeps exactly the name it had before this fix existed, so no reference in any saved
-        // document moves.
-        const auto finalName = [&](const Claim& c) {
-            const ElementName& name = c.name;
-            const auto& faces = groupFor(c).faces;
-            if (faces.size() < 2) return name;
-            const auto at = std::find_if(faces.begin(), faces.end(),
-                                         [&](const TopoDS_Shape& f) { return f.IsSame(c.face); });
-            NameStep step;
-            step.featureSerial = impl_->featureSerial;
-            step.opTag = impl_->opTag;
-            // Modified, not Generated: a split piece IS the parent face, in part. Calling it
-            // Generated would say the operation created something new, and "the top face" would
-            // stop meaning anything about the pieces it became.
-            step.provenance = Provenance::Modified;
-            step.discriminator = static_cast<std::uint32_t>(at - faces.begin()) + 1;
-            step.parents = {name.digest()};
-            return name.derive(step);
-        };
-
-        // Result faces claimed so far, keyed by the FACE ITSELF -- by topological identity, not by
-        // its measurements.
-        //
-        // This used to be keyed by FaceMetric, which is a quantised (area, centroid) tuple and is
-        // therefore not an identity: two genuinely different result faces sharing one metric were
-        // treated as the same face and sent down the merge path, aliasing two unrelated names
-        // together. A measurement is a heuristic for MATCHING; it is never an identity, and the
-        // comment here claimed identity while the container provided a measurement.
-        std::vector<std::pair<TopoDS_Shape, ElementName>> claimed;
-        const auto findClaim = [&claimed](const TopoDS_Shape& face) {
-            return std::find_if(claimed.begin(), claimed.end(), [&](const auto& e) {
-                return e.first.IsSame(face);
-            });
-        };
-        for (const auto& c : claims) {
-            const TopoDS_Shape& face = c.face;
-            ElementName resolved = finalName(c);
-            const auto it = findClaim(face);
-            if (it == claimed.end()) {
-                claimed.emplace_back(face, resolved);
-                out.bind(kernel::wrap(face), std::move(resolved));
-                continue;
-            }
-            if (it->second == resolved) continue;   // the same claim twice; nothing to alias
-            // Two input faces landed on one result face: a merge (two coplanar faces unified,
-            // say). BOTH names must resolve to the face — a user reference to either one has to
-            // survive — so bind the newcomer as well, and record which name is canonical.
-            //
-            // Binding is what makes resolution work; the alias entry only records canonicity.
-            // Recording the alias without binding would leave the smaller name unresolvable,
-            // which is the subtle version of exactly the bug this layer exists to prevent.
-            out.bind(kernel::wrap(face), resolved);
-            if (resolved < it->second) {
-                out.alias(resolved, it->second);
-                it->second = resolved;
-            } else {
-                out.alias(it->second, resolved);
-            }
-        }
-        claims.clear();
-    };
+    // Claims are settled in one pass, by resolveClaims -- see ClaimResolver.h for why that is a
+    // separate thing rather than a lambda here.
 
     auto resultFaces = result.subShapes(kernel::ShapeType::Face);
 
@@ -572,27 +451,25 @@ kernel::Result<ElementMap> NamingContext::propagate(
     // Everything the reports and the fallback had to say is now in. Bound in one pass, so that a
     // name claimed by several faces can be split into siblings -- which is impossible to see from
     // inside a single claim.
-    settleClaims();
+    out = internal::resolveClaims(claims, impl_->featureSerial, impl_->opTag);
 
     // --- 3. genuinely new faces ---------------------------------------------------------
     // A cut's tool faces, for instance. They belong to this feature and are tagged by their
     // own measure so the tag is reproducible, not by iteration index.
     {
-        std::vector<std::pair<FaceMetric, TopoDS_Shape>> newFaces;
+        std::vector<TopoDS_Shape> unclaimed;
         for (const auto& face : resultFaces) {
             if (out.nameOf(face)) continue;
-            const TopoDS_Shape& of = kernel::occt(const_cast<kernel::Shape&>(face));
-            newFaces.emplace_back(measureFace(of), of);
+            unclaimed.push_back(kernel::occt(const_cast<kernel::Shape&>(face)));
         }
-        std::sort(newFaces.begin(), newFaces.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
-        for (std::size_t k = 0; k < newFaces.size(); ++k) {
+        const auto newFaces = internal::canonicalOrder(std::move(unclaimed), internal::measureFace);
+        for (std::size_t k = 0; k < newFaces.elements.size(); ++k) {
             NameStep s;
             s.featureSerial = impl_->featureSerial;
             s.opTag = impl_->opTag;
             s.provenance = Provenance::Generated;
             s.discriminator = static_cast<std::uint32_t>(k + 1);
-            out.bind(kernel::wrap(newFaces[k].second), ElementName({s}));
+            out.bind(kernel::wrap(newFaces.elements[k]), ElementName({s}));
         }
     }
 
