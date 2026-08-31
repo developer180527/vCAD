@@ -73,7 +73,7 @@ TEST_CASE("orbit mode beats the drawing tool", "[camera][navigation]") {
     // precedence is a model rule with a test rather than shell code.
     app::Controller controller;
     controller.setViewportSize(800, 600);
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
 
     controller.setSketchTool(app::Controller::SketchTool::Line);
     CHECK(controller.leftPressDraws());

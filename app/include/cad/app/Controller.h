@@ -165,6 +165,24 @@ public:
     void setViewportSize(std::uint32_t width, std::uint32_t height);
     void fitView();
 
+    /// Orbits the view, unless a sketch is open.
+    ///
+    /// # Why the rule lives here
+    ///
+    /// A sketch is drawn on a plane, and the whole of the in-place sketcher assumes you are looking
+    /// at that plane: the pointer is unprojected onto it, the rubber band is drawn in it, and the
+    /// live dimensions are measured in it. Orbiting away leaves every one of those working and
+    /// none of them legible — the user is drawing on a surface they are seeing edge-on.
+    ///
+    /// **This is a deliberate divergence.** Fusion, SolidWorks and Inventor all permit orbiting
+    /// inside a sketch; they simply start you normal to the plane. vCAD locks it until the sketch
+    /// is finished, which was an explicit product decision — recorded in MODELLING_UX.md §2 beside
+    /// the camera-restore divergence so the next person does not "fix" it back.
+    ///
+    /// Returns false when it refused, so a shell can say why rather than appearing to ignore the
+    /// gesture.
+    bool orbitCamera(float dxPixels, float dyPixels);
+
     /// Pushes the camera's current matrices into the scene and requests a repaint.
     ///
     /// Call after orbit/pan/zoom. Mutating the CameraController alone changes nothing on screen:
@@ -481,6 +499,28 @@ public:
     /// Enters the sketch environment on an existing Sketch feature. The app enters this FOR the
     /// user (ADR 0008's anti-workbench decision): you never pick a mode, you pick a thing to edit.
     bool editSketch(document::ObjectId);
+
+    /// Starts a sketch on one of the origin datums, by name.
+    ///
+    /// The EXPLICIT form of Start Sketch, for a caller that already knows which plane it wants — a
+    /// test, a script, or a shell offering "sketch on XY" directly. `beginSketch` is the
+    /// interactive form and deliberately asks when nothing is selected; this is how you say so
+    /// without going through a selection.
+    document::ObjectId beginSketchOn(sketch::Plane);
+
+    /// Whether Start Sketch is waiting for the user to choose a plane or face.
+    ///
+    /// A real state rather than a shell flag, because both shells must behave the same and because
+    /// the viewport needs to know that the next click means "sketch here" rather than "select
+    /// this". See `sketchOnPickedPlane`.
+    [[nodiscard]] bool awaitingSketchPlane() const noexcept { return awaitingSketchPlane_; }
+
+    /// Starts the sketch on whatever flat face or plane is under a point, in DEVICE pixels.
+    /// Does nothing unless `awaitingSketchPlane()`.
+    document::ObjectId sketchOnPickedPlane(std::uint32_t x, std::uint32_t y);
+
+    /// Gives up on choosing a plane — Escape.
+    void cancelSketchPlanePick();
 
     /// Creates a Sketch feature and immediately edits it — what Start Sketch does.
     ///
@@ -1050,6 +1090,7 @@ private:
     /// Separate from the drawing tools' own typed input: that one sizes the segment being DRAWN and
     /// belongs to the chain, while this one edits a dimension that already exists. Sharing the
     /// buffer would make Escape mean two different things.
+    bool awaitingSketchPlane_ = false;
     std::optional<std::size_t> editingDimension_;
     std::string dimensionInput_;
 

@@ -84,6 +84,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// Whether a sketch is open, so the shell can show the sketch chrome.
 @property(nonatomic, readonly) BOOL sketching;
 
+/// Whether the model is waiting for a plane or face to be chosen for a new sketch.
+@property(nonatomic, readonly) BOOL awaitingSketchPlane;
+
+/// Presses Start Sketch. With a face or plane selected it opens there; with nothing selected it
+/// asks, and `awaitingSketchPlane` becomes true until a tap answers.
+- (void)startSketch;
+
 /// Starts a sketch on the face or plane under a point, in POINTS.
 ///
 /// The order every CAD application uses: pick the surface, then draw on it. Returns NO and reports
@@ -93,7 +100,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// two-argument form arrives as `beginSketchAtX(_:y:)`, which reads like a typo at every call site.
 - (BOOL)beginSketchAt:(CGPoint)point;
 
-/// Chooses the drawing tool while a sketch is open: "line", "circle" or "rectangle".
+/// Chooses the drawing tool while a sketch is open: "line", "circle", "rectangle", "trim" or
+/// "dimension".
 ///
 /// Strings rather than an enum, for the same reason commands are addressed by id: the shell should
 /// not carry a second copy of a vocabulary the shared layer already owns.
@@ -101,6 +109,20 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Which tool is active, or an empty string outside a sketch.
 @property(nonatomic, readonly, copy) NSString *sketchTool;
+
+/// The dimension waiting to be typed into, and what it currently reads.
+///
+/// A desktop takes the number from the keyboard that is already there; a tablet has to put a field
+/// on screen, so the shell needs to know when to show one and what to seed it with. Empty when no
+/// dimension is being edited.
+@property(nonatomic, readonly, copy) NSString *pendingDimension;
+
+/// Applies a typed dimension, in the document's display units. Returns NO if the text is not a
+/// length, leaving the field for the user to correct rather than discarding what they typed.
+- (BOOL)commitDimension:(NSString *)text;
+
+/// Abandons the dimension being typed, leaving it at the value the geometry already had.
+- (void)cancelDimension;
 
 - (void)finishSketch;
 - (void)cancelSketch;

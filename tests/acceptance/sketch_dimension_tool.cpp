@@ -13,7 +13,10 @@
 /// is covered where the shell is driven.
 
 #include "cad/app/Controller.h"
+#include "cad/app/SketchDrawing.h"
 #include "cad/sketch/Sketch.h"
+
+#include <vector>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -32,7 +35,7 @@ namespace {
 /// Takes the controller by reference because `Controller` is non-copyable and non-movable — it owns
 /// a GPU backend — so a helper that returns one cannot compile.
 sketch::GeoId openSketchWithLine(app::Controller& c) {
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     REQUIRE(sketch != nullptr);
     return sketch->addLine(0, 0, 100, 0);
@@ -77,7 +80,7 @@ TEST_CASE("changing a dimension moves the geometry", "[sketch][dimension]") {
 
 TEST_CASE("a circle is dimensioned by its radius", "[sketch][dimension]") {
     app::Controller c;
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     REQUIRE(sketch != nullptr);
     const auto circle = sketch->addCircle(0, 0, 25);
@@ -111,7 +114,7 @@ TEST_CASE("nonsense dimensions are refused rather than stored", "[sketch][dimens
 
 TEST_CASE("a point has no dimension", "[sketch][dimension]") {
     app::Controller c;
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     REQUIRE(sketch != nullptr);
     const auto point = sketch->addPoint(10, 10);
@@ -127,7 +130,7 @@ TEST_CASE("a position lock accepts values a size never would", "[sketch][dimensi
     // can legitimately hold — harmless only for as long as nothing creates a lock through this path,
     // and wrong the moment something does.
     app::Controller c;
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     REQUIRE(sketch != nullptr);
 
@@ -168,7 +171,7 @@ TEST_CASE("an out-of-range constraint index is refused", "[sketch][dimension]") 
 TEST_CASE("DIAG preview accumulation", "[diag]") {
     app::Controller c;
     c.setViewportSize(800, 600);
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     c.setSketchTool(app::Controller::SketchTool::Line);
     REQUIRE(c.sketchClickAt(400, 300));
     // CONSTANT distance, varying angle: the preview line is the same length every time, so the dash
@@ -201,7 +204,7 @@ namespace {
 /// Opens a sketch with one horizontal line and aims the camera at it.
 sketch::GeoId sketchWithLine(app::Controller& c) {
     c.setViewportSize(800, 600);
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     REQUIRE(sketch != nullptr);
     return sketch->addLine(-40, 0, 40, 0);
@@ -304,7 +307,7 @@ TEST_CASE("dimensions are projected into the viewport", "[sketch][dimension][lab
     // are being produced at all, and where.
     app::Controller c;
     c.setViewportSize(800, 600);
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     REQUIRE(sketch != nullptr);
 
@@ -351,7 +354,7 @@ TEST_CASE("there are no dimension labels outside a sketch", "[sketch][dimension]
     c.setViewportSize(800, 600);
     CHECK(c.sketchDimensionLabels().empty());
 
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     auto* sketch = c.activeSketch();
     const auto line = sketch->addLine(0, 0, 50, 0);
     sketch->distance(line, sketch::PointRef::Start, line, sketch::PointRef::End, 50);
@@ -359,4 +362,28 @@ TEST_CASE("there are no dimension labels outside a sketch", "[sketch][dimension]
 
     c.finishSketch();
     CHECK(c.sketchDimensionLabels().empty());
+}
+
+TEST_CASE("the click tools do not draw when a stroke arrives", "[sketch][dimension]") {
+    // Trim and Dimension act on geometry that already exists. A stroke means nothing to them, and
+    // falling through to the drawing branch would silently produce a line — the tool the user chose
+    // ignored, which is exactly what the Circle tool used to do.
+    app::Controller c;
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
+    auto* sketch = c.activeSketch();
+    REQUIRE(sketch != nullptr);
+    sketch->addLine(0, 0, 100, 0);
+    const std::size_t before = sketch->geometry().size();
+
+    for (const auto tool : {app::Controller::SketchTool::Trim,
+                            app::Controller::SketchTool::Dimension}) {
+        c.setSketchTool(tool);
+        app::SketchDrawing drawing;
+        drawing.setTool(tool);
+        app::SketchDrawing::Context ctx{sketch, 0.1, units::UnitSystem::Millimetre};
+        const auto outcome =
+            drawing.stroke(ctx, std::vector<app::SketchDrawing::Point>{{10, 10}, {60, 10}});
+        CHECK_FALSE(outcome.geometryChanged);
+    }
+    CHECK(sketch->geometry().size() == before);
 }

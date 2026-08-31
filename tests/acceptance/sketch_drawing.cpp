@@ -21,7 +21,7 @@ namespace {
 
 void startSketch(app::Controller& c) {
     c.setViewportSize(1000, 800);
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     c.alignCameraToSketch();
     c.setSketchTool(app::Controller::SketchTool::Line);
     // The seeded rectangle would make "is there a closed profile" true before a single click.

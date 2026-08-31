@@ -544,3 +544,41 @@ TEST_CASE("a rectangle drawn without a lock is not constrained to a size", "[str
     }));
     CHECK(sketch.solve().solved);
 }
+
+TEST_CASE("the rectangle tool previews the shape it will draw", "[stroke][rectangle]") {
+    // Drawn blind otherwise: the user drags and sees nothing until they let go, which is the one
+    // thing a rubber band exists to prevent. The preview must be the SHAPE, not the diagonal —
+    // showing the drag vector tells you where the corner is and nothing about the rectangle.
+    sketch::Sketch sketch;
+    SketchDrawing drawing;
+    drawing.setTool(SketchDrawing::Tool::Rectangle);
+    SketchDrawing::Context ctx{&sketch, 0.1, units::UnitSystem::Millimetre};
+
+    drawing.click(ctx, {0, 0});          // first corner
+    drawing.hover(ctx, {60, 40});        // dragging towards the second
+
+    const auto preview = drawing.previewSegments(ctx);
+    REQUIRE_FALSE(preview.empty());
+
+    // Every preview point lies on the rectangle's outline: on one of the two vertical sides, or on
+    // one of the two horizontal ones. A diagonal band would fail this immediately.
+    for (const auto& p : preview) {
+        const bool onVertical = std::abs(p[0] - 0.0) < 1e-6 || std::abs(p[0] - 60.0) < 1e-6;
+        const bool onHorizontal = std::abs(p[1] - 0.0) < 1e-6 || std::abs(p[1] - 40.0) < 1e-6;
+        INFO("preview point " << p[0] << "," << p[1]);
+        CHECK((onVertical || onHorizontal));
+    }
+
+    // And the live readout says both sizes. One number cannot describe a rectangle, and showing
+    // only one is worse than none: it reads as "the size".
+    const auto measured = drawing.measure();
+    CHECK(measured.rectangle);
+    CHECK(measured.width == Approx(60.0));
+    CHECK(measured.height == Approx(40.0));
+
+    const auto text = drawing.text(units::UnitSystem::Millimetre);
+    CHECK(text.valid);
+    INFO("readout: " << text.length);
+    CHECK(text.length.find("x") != std::string::npos);
+    CHECK(text.angle.empty());   // a rectangle has no angle to report
+}

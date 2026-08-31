@@ -390,6 +390,14 @@ void Viewport::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void Viewport::keyPressEvent(QKeyEvent* event) {
+    // Escape abandons the plane pick, so a user who pressed Sketch by mistake is not stuck with a
+    // viewport whose next click means something they did not ask for.
+    if (event->key() == Qt::Key_Escape && controller_.awaitingSketchPlane()) {
+        controller_.cancelSketchPlanePick();
+        markDirty();
+        return;
+    }
+
     // Only while something is half-drawn. Outside that a digit is a shortcut, and swallowing it
     // here would make the keyboard feel dead — the Controller decides, so both shells agree.
     if (controller_.environment() == cad::app::Environment::Sketch) {
@@ -557,7 +565,9 @@ void Viewport::mouseMoveEvent(QMouseEvent* event) {
 
     switch (drag_) {
         case cad::render::Drag::Orbit:
-            controller_.camera().orbit(float(delta.x()), float(delta.y()));
+            // Through the controller, which refuses while a sketch is open — the rule belongs to
+            // the model so both shells obey it without each remembering to.
+            controller_.orbitCamera(float(delta.x()), float(delta.y()));
             break;
         case cad::render::Drag::Pan:
             controller_.camera().pan(float(delta.x()), float(delta.y()),
@@ -599,6 +609,19 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
     const auto dpr = devicePixelRatioF();
     const auto x = static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr));
     const auto y = static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr));
+
+    // CHOOSING A SKETCH PLANE takes the click before selection sees it.
+    //
+    // Start Sketch with nothing selected no longer guesses a plane (MODELLING_UX.md §2: no CAD
+    // silently chooses one for you) — it asks, and this is the answer.
+    if (controller_.awaitingSketchPlane()) {
+        const auto dpr2 = devicePixelRatioF();
+        controller_.sketchOnPickedPlane(
+            static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr2)),
+            static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr2)));
+        markDirty();
+        return;
+    }
 
     // An aperture even for a mouse, and a small one.
     //

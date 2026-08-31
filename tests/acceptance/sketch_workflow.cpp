@@ -112,7 +112,7 @@ TEST_CASE("cancelling a sketch also gives the view back", "[sketch][flow]") {
     controller.camera().orbit(12.0f, 40.0f);
     const auto arranged = controller.camera().basis();
 
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     controller.cancelSketch();
 
     // Abandoning a sketch must cost nothing, including the view. Restoring only on Finish would
@@ -129,7 +129,7 @@ TEST_CASE("entering a sketch turns orbit mode off", "[sketch][flow]") {
     controller.setViewportSize(1000, 800);
     controller.setOrbitMode(true);
 
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     controller.setSketchTool(app::Controller::SketchTool::Line);
 
     // Orbit left on means the first stroke rotates the model instead of drawing, which reads as
@@ -262,7 +262,7 @@ TEST_CASE("a plane picked in the tree is the plane you sketch on", "[sketch][flo
 TEST_CASE("Slice cuts between the viewer and the sketch plane", "[sketch][flow][slice]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     controller.alignCameraToSketch();
 
     // Off on entry: a part arriving half-missing because the last sketch left Slice on is alarming

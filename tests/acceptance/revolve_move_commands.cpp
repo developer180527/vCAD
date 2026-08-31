@@ -54,7 +54,7 @@ cad::document::ObjectId aBox(Controller& app) {
 /// Offset in x so that revolving about any of its four edges sweeps a real solid rather than a
 /// profile that crosses its own axis.
 cad::document::ObjectId aSketch(Controller& app) {
-    const auto id = app.beginSketch();
+    const auto id = app.beginSketchOn(cad::sketch::Plane::XY);
     REQUIRE(id != cad::document::ObjectId{});
     auto* sketch = app.activeSketch();
     REQUIRE(sketch != nullptr);

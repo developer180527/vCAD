@@ -80,6 +80,12 @@ public:
     struct Measure {
         bool valid = false;
         bool circle = false;   ///< `length` is a radius rather than a length
+        /// A rectangle has two sizes and no angle, so it reports width and height instead of a
+        /// length. A single number cannot describe what is being dragged, and showing only one of
+        /// them is worse than showing neither: the user reads it as the size and it is half of it.
+        bool rectangle = false;
+        double width = 0.0;
+        double height = 0.0;
         double length = 0.0;   ///< millimetres, or the locked value when one is set
         double angle = 0.0;    ///< degrees from the sketch's +u axis; meaningless for a circle
     };

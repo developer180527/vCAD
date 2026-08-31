@@ -250,7 +250,7 @@ TEST_CASE("trimming an arc keeps it an arc", "[trim][sketch]") {
 TEST_CASE("the Trim tool cuts the curve under the pointer", "[trim][sketch][controller]") {
     cad::app::Controller app;
     app.setViewportSize(800, 600);
-    REQUIRE(app.beginSketch() != cad::document::ObjectId{});
+    REQUIRE(app.beginSketchOn(cad::sketch::Plane::XY) != cad::document::ObjectId{});
 
     auto* sketch = app.activeSketch();
     REQUIRE(sketch != nullptr);
@@ -289,7 +289,7 @@ TEST_CASE("Trim consumes the click rather than drawing with it", "[trim][sketch]
     // along. A click that hits nothing must add nothing.
     cad::app::Controller app;
     app.setViewportSize(800, 600);
-    REQUIRE(app.beginSketch() != cad::document::ObjectId{});
+    REQUIRE(app.beginSketchOn(cad::sketch::Plane::XY) != cad::document::ObjectId{});
     app.setSketchTool(cad::app::Controller::SketchTool::Trim);
 
     std::string lastStatus;

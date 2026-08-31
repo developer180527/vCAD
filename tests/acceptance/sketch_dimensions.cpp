@@ -21,7 +21,7 @@ namespace {
 /// is not copyable or movable, holding a GPU backend.
 void startDrawing(app::Controller& c) {
     c.setViewportSize(1000, 800);
-    REQUIRE(c.beginSketch() != document::ObjectId{});
+    REQUIRE(c.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     c.alignCameraToSketch();
     c.setSketchTool(app::Controller::SketchTool::Line);
 }

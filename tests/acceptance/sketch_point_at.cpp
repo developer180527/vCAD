@@ -55,7 +55,7 @@ TEST_CASE("a pixel maps back to the sketch coordinate that drew it", "[sketch][v
     // Off-axis, so a transposed or mirrored mapping cannot coincide with the right answer.
     controller.camera().orbit(28.0f, 19.0f);
 
-    const document::ObjectId id = controller.beginSketch();
+    const document::ObjectId id = controller.beginSketchOn(cad::sketch::Plane::XY);
     REQUIRE(id != document::ObjectId{});
     REQUIRE(controller.activeSketch() != nullptr);
 
@@ -80,7 +80,7 @@ TEST_CASE("the mapping follows a tilted sketch frame, not the global axes", "[sk
     controller.setViewportSize(1024, 768);
     controller.camera().orbit(12.0f, 33.0f);
 
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     sketch::Sketch* active = controller.activeSketch();
     REQUIRE(active != nullptr);
 
@@ -119,7 +119,7 @@ TEST_CASE("an edge-on plane refuses rather than inventing a coordinate", "[sketc
     app::Controller controller;
     controller.setViewportSize(800, 600);
 
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     REQUIRE(controller.activeSketch() != nullptr);
 
     const float origin[3]{0.0f, 0.0f, 0.0f};
@@ -214,7 +214,7 @@ TEST_CASE("editing a face-placed sketch aligns the camera and accepts clicks", "
 TEST_CASE("clicks in the viewport draw into the sketch", "[sketch][viewport]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
 
     // Face-on, so every click lands and the pixels below are unambiguous.
     controller.alignCameraToSketch();
@@ -284,7 +284,7 @@ TEST_CASE("clicks in the viewport draw into the sketch", "[sketch][viewport]") {
 TEST_CASE("the in-progress sketch converts to world lines for drawing", "[sketch][viewport]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
 
     sketch::Sketch* active = controller.activeSketch();
     REQUIRE(active != nullptr);
@@ -332,7 +332,7 @@ TEST_CASE("the in-progress sketch converts to world lines for drawing", "[sketch
 TEST_CASE("a half-drawn shape follows the pointer", "[sketch][viewport]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
-    REQUIRE(controller.beginSketch() != document::ObjectId{});
+    REQUIRE(controller.beginSketchOn(cad::sketch::Plane::XY) != document::ObjectId{});
     controller.alignCameraToSketch();
     controller.setSketchTool(app::Controller::SketchTool::Line);
 

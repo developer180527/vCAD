@@ -21,7 +21,7 @@ TEST_CASE("a sketch with open curves computes", "[sketch][open]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
 
-    const document::ObjectId id = controller.beginSketch();
+    const document::ObjectId id = controller.beginSketchOn(cad::sketch::Plane::XY);
     REQUIRE(id != document::ObjectId{});
     controller.alignCameraToSketch();
     controller.setSketchTool(app::Controller::SketchTool::Line);
@@ -49,7 +49,7 @@ TEST_CASE("a closed sketch still produces a face", "[sketch][open]") {
     // Drawn, not seeded. Start Sketch gives an EMPTY sketch now — it used to seed a 40 x 25
     // rectangle that the renderer drew as a square sheet appearing from nowhere. So the closed case
     // has to be made the way a user makes it, which is a better test regardless.
-    const document::ObjectId id = controller.beginSketch();
+    const document::ObjectId id = controller.beginSketchOn(cad::sketch::Plane::XY);
     controller.alignCameraToSketch();
     controller.setSketchTool(app::Controller::SketchTool::Line);
     REQUIRE(controller.sketchClickAt(300.0f, 300.0f));
@@ -70,7 +70,7 @@ TEST_CASE("a closed sketch still produces a face", "[sketch][open]") {
 TEST_CASE("Start Sketch creates nothing to delete", "[sketch][open]") {
     app::Controller controller;
     controller.setViewportSize(1000, 800);
-    const document::ObjectId id = controller.beginSketch();
+    const document::ObjectId id = controller.beginSketchOn(cad::sketch::Plane::XY);
     REQUIRE(id != document::ObjectId{});
 
     // No geometry, and therefore no square sheet in the viewport. The old seed meant the first
@@ -93,7 +93,7 @@ TEST_CASE("extruding open curves fails against the extrude, not the sketch", "[s
     app::Controller controller;
     controller.setViewportSize(1000, 800);
 
-    const document::ObjectId sketchId = controller.beginSketch();
+    const document::ObjectId sketchId = controller.beginSketchOn(cad::sketch::Plane::XY);
     controller.alignCameraToSketch();
     controller.setSketchTool(app::Controller::SketchTool::Line);
     REQUIRE(controller.sketchClickAt(300.0f, 300.0f));

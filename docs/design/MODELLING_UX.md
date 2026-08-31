@@ -85,6 +85,17 @@ useful signal: the vendor changed the default towards auto-rotating once they ha
 
 So auto-rotating into the plane on entry is right, and vCAD does it.
 
+**Orbiting inside a sketch.** All three permit it: the view starts normal to the plane and the user
+may turn the model as they draw. **vCAD does not** — the view is locked to the sketch plane until
+the sketch is finished, and an orbit gesture is refused with a message saying so.
+
+A deliberate divergence, recorded here beside the other one so nobody "fixes" it back. The reason is
+that the in-place sketcher assumes you are looking at the plane: the pointer is unprojected onto it,
+the rubber band is drawn in it, and the live dimensions are measured in it. Orbiting away leaves all
+of that working and none of it legible — you are drawing on a surface you are seeing edge-on. The
+incumbents can afford it because they have a separate sketch view to fall back on; a shell that
+draws in the 3D world does not. `Controller::orbitCamera` is the one place that enforces it.
+
 **On exit**, the sources are clear that the Sketch tab disappears and you return to the modelling
 environment. **None of them state that the camera is restored to its pre-sketch orientation**, and
 my reading is that Fusion leaves you looking at the plane. vCAD restores the previous view, which

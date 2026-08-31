@@ -42,6 +42,20 @@ void Controller::setViewportSize(std::uint32_t width, std::uint32_t height) {
     notifyView();
 }
 
+bool Controller::orbitCamera(float dxPixels, float dyPixels) {
+    if (environment_ == Environment::Sketch) {
+        // Said once per gesture rather than per pixel: a status line rewritten sixty times a second
+        // is a flicker, not a message.
+        if (dxPixels != 0.0f || dyPixels != 0.0f) {
+            status("The view is locked to the sketch plane. Finish the sketch to orbit.");
+        }
+        return false;
+    }
+    camera_.orbit(dxPixels, dyPixels);
+    cameraChanged();
+    return true;
+}
+
 void Controller::cameraChanged() {
     scene_->setCamera(camera_.matrices(viewport_));
     // The slice normal faces the camera, so orbiting past the plane has to flip it — otherwise

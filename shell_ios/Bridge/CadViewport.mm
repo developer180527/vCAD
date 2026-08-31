@@ -367,10 +367,11 @@
     }
     // Deltas, not absolute translation: CameraController::orbit takes a movement in pixels, and
     // handing it the cumulative translation each callback spins the model at increasing speed.
-    _controller->camera().orbit(static_cast<float>(p.x - _lastOrbit.x),
-                                static_cast<float>(p.y - _lastOrbit.y));
+    // Through the controller, which refuses while a sketch is open. The baseline is still advanced
+    // so that finishing the sketch does not resume from a stale one.
+    _controller->orbitCamera(static_cast<float>(p.x - _lastOrbit.x),
+                             static_cast<float>(p.y - _lastOrbit.y));
     _lastOrbit = p;
-    _controller->cameraChanged();
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)g {
@@ -445,6 +446,19 @@
     return !_stylusSeen;
 }
 
+- (BOOL)awaitingSketchPlane {
+    return _controller != nullptr && _controller->awaitingSketchPlane() ? YES : NO;
+}
+
+- (void)startSketch {
+    if (_controller == nullptr) return;
+    // Asks rather than guesses: with nothing selected this puts the Controller into "choose a
+    // plane", and the next tap answers. The shell shows the prompt; the STATE is the model's, so
+    // both shells cannot disagree about what the next tap means.
+    _controller->beginSketch();
+    _dirty = YES;
+}
+
 - (BOOL)beginSketchAt:(CGPoint)point {
     if (!_attached || _controller == nullptr) return NO;
     const CGFloat x = point.x;
@@ -486,6 +500,10 @@
         _controller->setSketchTool(Tool::Circle);
     } else if ([tool isEqualToString:@"rectangle"]) {
         _controller->setSketchTool(Tool::Rectangle);
+    } else if ([tool isEqualToString:@"trim"]) {
+        _controller->setSketchTool(Tool::Trim);
+    } else if ([tool isEqualToString:@"dimension"]) {
+        _controller->setSketchTool(Tool::Dimension);
     } else {
         _controller->setSketchTool(Tool::Line);
     }
@@ -497,10 +515,41 @@
     switch (_controller->sketchTool()) {
         case cad::app::SketchDrawing::Tool::Circle:    return @"circle";
         case cad::app::SketchDrawing::Tool::Rectangle: return @"rectangle";
+        case cad::app::SketchDrawing::Tool::Trim:      return @"trim";
+        case cad::app::SketchDrawing::Tool::Dimension: return @"dimension";
         case cad::app::SketchDrawing::Tool::Line:      return @"line";
         case cad::app::SketchDrawing::Tool::Select:    return @"select";
     }
     return @"line";
+}
+
+- (NSString *)pendingDimension {
+    if (_controller == nullptr || !_controller->editingDimension()) return @"";
+    // Seeded with what the dimension currently READS, so the field opens showing the size that is
+    // there — the user edits a number rather than typing one from nothing.
+    const auto text = _controller->sketchPreviewText();
+    return text.valid ? [NSString stringWithUTF8String:text.length.c_str()] : @"0";
+}
+
+- (BOOL)commitDimension:(NSString *)text {
+    if (_controller == nullptr || !_controller->editingDimension()) return NO;
+    // Fed through the SAME typed-dimension path the desktop keyboard drives, so the two shells
+    // parse "40", "40mm" and "1.5 in" identically — units belong to the shared layer, not to a
+    // text field.
+    _controller->clearSketchDimension();
+    for (NSUInteger i = 0; i < text.length; ++i) {
+        const unichar c = [text characterAtIndex:i];
+        if (c < 128) _controller->typeSketchDimension(static_cast<char>(c));
+    }
+    const bool ok = _controller->commitSketchDimension();
+    _dirty = YES;
+    return ok ? YES : NO;
+}
+
+- (void)cancelDimension {
+    if (_controller == nullptr) return;
+    _controller->clearSketchDimension();
+    _dirty = YES;
 }
 
 - (void)finishSketch {
@@ -610,9 +659,23 @@
 - (void)tapAtX:(CGFloat)x y:(CGFloat)y {
     if (!_attached || _controller == nullptr) return;
     if ([self sketching]) {
-        // Inside a sketch a tap ENDS the run of connected segments — the tablet's equivalent of
-        // Escape, and what a double-click does on the desktop (MODELLING_UX.md §2b). It must not
-        // select a body: selection at this moment would take the user out of what they are doing.
+        // TRIM and DIMENSION are click tools: they act on a curve that already exists, and on a
+        // tablet the click is a tap. Routed to the same `sketchClickAt` the desktop mouse drives,
+        // so what a tap does to a curve is decided once, in the shared layer.
+        const auto tool = _controller->sketchTool();
+        if (tool == cad::app::SketchDrawing::Tool::Trim
+            || tool == cad::app::SketchDrawing::Tool::Dimension) {
+            const CGFloat scale = self.window.screen.scale > 0 ? self.window.screen.scale
+                                                               : UIScreen.mainScreen.scale;
+            _controller->sketchClickAt(static_cast<float>(MAX(0.0, x * scale)),
+                                       static_cast<float>(MAX(0.0, y * scale)));
+            _dirty = YES;
+            return;
+        }
+
+        // Otherwise a tap ENDS the run of connected segments — the tablet's equivalent of Escape,
+        // and what a double-click does on the desktop (MODELLING_UX.md §2b). It must not select a
+        // body: selection at this moment would take the user out of what they are doing.
         _controller->endSketchChain();
         if (self.onStatus) self.onStatus(@"Chain ended");
         _dirty = YES;

@@ -59,6 +59,8 @@ struct ProjectView: View {
     @State private var choosingPlane = false
     /// Which drawing tool is active while a sketch is open.
     @State private var sketchTool = "line"
+    /// The dimension being typed into, and its text. Nil when none is open.
+    @State private var dimensionText: String?
 
     private var labels: Bool { settings.toolLabels || revealingLabels }
 
@@ -102,6 +104,14 @@ struct ProjectView: View {
                 .overlay(alignment: .bottom) { statusLine }
             }
             .padding(12)
+
+            if let text = dimensionText {
+                VStack {
+                    Spacer()
+                    dimensionField(text)
+                    Spacer()
+                }
+            }
 
             if showDiagnostics {
                 VStack {
@@ -151,6 +161,15 @@ struct ProjectView: View {
             onDocumentChanged: {
                 treeRows = viewport?.tree() ?? []
                 diagnostics = viewport?.diagnostics() ?? [:]
+                // The shared layer decides when a dimension is waiting to be typed into — clicking
+                // a curve with the Dimension tool opens one. The field follows that state rather
+                // than the shell guessing when to show itself.
+                let pending = viewport?.pendingDimension ?? ""
+                if pending.isEmpty {
+                    dimensionText = nil
+                } else if dimensionText == nil {
+                    dimensionText = pending
+                }
             },
             onStarted: { ok, error in
                 rendererStarted = ok
@@ -312,6 +331,48 @@ struct ProjectView: View {
                 } : nil)
     }
 
+    /// Where a tablet types a number.
+    ///
+    /// The desktop takes it from the keyboard that is already under the user's hands; on a tablet
+    /// there is nothing to type into until something puts a field on screen. It opens seeded with
+    /// what the dimension currently reads, so the gesture is "correct a number" rather than "recall
+    /// one" — and the keyboard is decimal, because a length is not a sentence.
+    private func dimensionField(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            TextField(
+                "Value",
+                text: Binding(get: { text }, set: { dimensionText = $0 })
+            )
+            .keyboardType(.decimalPad)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 120)
+
+            Button("Set") { applyDimension() }
+                .buttonStyle(.borderedProminent)
+                .tint(Palette.accent)
+
+            Button("Cancel") {
+                viewport?.cancelDimension()
+                dimensionText = nil
+            }
+            .tint(Palette.secondaryText)
+        }
+        .padding(10)
+        .background(Palette.chrome, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    private func applyDimension() {
+        guard let text = dimensionText else { return }
+        if viewport?.commitDimension(text) == true {
+            dimensionText = nil
+        } else {
+            // Left open with the text intact: a typo is corrected, not retyped. The shared layer
+            // has already said what was wrong through the status line.
+            showStatus("That is not a length.")
+        }
+    }
+
     /// A rail item that chooses a drawing tool, rather than running a command.
     ///
     /// Tools are not commands: a command happens once, a tool changes what the NEXT gesture means.
@@ -400,6 +461,8 @@ struct ProjectView: View {
                         tool("Line", "line.diagonal", "line"),
                         tool("Rectangle", "rectangle", "rectangle"),
                         tool("Circle", "circle", "circle"),
+                        tool("Trim", "scissors", "trim"),
+                        tool("Dimension", "ruler", "dimension"),
                     ], showLabels: labels, edge: .leading)
             }
 

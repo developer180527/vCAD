@@ -214,9 +214,77 @@ ObjectId Controller::beginSketch() {
         }
     }
 
+    // NOTHING SUITABLE IS SELECTED, so ask.
+    //
+    // This used to fall through to an XY sketch. No CAD application does that — "what none of them
+    // do is silently choose a plane for you" (docs/design/MODELLING_UX.md §2) — and the cost is
+    // paid twice: the user draws on a plane they did not choose, and they find out only when the
+    // extrude comes out facing the wrong way.
+    //
+    // The alternative the incumbents offer is exactly this: invoke Sketch, then be asked to pick.
+    // The next click in the viewport chooses, and the shells need no mode of their own for it.
+    awaitingSketchPlane_ = true;
+    status("Select a plane or a flat face to sketch on.");
+    notifyDocument();
+    return {};
+}
+
+ObjectId Controller::beginSketchOn(sketch::Plane plane) {
+    // The seeded datum for that plane, found by its stored index rather than by label: labels are
+    // user-editable and a renamed datum must not stop this working.
+    const auto wanted = static_cast<std::int64_t>(plane);
+    for (const ObjectId id : history_.current().ids()) {
+        const auto object = history_.current().find(id);
+        if (!object || object->type() != "Plane" || object->output() == nullptr) continue;
+        const auto* stored = object->find("plane");
+        const auto* index = stored != nullptr ? std::get_if<std::int64_t>(stored) : nullptr;
+        if (index == nullptr || *index != wanted) continue;
+
+        for (const auto& name : object->output()->map.allNames()) {
+            const auto shape = object->output()->map.resolve(name);
+            if (!shape || !kernel::planeOf(*shape)) continue;
+            const ObjectId sketchId = addSketchOnFace(id, name.toString());
+            if (sketchId != ObjectId{}) {
+                editSketch(sketchId);
+                awaitingSketchPlane_ = false;
+                return sketchId;
+            }
+            break;
+        }
+    }
+
+    // No datum for it — a document that did not seed them, which only a test can produce. The
+    // global-plane sketch is the honest fallback, and it is only reachable from here.
     const ObjectId id = addSketch();
+    if (id != ObjectId{}) {
+        editSketch(id);
+        awaitingSketchPlane_ = false;
+    }
+    return id;
+}
+
+ObjectId Controller::sketchOnPickedPlane(std::uint32_t x, std::uint32_t y) {
+    if (!awaitingSketchPlane_) return {};
+
+    auto face = pickSketchFace(x, y);
+    if (!face) {
+        // The reason, not a generic refusal: pickSketchFace distinguishes empty space from an edge
+        // from a curved face, and each sends the user somewhere different.
+        status(face.error().message);
+        return {};
+    }
+    awaitingSketchPlane_ = false;
+    const ObjectId id = addSketchOnFace(face.value().object, face.value().face.toString());
+    if (id == ObjectId{}) return {};
     editSketch(id);
     return id;
+}
+
+void Controller::cancelSketchPlanePick() {
+    if (!awaitingSketchPlane_) return;
+    awaitingSketchPlane_ = false;
+    status("Sketch cancelled.");
+    notifyDocument();
 }
 
 void Controller::finishSketch() {

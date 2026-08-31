@@ -211,7 +211,12 @@ bool SketchDrawing::addRectangle(const Context& ctx, Point a, Point b) {
 
 SketchDrawing::Outcome SketchDrawing::stroke(const Context& ctx, std::span<const Point> points) {
     Outcome out;
-    if (ctx.sketch == nullptr || tool_ == Tool::Select || points.size() < 2) return out;
+    if (ctx.sketch == nullptr || points.size() < 2) return out;
+    // Trim and Dimension act on geometry that already exists, so they are driven by a CLICK and a
+    // stroke means nothing to them. Left out, they would fall through to the line/arc branch below
+    // and draw — the same silent mismatch the Circle tool had, where the tool the user chose was
+    // ignored and the status bar reported "Line".
+    if (tool_ == Tool::Select || tool_ == Tool::Trim || tool_ == Tool::Dimension) return out;
 
     // The tolerance is the HAND's, in pixels, converted here. A wobble of a few pixels is not an
     // arc at any zoom; a fixed millimetre tolerance would call everything an arc when zoomed out
@@ -539,6 +544,11 @@ SketchDrawing::Measure SketchDrawing::measure() const {
     // preview and the result would disagree.
     out.length = locked_ ? *locked_ : std::sqrt(dx * dx + dy * dy);
     out.circle = tool_ == Tool::Circle;
+    out.rectangle = tool_ == Tool::Rectangle;
+    if (out.rectangle) {
+        out.width = std::abs(dx);
+        out.height = std::abs(dy);
+    }
     // Degrees from the sketch's own +u axis, not the world's X. The number has to mean something in
     // the plane being drawn on, or it is nonsense on a tilted face.
     out.angle = out.circle ? 0.0 : std::atan2(dy, dx) * 180.0 / std::numbers::pi;
@@ -550,6 +560,16 @@ SketchDrawing::Text SketchDrawing::text(units::UnitSystem display) const {
     Text out;
     const Measure current = measure();
     if (!current.valid) return out;
+
+    if (current.rectangle) {
+        // "60 x 40 mm", not a length and an angle: those are the two numbers a rectangle is made
+        // of, and they are the two the user is deciding while dragging.
+        out.valid = true;
+        out.length = units::format(units::millimetres(current.width), display) + " x "
+                     + units::format(units::millimetres(current.height), display);
+        out.angle.clear();
+        return out;
+    }
 
     // What the user TYPED wins, because that is the value that will be used — showing the measured
     // length beside a number being typed to replace it is showing two answers to one question.
@@ -588,6 +608,17 @@ std::vector<SketchDrawing::Point> SketchDrawing::previewSegments(const Context& 
             out.push_back(Point{a[0] + dx * t1, a[1] + dy * t1});
         }
     };
+
+    if (tool_ == Tool::Rectangle) {
+        // The four sides the tool WILL create, so the preview and the result are the same shape.
+        // Without this a rectangle was drawn blind: the user dragged and saw nothing until they
+        // let go, which is the one thing a rubber band exists to prevent.
+        const Point a = *pending_;
+        const Point b = *end;
+        const Point corners[4]{{a[0], a[1]}, {b[0], a[1]}, {b[0], b[1]}, {a[0], b[1]}};
+        for (int i = 0; i < 4; ++i) emit(corners[i], corners[(i + 1) % 4]);
+        return out;
+    }
 
     if (tool_ == Tool::Circle) {
         const double dx = (*end)[0] - (*pending_)[0];
