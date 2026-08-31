@@ -47,6 +47,12 @@ enum class SettingKind {
     Double,   ///< a spin box with decimals
     Text,     ///< a single-line edit
     Choice,   ///< a combo box over `choices`
+    /// A read-only fact, shown as text: a version, a path, a build identifier.
+    ///
+    /// Not a setting at all, which is the point — an About page is a list of facts and belongs in
+    /// the same window as the preferences rather than in a dialog of its own. The value comes from
+    /// `fallbackText` and is never written back, so nothing about it is persisted.
+    Info,
 };
 
 /// One user-changeable value.
@@ -61,6 +67,9 @@ struct Setting {
     QString description;
 
     SettingKind kind = SettingKind::Bool;
+
+    /// The text an `Info` row shows. Ignored by every other kind.
+    QString fallbackText;
 
     /// The value the application should use if the user has never touched this. Kept separately
     /// from the current value so "reset" is possible at all, and so a default can CHANGE between

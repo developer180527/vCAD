@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "cad/app/About.h"
+
 #include "PluginManager.h"
 #include "cad/abi/cad_plugin_abi.h"
 #include "cad/log/Log.h"
@@ -661,6 +663,26 @@ void MainWindow::rebuildRibbon() {
         // Delete is on the Sketch tab too: with selection working it is the most-used edit here,
         // and reaching for the model tab's Delete would leave the environment.
         auto* modify = sketchTab->addPanel(tr("Modify"));
+        {
+            // OFFSET carries a distance, so it asks — the same stopgap Radius uses, and for the
+            // same reason: a value belongs in the command property panel that does not exist yet.
+            auto* offset = new QAction(icon(QStringLiteral("offset")), tr("Offset"), this);
+            offset->setToolTip(tr("Offset — select curves, then give a distance"));
+            connect(offset, &QAction::triggered, this, [this] {
+                auto* ctl = controller();
+                if (ctl == nullptr) return;
+                bool ok = false;
+                // Negative is allowed and meaningful: it offsets to the other side, which is how a
+                // user makes the inner wall rather than the outer one.
+                const double d = QInputDialog::getDouble(this, tr("Offset"),
+                                                         tr("Distance (mm), negative for the "
+                                                            "other side:"),
+                                                         5.0, -1e6, 1e6, 3, &ok);
+                if (ok) ctl->offsetSketchSelection(d);
+                refreshStatus();
+            });
+            modify->addSmall(offset);
+        }
         {
             auto* del = new QAction(icon(QStringLiteral("delete")), tr("Delete"), this);
             del->setToolTip(tr("Delete the selected sketch geometry (Del)"));
@@ -1466,6 +1488,55 @@ void MainWindow::declareSettings() {
 
     general.groups.push_back(display);
     settings_->addPage(general);
+
+    // ── About ────────────────────────────────────────────────────────────────────────────
+    //
+    // Facts, not preferences — but in the same window, because a separate About dialog is one more
+    // place to look and this is where a user already is when they need a version number.
+    //
+    // Every value is read from the thing it describes (cad::app::about), so it cannot drift from
+    // the binary the way a hard-coded string does.
+    proshell::SettingsPage aboutPage;
+    aboutPage.id = QStringLiteral("vcad.about");
+    aboutPage.label = tr("About");
+    aboutPage.iconName = QStringLiteral("note");
+
+    proshell::SettingsGroup versions;
+    versions.label = tr("Versions");
+    for (const auto& entry : cad::app::about()) {
+        proshell::Setting row;
+        // Prefixed and stable, like every other id — even though an Info row persists nothing, the
+        // ids are what a page's rows are keyed by.
+        row.id = QStringLiteral("about.") + QString::fromStdString(entry.name).toLower();
+        row.label = QString::fromStdString(entry.name);
+        row.kind = proshell::SettingKind::Info;
+        row.fallbackText = QString::fromStdString(entry.value);
+        versions.settings.push_back(row);
+    }
+
+    // What only this shell knows: its own toolkit, and the renderer bgfx actually chose. The model
+    // cannot report either — one is Qt, the other is a runtime answer from the GPU.
+    {
+        proshell::Setting toolkit;
+        toolkit.id = QStringLiteral("about.toolkit");
+        toolkit.label = tr("Interface");
+        toolkit.kind = proshell::SettingKind::Info;
+        toolkit.fallbackText = tr("Qt %1").arg(QLatin1String(qVersion()));
+        versions.settings.push_back(toolkit);
+
+        proshell::Setting renderer;
+        renderer.id = QStringLiteral("about.renderer");
+        renderer.label = tr("Renderer");
+        renderer.kind = proshell::SettingKind::Info;
+        auto* active = controller();
+        renderer.fallbackText = active != nullptr
+                                    ? QString::fromStdString(active->rendererName())
+                                    : tr("not started");
+        versions.settings.push_back(renderer);
+    }
+
+    aboutPage.groups.push_back(versions);
+    settings_->addPage(aboutPage);
 
     proshell::SettingsPage sketch;
     sketch.id = QStringLiteral("vcad.sketch");

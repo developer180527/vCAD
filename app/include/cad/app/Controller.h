@@ -906,6 +906,25 @@ public:
         return editingDimension_;
     }
 
+    /// Offsets the selected sketch curves by a distance, on the side the sign chooses.
+    ///
+    /// # What this does and does not do
+    ///
+    /// Each selected curve is offset INDIVIDUALLY: a line becomes a parallel line, a circle or arc
+    /// a concentric one. That is the honest first version, and it is worth being clear about the
+    /// difference from a full CAD offset, which takes a connected chain and works out what happens
+    /// at the corners — extending, trimming or rounding them so the result is still one closed
+    /// profile.
+    ///
+    /// The result is plain geometry, not linked to its source: the solver has no offset constraint,
+    /// so moving the original will not move the copy. Both limits are stated here rather than
+    /// discovered, because an offset that silently comes apart at the corners is worse than one
+    /// that never claimed to handle them.
+    ///
+    /// A negative distance offsets the other way. Refuses a distance that would collapse a circle
+    /// to nothing.
+    bool offsetSketchSelection(double millimetres);
+
     /// Trims the sketch curve at a point, in DEVICE pixels.
     ///
     /// The click does two jobs: it chooses the curve, and it chooses WHICH span of it to remove —

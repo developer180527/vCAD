@@ -13,7 +13,10 @@ add_executable(cad_tests
 )
 
 target_include_directories(cad_tests PRIVATE acceptance
-  ${CMAKE_SOURCE_DIR}/abi/include)
+  ${CMAKE_SOURCE_DIR}/abi/include
+  # OCCT's headers, so the About test can read the kernel version from the SAME macro the About box
+  # does. Comparing against a literal here would only prove the literal matches itself.
+  ${OpenCASCADE_INCLUDE_DIR})
 # Catch2::Catch2, not Catch2WithMain: acceptance/main.cpp owns main() so the
 # cross-process determinism test can re-execute this binary.
 target_link_libraries(cad_tests PRIVATE cad::core Catch2::Catch2)
@@ -65,7 +68,9 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/revolve_move_commands.cpp
                                  acceptance/sketch_trim.cpp
                                  acceptance/sketch_entry.cpp
-                                 acceptance/sketch_constraints.cpp)
+                                 acceptance/sketch_constraints.cpp
+                                 acceptance/sketch_offset.cpp
+                                 acceptance/about.cpp)
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)

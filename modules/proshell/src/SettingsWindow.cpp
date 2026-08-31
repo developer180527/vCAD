@@ -113,6 +113,14 @@ void SettingsWindow::buildPage(const SettingsPage& page) {
                     editor = edit;
                     break;
                 }
+                case SettingKind::Info: {
+                    // Selectable, because the first thing anyone does with a version is paste it
+                    // into a bug report.
+                    auto* value = new QLabel(setting.fallbackText, body);
+                    value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+                    editor = value;
+                    break;
+                }
                 case SettingKind::Choice: {
                     auto* combo = new QComboBox(body);
                     combo->addItems(setting.choices);

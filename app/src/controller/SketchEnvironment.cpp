@@ -577,6 +577,84 @@ bool Controller::dimensionSketchAt(float x, float y) {
     return true;
 }
 
+bool Controller::offsetSketchSelection(double millimetres) {
+    if (!editing_.has_value()) return false;
+    if (sketchSelection_.empty()) {
+        status("Select one or more curves to offset.");
+        return false;
+    }
+    if (std::abs(millimetres) < 1e-9) {
+        status("An offset needs a distance.");
+        return false;
+    }
+
+    // Collected before anything is added, because adding geometry invalidates nothing here but
+    // iterating a container while appending to the sketch it describes is a habit worth not
+    // forming.
+    const std::vector<sketch::GeoId> sources = sketchSelection_;
+    std::size_t made = 0;
+    std::size_t refused = 0;
+
+    for (const sketch::GeoId id : sources) {
+        const auto* g = editing_->find(id);
+        if (g == nullptr) continue;
+        switch (g->kind) {
+            case sketch::GeoKind::Line: {
+                const double dx = g->p[2] - g->p[0];
+                const double dy = g->p[3] - g->p[1];
+                const double length = std::hypot(dx, dy);
+                if (length < 1e-9) { ++refused; break; }
+                // The normal, unit length. Positive distance goes to the LEFT of the line's own
+                // direction, which is a convention rather than a fact — but it has to be a fixed
+                // one, or two identical calls put the copy on different sides.
+                const double nx = -dy / length;
+                const double ny = dx / length;
+                editing_->addLine(g->p[0] + nx * millimetres, g->p[1] + ny * millimetres,
+                                  g->p[2] + nx * millimetres, g->p[3] + ny * millimetres);
+                ++made;
+                break;
+            }
+            case sketch::GeoKind::Circle: {
+                const double radius = g->p[2] + millimetres;
+                if (radius <= 1e-9) { ++refused; break; }
+                editing_->addCircle(g->p[0], g->p[1], radius);
+                ++made;
+                break;
+            }
+            case sketch::GeoKind::Arc: {
+                const double radius = g->p[2] + millimetres;
+                if (radius <= 1e-9) { ++refused; break; }
+                editing_->addArc(g->p[0], g->p[1], radius, g->p[3], g->p[4]);
+                ++made;
+                break;
+            }
+            case sketch::GeoKind::Point:
+                ++refused;   // a point has no side to be offset to
+                break;
+        }
+    }
+
+    if (made == 0) {
+        status("Nothing there could be offset.");
+        return false;
+    }
+
+    lastSketchSolve_ = editing_->solve();
+    std::string message = "Offset " + std::to_string(made)
+                          + (made == 1 ? " curve" : " curves");
+    if (refused > 0) {
+        // Said out loud: a partial result that reports success is how a user comes to believe the
+        // tool worked on geometry it skipped.
+        message += ", skipped " + std::to_string(refused)
+                   + (refused == 1 ? " that could not be" : " that could not be");
+    }
+    status(message);
+    pushSketchOverlay();
+    notifyDocument();
+    notifyView();
+    return true;
+}
+
 bool Controller::trimSketchAt(float x, float y) {
     if (!editing_.has_value()) return false;
 
