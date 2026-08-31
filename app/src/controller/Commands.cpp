@@ -7,6 +7,9 @@
 
 #include "Internal.h"
 
+#include "cad/document/Parameters.h"
+#include "cad/expr/Expression.h"
+
 #include <numbers>
 
 #include "cad/io/Format.h"
@@ -120,13 +123,16 @@ bool Controller::setCommandParameter(const std::string& name, const std::string&
         // Validated by PARSING it, not by pattern-matching the text: the unit grammar lives in one
         // place and this must accept exactly what a property field accepts, including "2 in".
         if (p.kind == CommandParameter::Kind::Length) {
-            const // A bare number is read in the DISPLAY units, so what you type back matches what you
-        // just read. Typing "2" into a field showing inches must mean two inches.
-        auto parsed = units::parseLength(text, preferences_.displayUnits);
+            // A bare number is read in the DISPLAY units, so what you type back matches what you
+            // just read: typing "2" into a field showing inches must mean two inches. Names resolve
+            // against the document's parameters, so a new feature can be dimensioned in terms of
+            // them at the moment it is created rather than only afterwards.
+            const auto resolver = document::resolveParameters(history_.current()).resolver();
+            const auto parsed = expr::evaluateLength(text, preferences_.displayUnits, resolver);
             if (!parsed) {
                 // The old value is kept. A field that blanks itself on a typo loses work the user
                 // has already done in the other fields.
-                status("Could not read \"" + text + "\" as a length.");
+                status(parsed.error().message);
                 return false;
             }
         }
@@ -144,7 +150,9 @@ bool Controller::commitCommand() {
     const auto lengthOf = [this](const char* name) -> double {
         for (const auto& p : commandParameters_) {
             if (p.name != name) continue;
-            if (const auto parsed = units::parseLength(p.value, preferences_.displayUnits)) {
+            const auto resolver = document::resolveParameters(history_.current()).resolver();
+            if (const auto parsed =
+                    expr::evaluateLength(p.value, preferences_.displayUnits, resolver)) {
                 return parsed.value().base();
             }
         }
@@ -180,6 +188,39 @@ bool Controller::commitCommand() {
     } else if (id == "feature.translate") {
         addTranslate(lengthOf("dx"), lengthOf("dy"), lengthOf("dz"));
         ok = true;
+    }
+
+    // Carry any FORMULA the user typed onto the feature that was just created.
+    //
+    // Without this, typing `width * 2` into the Box width field would work exactly once: the box
+    // would be the right size and permanently disconnected from `width`. That is the silent
+    // failure the whole expression layer exists to prevent, and it would appear at the one moment
+    // a user is most likely to reach for a parameter -- while creating the feature.
+    //
+    // Safe because every command parameter is named after the property the feature stores it in;
+    // a mismatch simply finds nothing and changes nothing.
+    if (ok && !selection_.empty()) {
+        const auto id = selection_.front();
+        if (const auto object = history_.current().find(id)) {
+            auto updated = *object;
+            bool touched = false;
+            for (const auto& p : commandParameters_) {
+                const auto* property = updated.find(p.name);
+                if (property == nullptr) continue;
+                const auto type = document::typeOf(*property);
+                if (isPlainQuantity(p.value, type, preferences_.displayUnits)) continue;
+                updated = updated.withExpression(p.name, *property, p.value,
+                                                 preferences_.displayUnits);
+                touched = true;
+            }
+            if (touched) {
+                // AMENDED onto the create, not committed after it. Creating one box must be one
+                // undo step; a second commit here would make the user press undo twice, with the
+                // first press appearing to do nothing.
+                history_.replaceCurrent(history_.current().replace(
+                    std::make_shared<const document::ObjectData>(std::move(updated))));
+            }
+        }
     }
 
     // Cleared AFTER the command runs, so a command that inspects the selection still sees it.

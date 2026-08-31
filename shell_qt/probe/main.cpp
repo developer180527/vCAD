@@ -18,6 +18,7 @@
 /// Runs offscreen, so it works in CI and over ssh.
 
 #include "MainWindow.h"
+#include "ParametersDialog.h"
 #include "Viewport.h"
 
 #include "cad/app/Controller.h"
@@ -25,6 +26,8 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QMouseEvent>
+#include <QAction>
+#include <QTableWidget>
 #include <QToolButton>
 
 #include <algorithm>
@@ -257,6 +260,70 @@ int main(int argc, char** argv) {
             QApplication::processEvents();
             check(viewport->visibleDimensionLabelsForProbe().empty(),
                   "the labels go away when the sketch is finished");
+        }
+    }
+
+    // ── the parameters table ──────────────────────────────────────────────────────────────
+    //
+    // Driven through the REAL dialog's real table widget, because the failure this guards against
+    // is precisely a table that looks right and reaches nothing. Editing a cell must move geometry.
+    {
+        // Through the RIBBON ACTION, not by calling the slot. The connect() is the thing that was
+        // missing in every wiring bug this probe exists for.
+        QAction* open = nullptr;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            if (action->text() == QStringLiteral("Parameters")) { open = action; break; }
+        }
+        check(open != nullptr, "the ribbon has a Parameters button");
+        if (open != nullptr) open->trigger();
+        QApplication::processEvents();
+
+        auto* dialog = window.findChild<cadqt::ParametersDialog*>();
+        check(dialog != nullptr, "the Parameters button opens the parameters table");
+
+        auto* table = dialog != nullptr ? dialog->findChild<QTableWidget*>() : nullptr;
+        check(table != nullptr, "the parameters table exists");
+
+        if (table != nullptr) {
+            check(controller->setParameter("width", "40mm"), "a parameter can be added");
+            dialog->refresh();
+            QApplication::processEvents();
+            check(table->rowCount() == 1, "the new parameter appears as a row");
+
+            // A feature driven by it, entered exactly as a user would type it.
+            for (const auto& command : controller->commands()) {
+                if (command.id == "feature.box" && command.invoke) { command.invoke(); break; }
+            }
+            controller->beginCommand("feature.box");
+            controller->setCommandParameter("dx", "width * 2");
+            controller->commitCommand();
+            QApplication::processEvents();
+
+            const auto box = controller->selection().empty() ? cad::document::ObjectId{}
+                                                             : controller->selection().front();
+            const auto widthOf = [&] {
+                const auto object = controller->document().find(box);
+                if (!object) return 0.0;
+                const auto* value = object->find("dx");
+                if (value == nullptr) return 0.0;
+                return std::get<cad::units::Length>(*value).base();
+            };
+            check(widthOf() == 80.0, "a feature created with `width * 2` is 80mm");
+
+            // THE POINT OF THE WHOLE FEATURE: type into the table, geometry moves.
+            const int row = 0;
+            table->item(row, 1)->setText(QStringLiteral("60mm"));
+            QApplication::processEvents();
+            std::printf("     dx after editing width to 60mm: %.1f\n", widthOf());
+            check(widthOf() == 120.0, "editing the parameter in the table rebuilds the feature");
+
+            // And a cycle typed into the table is refused rather than crashing or being stored.
+            check(controller->setParameter("a", "b + 1mm") == false,
+                  "a parameter naming something that does not exist is refused");
+            controller->setParameter("a", "10mm");
+            controller->setParameter("b", "a + 1mm");
+            check(controller->setParameter("a", "b + 1mm") == false,
+                  "a parameter that would close a cycle is refused");
         }
     }
 

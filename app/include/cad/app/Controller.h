@@ -150,12 +150,46 @@ public:
         std::string value;          ///< already formatted for display, units included
         std::string type;
         bool editable = true;
+
+        /// The expression driving this value, if any. A field showing `width * 2` must let the
+        /// user edit the FORMULA, not the 80 it produced -- editing the number is how the link
+        /// gets broken by accident.
+        std::string expression;
     };
     [[nodiscard]] std::vector<PropertyRow> properties(document::ObjectId) const;
 
     /// Applies a typed edit from the inspector. Text in, because that is what a UI has; the
-    /// parsing and unit handling belong here rather than in every shell.
+    /// parsing, unit handling and expression evaluation belong here rather than in every shell.
+    ///
+    /// Accepts anything a parameter does: `40`, `1.5in`, `width * 2`, `bore/2 + clearance`. Text
+    /// that is a plain quantity is stored as a plain value; anything else is stored as an
+    /// expression, so that changing what it refers to moves this too.
     bool setProperty(document::ObjectId, const std::string& name, const std::string& text);
+
+    // ── named parameters ──────────────────────────────────────────────────────────────────
+
+    struct ParameterRow {
+        std::string name;
+        std::string expression;   ///< empty when the parameter is just a number
+        std::string value;        ///< formatted for display, units included
+        std::string problem;      ///< empty when it resolves; otherwise what to tell the user
+    };
+
+    /// Every parameter, in name order, already resolved. One call, because a table that fetched
+    /// values one at a time would re-resolve the whole graph per row.
+    [[nodiscard]] std::vector<ParameterRow> parameters() const;
+
+    /// Adds or edits a parameter. `text` may be a value or an expression.
+    ///
+    /// Refuses -- and changes nothing -- if the name is unusable or the text does not resolve,
+    /// INCLUDING when it would create a cycle. Rejecting the edit is the only safe answer: a
+    /// document that has already stored `a = b` and `b = a` has no correct value to show for
+    /// either, and asking the user to fix it afterwards means they cannot open their own model.
+    bool setParameter(const std::string& name, const std::string& text);
+
+    /// Removes one. Features using it go red on the next rebuild, naming the parameter, rather
+    /// than silently falling back to the number it last had.
+    bool removeParameter(const std::string& name);
 
     // ── viewport ──────────────────────────────────────────────────────────────────────────
 

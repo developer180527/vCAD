@@ -172,6 +172,13 @@ kernel::Result<std::uint64_t> Engine::cacheKeyOf(const Document& doc,
         if (p.cosmetic) continue;   // colour and labels must not invalidate geometry
         for (char c : p.name) mix(h, static_cast<std::uint64_t>(c));
 
+        // Property::expression is deliberately NOT mixed in. This key answers "would recomputing
+        // produce the same geometry", and geometry is built from the VALUE -- 80 is 80 whether a
+        // person typed it or `width * 2` produced it. Including the text would give two identical
+        // parts different cache entries and re-cut every feature the moment a user tidied a
+        // formula. Document::digest() does include it, because "has this file changed" is a
+        // different question with a different answer.
+
         // An ObjectId property contributes its target's CACHE KEY, not the id. This is the
         // assetlib rule that a dependency is recorded by content rather than identity: two
         // different upstream objects that produce identical geometry share downstream cache

@@ -17,6 +17,8 @@
 #include "cad/io/DocumentStore.h"
 #include "cad/sketch/Sketch.h"
 
+#include "cad/document/Parameters.h"
+#include "cad/expr/Expression.h"
 #include "cad/units/Units.h"
 
 #include <sstream>
@@ -236,6 +238,16 @@ bool Controller::redo() {
 }
 
 void Controller::refresh() {
+    // Expressions FIRST, so the recompute sees the values the parameters imply rather than the ones
+    // left over from before the last edit. Doing it here rather than in each editing path means
+    // undo, redo and load all get it too -- an undone parameter edit has to move the model back.
+    //
+    // Not a commit: a rebuild is not something the user did, so it must not appear in the undo
+    // menu. Same rule the recompute result follows two lines down.
+    auto rebuilt = document::rebuildFromParameters(history_.current());
+    const auto expressionProblems = std::move(rebuilt.problems);
+    history_.replaceCurrent(std::move(rebuilt.document));
+
     recompute::Engine engine(registry_, cache_);
     auto result = engine.recompute(history_.current());
     if (!result) {
@@ -246,6 +258,20 @@ void Controller::refresh() {
     }
     history_.replaceCurrent(std::move(result.value().first));
     failedCount_ = result.value().second.failed + result.value().second.blocked;
+
+    // Re-applied AFTER the recompute, which would otherwise erase them: the engine recomputes from
+    // the last good value, succeeds, and marks the feature Clean -- so deleting a parameter the
+    // model depends on would leave every user of it looking healthy. The failure belongs to the
+    // property, not to the geometry, and the engine has no way to know that.
+    for (const auto& problem : expressionProblems) {
+        const auto object = history_.current().find(problem.object);
+        if (!object) continue;
+        auto marked = object->withError(
+            kernel::Error{kernel::ErrorCode::InvalidInput, problem.property + ": " + problem.message});
+        history_.replaceCurrent(history_.current().replace(
+            std::make_shared<const document::ObjectData>(std::move(marked))));
+        ++failedCount_;
+    }
 
     // Drop element selections whose object no longer exists. An undo or a delete leaves the slot
     // pointing at whatever now occupies it, so keeping them would highlight unrelated geometry and
@@ -374,6 +400,9 @@ std::vector<Controller::PropertyRow> Controller::properties(ObjectId id) const {
         row.editable = document::typeOf(p.value) != document::PropertyType::Element
                        && document::typeOf(p.value) != document::PropertyType::ElementList
                        && document::typeOf(p.value) != document::PropertyType::Object;
+        // A driven value shows its FORMULA to anyone editing it. Presenting the 80 that `width*2`
+        // produced invites the user to retype 80, which silently breaks the link they built.
+        row.expression = p.expression;
         out.push_back(std::move(row));
     }
     return out;
@@ -385,12 +414,17 @@ bool Controller::setProperty(ObjectId id, const std::string& name, const std::st
     const auto* existing = object->find(name);
     if (existing == nullptr) return false;
 
+    // Names resolve against the document's parameters -- this is what makes `width * 2` a thing a
+    // user can type into any field, rather than only into the parameter table.
+    const auto resolver = document::resolveParameters(history_.current()).resolver();
+
     document::PropertyValue value;
     switch (document::typeOf(*existing)) {
         case document::PropertyType::Length: {
             // A bare number is read in the DISPLAY units, so what you type back matches what you
-        // just read. Typing "2" into a field showing inches must mean two inches.
-        auto parsed = units::parseLength(text, preferences_.displayUnits);
+            // just read: typing "2" into a field showing inches must mean two inches. Names are
+            // resolved against the document's parameters, so `width * 2` works here too.
+            auto parsed = expr::evaluateLength(text, preferences_.displayUnits, resolver);
             if (!parsed) {
                 status(parsed.error().message);   // "'10 furlongs' is not a unit I recognise."
                 return false;
@@ -399,7 +433,7 @@ bool Controller::setProperty(ObjectId id, const std::string& name, const std::st
             break;
         }
         case document::PropertyType::Angle: {
-            auto parsed = units::parseAngle(text);
+            auto parsed = expr::evaluateAngle(text, resolver);
             if (!parsed) {
                 status(parsed.error().message);
                 return false;
@@ -407,22 +441,29 @@ bool Controller::setProperty(ObjectId id, const std::string& name, const std::st
             value = parsed.value();
             break;
         }
-        case document::PropertyType::Real:
-            try {
-                value = std::stod(text);
-            } catch (...) {
-                status("'" + text + "' is not a number.");
+        case document::PropertyType::Real: {
+            const auto number = expr::evaluateNumber(text, resolver);
+            if (!number) {
+                status(number.error().message);
                 return false;
             }
+            value = number.value();
             break;
-        case document::PropertyType::Int:
-            try {
-                value = static_cast<std::int64_t>(std::stoll(text));
-            } catch (...) {
+        }
+        case document::PropertyType::Int: {
+            const auto number = expr::evaluateNumber(text, resolver);
+            if (!number) {
+                status(number.error().message);
+                return false;
+            }
+            const double rounded = std::round(number.value());
+            if (std::abs(number.value() - rounded) > 1e-9) {
                 status("'" + text + "' is not a whole number.");
                 return false;
             }
+            value = static_cast<std::int64_t>(rounded);
             break;
+        }
         case document::PropertyType::Bool:
             value = (text == "true" || text == "1" || text == "yes");
             break;
@@ -433,7 +474,14 @@ bool Controller::setProperty(ObjectId id, const std::string& name, const std::st
             return false;   // references are picked, not typed
     }
 
-    auto updated = object->withProperty(name, std::move(value));
+    // Stored as a FORMULA when it is one. `width * 2` typed into a depth field has to keep
+    // driving that depth when width changes -- storing the 80 it happens to produce today is the
+    // difference between a parametric model and a very tidy set of numbers.
+    const auto type = document::typeOf(*existing);
+    auto updated =
+        isPlainQuantity(text, type, preferences_.displayUnits)
+            ? object->withProperty(name, std::move(value))
+            : object->withExpression(name, std::move(value), text, preferences_.displayUnits);
     auto next = history_.current().replace(
         std::make_shared<const document::ObjectData>(std::move(updated)));
     next = recompute::Engine::invalidate(next, id);

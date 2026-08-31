@@ -68,8 +68,26 @@ public:
     [[nodiscard]] std::uint64_t cacheKey() const noexcept { return cacheKey_; }
 
     // --- builders: each returns a new value, leaving this one untouched ------------------
+    /// Sets a property to a plain value.
+    ///
+    /// This CLEARS any expression the property had. Typing a number over a formula, or dragging a
+    /// handle that writes the property directly, breaks the link -- deliberately, and the same way
+    /// every parametric modeller does it. Keeping the formula while overwriting its result would
+    /// leave the two disagreeing until the next rebuild silently undid the user's edit.
     [[nodiscard]] ObjectData withProperty(std::string name, PropertyValue value,
                                           bool cosmetic = false) const;
+
+    /// Sets a property from an expression: the evaluated `value` plus the text that produced it.
+    ///
+    /// `enteredIn` is the display unit the text was typed under, and must be the user's unit at
+    /// that moment -- see Property::expressionUnits for what goes wrong when it is guessed later.
+    [[nodiscard]] ObjectData withExpression(std::string name, PropertyValue value,
+                                            std::string expression,
+                                            units::UnitSystem enteredIn,
+                                            bool cosmetic = false) const;
+
+    /// The expression behind a property, or empty if it holds a plain value.
+    [[nodiscard]] const Property* property(std::string_view name) const;
     [[nodiscard]] ObjectData withLabel(std::string) const;
     [[nodiscard]] ObjectData withState(ObjectState) const;
     /// Failed, with the reason. Sets the state as well as the error, because a feature carrying
@@ -188,6 +206,29 @@ public:
 
     /// Whether `id` is suspended by the marker.
     [[nodiscard]] bool isRolledBack(ObjectId) const noexcept;
+
+    // ── named parameters ──────────────────────────────────────────────────────────────────
+    //
+    // `width = 40mm`, `wall = width / 8`. Document-level rather than a feature, because they are
+    // not features: they compute no geometry, appear in no tree, and produce no element names.
+    // Making them a feature type to reuse the storage would put an object with no shape into the
+    // recompute engine and the browser, and every consumer of either would need a special case.
+    //
+    // They live on the Document rather than beside it so that undo and save need no new machinery:
+    // History snapshots Documents, so editing a parameter is undoable the moment it is stored here.
+    //
+    // A parameter IS a Property -- same name, value, expression and entry unit -- because it is the
+    // same thing a feature's input is. A parameter with an expression (`wall = width / 8`) is
+    // exactly a property with an expression, and giving it a second, parallel representation would
+    // mean two evaluators and two chances to disagree.
+
+    [[nodiscard]] const std::vector<Property>& parameters() const noexcept;
+    [[nodiscard]] const Property* parameter(std::string_view name) const;
+
+    /// Adds or replaces one, keeping the list sorted by name so the digest never depends on the
+    /// order they were created in.
+    [[nodiscard]] Document withParameter(Property) const;
+    [[nodiscard]] Document withoutParameter(std::string_view name) const;
 
     /// Content digest of the whole document. Deterministic across processes.
     [[nodiscard]] std::uint64_t digest() const;

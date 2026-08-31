@@ -242,9 +242,41 @@ CREATE TABLE properties (
   -- the cache and at worst makes two documents that should share a cache entry disagree.
   cosmetic  INTEGER NOT NULL DEFAULT 0,
   value     TEXT NOT NULL,
+  -- The text the user typed when it was more than a number: "width * 2". Empty for a plain value,
+  -- which is most of them. Keeping only the evaluated number would mean reopening a file silently
+  -- discarded every relationship in the model.
+  expression TEXT NOT NULL DEFAULT '',
+  -- The display unit that expression was ENTERED in, as its UnitSystem ordinal. A bare number
+  -- inside the text means this unit forever. Without it, a colleague whose preference is inches
+  -- re-evaluates `width + 10` as `width + 254mm` -- geometry that depends on who opened the file.
+  expression_units INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (object_id, name)
 ) STRICT;
+-- Named parameters: `width = 40mm`, `wall = width / 8`. Document-level rather than properties of
+-- some object, because that is what they are -- they compute no geometry and appear in no tree.
+-- Same columns as a property, because a parameter IS a property: one representation, one evaluator.
+CREATE TABLE parameters (
+  name             TEXT PRIMARY KEY,
+  tag              INTEGER NOT NULL,
+  value            TEXT NOT NULL,
+  expression       TEXT NOT NULL DEFAULT '',
+  expression_units INTEGER NOT NULL DEFAULT 0
+) STRICT;
 )sql";
+
+/// A UnitSystem ordinal read back from a file. An unrecognised one becomes millimetres rather
+/// than an error: the value in the row is already correct in base units, and refusing to open a
+/// document over an unknown enum would lose the whole model to protect one bare number.
+units::UnitSystem unitSystemFrom(std::int64_t ordinal) {
+    switch (ordinal) {
+        case 0: return units::UnitSystem::Millimetre;
+        case 1: return units::UnitSystem::Centimetre;
+        case 2: return units::UnitSystem::Metre;
+        case 3: return units::UnitSystem::Inch;
+        case 4: return units::UnitSystem::Foot;
+        default: return units::UnitSystem::Millimetre;
+    }
+}
 
 Db openDb(const std::filesystem::path& path, int flags) {
     sqlite3* raw = nullptr;
@@ -301,10 +333,31 @@ kernel::Result<void> saveDocument(const document::Document& doc,
             }
         }
 
+        {
+            Stmt parameter(db.get(),
+                           "INSERT INTO parameters (name, tag, value, expression, expression_units) "
+                           "VALUES (?,?,?,?,?)");
+            if (!parameter.ok()) return sqlError(db.get(), "The document could not be written.");
+            for (const auto& p : doc.parameters()) {
+                Tag tag = Tag::Text;
+                const std::string encoded = encode(p.value, tag);
+                parameter.bind(1, p.name);
+                parameter.bind(2, static_cast<std::int64_t>(tag));
+                parameter.bind(3, encoded);
+                parameter.bind(4, p.expression);
+                parameter.bind(5, static_cast<std::int64_t>(p.expressionUnits));
+                if (!parameter.done()) {
+                    return sqlError(db.get(), "The document could not be written.");
+                }
+                parameter.reset();
+            }
+        }
+
         Stmt object(db.get(), "INSERT INTO objects (id, type, label) VALUES (?, ?, ?)");
         Stmt property(
             db.get(),
-            "INSERT INTO properties (object_id, name, tag, cosmetic, value) VALUES (?,?,?,?,?)");
+            "INSERT INTO properties (object_id, name, tag, cosmetic, value, expression, "
+            "expression_units) VALUES (?,?,?,?,?,?,?)");
         if (!object.ok() || !property.ok()) {
             return sqlError(db.get(), "The document could not be written.");
         }
@@ -327,6 +380,8 @@ kernel::Result<void> saveDocument(const document::Document& doc,
                 property.bind(3, static_cast<std::int64_t>(tag));
                 property.bind(4, static_cast<std::int64_t>(prop.cosmetic ? 1 : 0));
                 property.bind(5, encoded);
+                property.bind(6, prop.expression);
+                property.bind(7, static_cast<std::int64_t>(prop.expressionUnits));
                 if (!property.done()) {
                     return sqlError(db.get(), "The document could not be written.");
                 }
@@ -400,9 +455,23 @@ kernel::Result<document::Document> loadDocument(const std::filesystem::path& pat
         doc = doc.insert(std::make_shared<const ObjectData>(std::move(data)));
     }
 
-    Stmt properties(
-        db.get(),
-        "SELECT object_id, name, tag, cosmetic, value FROM properties ORDER BY object_id, name");
+    // Ask the FILE which columns it has, rather than trusting its declared schema version. A
+    // document written before expressions existed is not damaged and must open exactly as it did
+    // before -- and inferring that from a version number means a single mis-set version turns
+    // "older file" into "failed to open".
+    bool hasExpressions = false;
+    {
+        Stmt columns(db.get(), "PRAGMA table_info(properties)");
+        while (columns.ok() && columns.step()) {
+            if (columns.asText(1) == "expression") hasExpressions = true;
+        }
+    }
+
+    Stmt properties(db.get(),
+                    hasExpressions ? "SELECT object_id, name, tag, cosmetic, value, expression, "
+                                     "expression_units FROM properties ORDER BY object_id, name"
+                                   : "SELECT object_id, name, tag, cosmetic, value FROM properties "
+                                     "ORDER BY object_id, name");
     if (!properties.ok()) return sqlError(db.get(), "That document could not be opened.");
     while (properties.step()) {
         const ObjectId id{static_cast<std::uint64_t>(properties.asInt(0))};
@@ -412,9 +481,34 @@ kernel::Result<document::Document> loadDocument(const std::filesystem::path& pat
         auto value = decode(static_cast<int>(properties.asInt(2)), properties.asText(4));
         if (!value) return value.error();
 
-        auto updated = existing->withProperty(properties.asText(1), std::move(value.value()),
-                                              properties.asInt(3) != 0);
+        const std::string expression = hasExpressions ? properties.asText(5) : std::string{};
+        auto updated = existing->withExpression(
+            properties.asText(1), std::move(value.value()), expression,
+            hasExpressions ? unitSystemFrom(properties.asInt(6)) : units::UnitSystem::Millimetre,
+            properties.asInt(3) != 0);
         doc = doc.replace(std::make_shared<const ObjectData>(std::move(updated)));
+    }
+
+    // Parameters, when the file is new enough to have them. Asked of the file rather than of its
+    // declared version, for the same reason the expression columns are.
+    {
+        bool hasParameters = false;
+        Stmt tables(db.get(),
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='parameters'");
+        while (tables.ok() && tables.step()) hasParameters = true;
+
+        if (hasParameters) {
+            Stmt parameters(db.get(), "SELECT name, tag, value, expression, expression_units FROM "
+                                      "parameters ORDER BY name");
+            if (!parameters.ok()) return sqlError(db.get(), "That document could not be opened.");
+            while (parameters.step()) {
+                auto value = decode(static_cast<int>(parameters.asInt(1)), parameters.asText(2));
+                if (!value) return value.error();
+                doc = doc.withParameter(document::Property{
+                    parameters.asText(0), std::move(value.value()), false, parameters.asText(3),
+                    unitSystemFrom(parameters.asInt(4))});
+            }
+        }
     }
 
     // Restore the allocator last: insert() only raised it past the ids present, which is wrong if

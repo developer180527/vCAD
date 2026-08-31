@@ -11,6 +11,10 @@
 /// in that concern's file; this holds only what genuinely spans all of them.
 
 #include "cad/app/Controller.h"
+#include "cad/document/PropertyValue.h"
+#include "cad/units/Units.h"
+
+#include <string>
 
 namespace cad::app {
 
@@ -24,6 +28,14 @@ inline constexpr float kSketchPickRadiusPixels = 8.0f;
 
 using document::ObjectId;
 using document::ObjectState;
+
+/// Whether typed text is just a quantity, as opposed to something worth remembering as a formula.
+///
+/// Shared by the parameter table and the property inspector, because they must agree: a field that
+/// stored "40" as an expression, or `width*2` as a plain number, would be the one place in the
+/// application where a relationship silently appeared or vanished.
+[[nodiscard]] bool isPlainQuantity(const std::string& text, document::PropertyType,
+                                   units::UnitSystem display);
 
 /// Naming serial for a placement's transform. Identity for now: assemblies come later, and a
 /// placement that lies about its transform is worse than one that has none.

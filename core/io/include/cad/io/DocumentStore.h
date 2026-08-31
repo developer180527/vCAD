@@ -29,7 +29,11 @@ namespace cad::io {
 
 /// Schema version written into every file. Bump on any incompatible change, and teach `load` to
 /// migrate — never to reject a file it could have read.
-constexpr int kDocumentSchemaVersion = 1;
+///
+/// 2: properties carry the expression that produced them, and the display unit it was typed in.
+///    Version 1 files still open: the loader asks the file which columns it has rather than
+///    trusting this number, so a document written before expressions existed simply has none.
+constexpr int kDocumentSchemaVersion = 2;
 
 /// What a document file says about itself, readable without loading the model.
 ///

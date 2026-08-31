@@ -37,6 +37,7 @@ namespace proshell { class Settings; }
 namespace cadqt {
 
 class PluginManager;
+class ParametersDialog;
 class SketchCanvas;
 class Viewport;
 
@@ -155,6 +156,7 @@ private:
     void showBrowserMenu(const QPoint&);
     void showPluginManager();
     void showOptions();
+    void showParameters();
 
     /// Declares vCAD's settings into the shell's store, once.
     ///
@@ -231,6 +233,7 @@ private:
     CadHomeModel homeModel_{session_};
 
     PluginManager* pluginManager_ = nullptr;
+    ParametersDialog* parametersDialog_ = nullptr;
     QTreeWidget* browser_ = nullptr;
     QTableWidget* properties_ = nullptr;
     proshell::HomePage* home_ = nullptr;

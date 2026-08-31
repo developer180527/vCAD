@@ -8,6 +8,8 @@ add_subdirectory(base)
 add_subdirectory(kernel)
 add_subdirectory(naming)
 add_subdirectory(units)
+# Expressions: user-typed arithmetic over named parameters. Above units, below document.
+add_subdirectory(expr)
 add_subdirectory(document)
 add_subdirectory(io)
 
@@ -26,5 +28,5 @@ add_library(cad::core ALIAS cad_core)
 # application in another domain links the first without the second. This target is a convenience
 # for vCAD, not the definition of the platform.
 target_link_libraries(cad_core INTERFACE
-  cad::base cad::log cad::kernel cad::naming cad::units
+  cad::base cad::log cad::kernel cad::naming cad::units cad::expr
   cad::document cad::recompute cad::features cad::io cad::sketch)

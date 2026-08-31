@@ -2,6 +2,7 @@
 
 #include "cad/naming/ElementName.h"
 #include "cad/units/Quantity.h"
+#include "cad/units/Units.h"
 
 #include <cstdint>
 #include <string>
@@ -52,12 +53,38 @@ const char* toString(PropertyType) noexcept;
 /// A named parameter on an object.
 struct Property {
     std::string name;
+
+    /// What the feature computes from. ALWAYS the evaluated result, in base units. Nothing
+    /// downstream of here — no feature, no cache key, no exporter — needs to know whether a human
+    /// typed this number or an expression produced it, and that is what keeps expressions from
+    /// touching the feature catalogue at all.
     PropertyValue value;
 
     /// Excluded from the recompute cache key. For things that genuinely do not affect
     /// geometry — display colour, a user label. Getting this wrong in the "true" direction
     /// causes stale geometry, so the default is false and every exclusion needs a reason.
     bool cosmetic = false;
+
+    /// The text the user typed, when it was more than a number: "width * 2", "bore/2 + 0.5mm".
+    /// Empty when the value is just a value, which is the overwhelmingly common case.
+    ///
+    /// This is stored rather than thrown away because a model that keeps only the 80 that
+    /// `width * 2` evaluated to is not parametric. Changing `width` would move nothing, and
+    /// reopening the file would show a plain number where a relationship used to be — the link
+    /// silently gone, with the model still looking correct.
+    std::string expression;
+
+    /// The display unit in force when `expression` was typed, and the unit a BARE NUMBER inside it
+    /// means forever afterwards.
+    ///
+    /// Not a detail. Display units are a user PREFERENCE, not a document property — a colleague
+    /// opening your file gets their own. So an expression of `width + 10` stored without this,
+    /// re-evaluated by someone whose preference is inches, would silently become `width + 254mm`.
+    /// Geometry that depends on who opened the file is the worst class of bug this format could
+    /// have, and one column prevents it.
+    ///
+    /// Meaningless when `expression` is empty.
+    units::UnitSystem expressionUnits = units::UnitSystem::Millimetre;
 };
 
 /// Folded into the recompute cache key. Must be a pure function of the value, stable across

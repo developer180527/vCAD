@@ -72,7 +72,11 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/sketch_offset.cpp
                                  acceptance/about.cpp
                                  acceptance/sketch_undo.cpp
-                                 acceptance/selection_as_input.cpp)
+                                 acceptance/selection_as_input.cpp
+                                 acceptance/expressions.cpp
+                                 acceptance/expression_storage.cpp
+                                 acceptance/parameters.cpp
+                                 acceptance/controller_parameters.cpp)
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)

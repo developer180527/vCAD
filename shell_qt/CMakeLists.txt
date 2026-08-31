@@ -32,6 +32,7 @@ qt_add_executable(vcad
   src/SketchCanvas.cpp
   src/CadHomeModel.cpp
   src/PluginManager.cpp
+  src/ParametersDialog.cpp
 )
 # cad::abi for the plugin manager. The plugin system IS the ABI, so a UI over it talks to the
 # ABI directly rather than through cad::app -- which also means the manager describes plugins with
@@ -55,6 +56,7 @@ qt_add_executable(vcad_probe probe/main.cpp
   src/SketchCanvas.cpp
   src/CadHomeModel.cpp
   src/PluginManager.cpp
+  src/ParametersDialog.cpp
 )
 target_include_directories(vcad_probe PRIVATE src)
 target_link_libraries(vcad_probe PRIVATE cad::app cad::abi proshell::proshell Qt6::Widgets)

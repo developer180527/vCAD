@@ -43,6 +43,13 @@ const PropertyValue* ObjectData::find(std::string_view name) const {
     return nullptr;
 }
 
+const Property* ObjectData::property(std::string_view name) const {
+    for (const auto& p : properties_) {
+        if (p.name == name) return &p;
+    }
+    return nullptr;
+}
+
 std::vector<ObjectId> ObjectData::inputs() const {
     // Derived from the properties rather than stored separately. A separately-stored edge
     // list is one more thing that can disagree with the parameters, and when it disagrees
@@ -62,15 +69,28 @@ std::vector<ObjectId> ObjectData::inputs() const {
 
 ObjectData ObjectData::withProperty(std::string name, PropertyValue value,
                                     bool cosmetic) const {
+    return withExpression(std::move(name), std::move(value), std::string{},
+                          units::UnitSystem::Millimetre, cosmetic);
+}
+
+ObjectData ObjectData::withExpression(std::string name, PropertyValue value,
+                                      std::string expression, units::UnitSystem enteredIn,
+                                      bool cosmetic) const {
     ObjectData copy = *this;
     for (auto& p : copy.properties_) {
         if (p.name == name) {
             p.value = std::move(value);
             p.cosmetic = cosmetic;
+            // Assigned unconditionally, so that setting a plain value CLEARS a formula. See the
+            // header: a property whose stored text disagrees with its stored number is a model
+            // that changes under the user on the next rebuild.
+            p.expression = std::move(expression);
+            p.expressionUnits = enteredIn;
             return copy;
         }
     }
-    copy.properties_.push_back(Property{std::move(name), std::move(value), cosmetic});
+    copy.properties_.push_back(
+        Property{std::move(name), std::move(value), cosmetic, std::move(expression), enteredIn});
     // Keep properties sorted by name so the cache key does not depend on insertion order.
     std::sort(copy.properties_.begin(), copy.properties_.end(),
               [](const Property& a, const Property& b) { return a.name < b.name; });
@@ -145,6 +165,7 @@ struct Document::Impl {
     std::map<ObjectId, ObjectPtr> objects;
     std::uint64_t nextId = 1;
     std::optional<ObjectId> rollbackAfter;
+    std::vector<Property> parameters;   ///< sorted by name; see Document::withParameter
 };
 
 Document::Document() : impl_(std::make_shared<Impl>()) {}
@@ -284,14 +305,58 @@ kernel::Result<std::vector<ObjectId>> Document::topologicalOrder() const {
     return order;
 }
 
+const std::vector<Property>& Document::parameters() const noexcept { return impl_->parameters; }
+
+const Property* Document::parameter(std::string_view name) const {
+    for (const auto& p : impl_->parameters) {
+        if (p.name == name) return &p;
+    }
+    return nullptr;
+}
+
+Document Document::withParameter(Property parameter) const {
+    auto next = std::make_shared<Impl>(*impl_);
+    for (auto& existing : next->parameters) {
+        if (existing.name == parameter.name) {
+            existing = std::move(parameter);
+            return Document(next);
+        }
+    }
+    next->parameters.push_back(std::move(parameter));
+    std::sort(next->parameters.begin(), next->parameters.end(),
+              [](const Property& a, const Property& b) { return a.name < b.name; });
+    return Document(next);
+}
+
+Document Document::withoutParameter(std::string_view name) const {
+    auto next = std::make_shared<Impl>(*impl_);
+    std::erase_if(next->parameters, [&](const Property& p) { return p.name == name; });
+    return Document(next);
+}
+
 std::uint64_t Document::digest() const {
     std::uint64_t h = kFnvOffset;
+    // Parameters first, and unconditionally. A parameter edit that happens to leave every feature
+    // value unchanged -- renaming, retyping the same number, adding one nothing uses yet -- is
+    // still an edit to the document, and a digest blind to it would let the file close unsaved.
+    for (const auto& p : impl_->parameters) {
+        for (char c : p.name) mix(h, static_cast<std::uint64_t>(c));
+        mix(h, digestOf(p.value));
+        for (char c : p.expression) mix(h, static_cast<std::uint64_t>(c));
+        mix(h, static_cast<std::uint64_t>(p.expressionUnits));
+    }
     for (const auto& [id, obj] : impl_->objects) {
         mix(h, id.value);
         for (char c : obj->type()) mix(h, static_cast<std::uint64_t>(c));
         for (const auto& p : obj->properties()) {
             for (char c : p.name) mix(h, static_cast<std::uint64_t>(c));
             mix(h, digestOf(p.value));
+            // The expression too, even though it cannot change the geometry: this digest is what
+            // tells the application the document has UNSAVED CHANGES. Replacing 80 with `width*2`
+            // leaves the value identical and the model profoundly different, and a digest blind to
+            // that would let the edit be discarded on close without a prompt.
+            for (char c : p.expression) mix(h, static_cast<std::uint64_t>(c));
+            mix(h, static_cast<std::uint64_t>(p.expressionUnits));
         }
     }
     return h;

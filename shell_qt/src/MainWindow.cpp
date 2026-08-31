@@ -2,6 +2,7 @@
 
 #include "cad/app/About.h"
 
+#include "ParametersDialog.h"
 #include "PluginManager.h"
 #include "cad/abi/cad_plugin_abi.h"
 #include "cad/log/Log.h"
@@ -848,7 +849,13 @@ void MainWindow::rebuildRibbon() {
     // ── Manage ──────────────────────────────────────────────────────────────────────────
     auto* manage = ribbon()->addTab(tr("Manage"));
     auto* parameters = manage->addPanel(tr("Parameters"));
-    parameters->addLarge(planned(tr("Parameters"), QStringLiteral("parameters")));
+    {
+        // Real, and on the Manage tab where Inventor and Fusion both put it.
+        auto* action = new QAction(icon(QStringLiteral("parameters")), tr("Parameters"), this);
+        action->setToolTip(tr("Name values and use them in any field"));
+        connect(action, &QAction::triggered, this, &MainWindow::showParameters);
+        parameters->addLarge(action);
+    }
     // The DDC, surfaced in the UI. No other CAD application has this panel because no other CAD
     // application has a content-addressed recompute cache (ADR 0004).
     auto* cache = manage->addPanel(tr("Cache"));
@@ -1742,6 +1749,28 @@ QPixmap MainWindow::grabSettingsForShot(const QString& pageId) {
     const QPixmap shot = window->grab();
     window->deleteLater();
     return shot;
+}
+
+void MainWindow::showParameters() {
+    auto* c = controller();
+    if (c == nullptr) return;
+
+    // One window, reused. Opening a second would give the user two tables that disagree the moment
+    // either is edited, and closing the wrong one would look like the parameters were lost.
+    if (parametersDialog_ == nullptr) {
+        parametersDialog_ = new ParametersDialog(*c, this);
+        connect(parametersDialog_, &ParametersDialog::documentChanged, this, [this] {
+            // A parameter edit moves geometry, so the viewport and the browser are both stale.
+            refreshTree();
+            refreshProperties();
+            refreshCommandStates();
+            refreshStatus();
+        });
+    }
+    parametersDialog_->refresh();
+    parametersDialog_->show();
+    parametersDialog_->raise();
+    parametersDialog_->activateWindow();
 }
 
 void MainWindow::showOptions() {
