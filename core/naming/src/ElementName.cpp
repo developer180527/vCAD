@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <limits>
 #include <sstream>
 
 namespace cad::naming {
@@ -109,20 +110,60 @@ std::string ElementName::toString() const {
     return os.str();
 }
 
+namespace {
+
+/// Reads a decimal integer that must fill `text` exactly and fit in T.
+///
+/// Both halves matter. `sscanf("%llu")` succeeded on a value far larger than the field it was
+/// assigned to and the result was silently truncated -- `P4294967296.0#0` parsed as feature serial
+/// 0 -- and it also succeeded while leaving trailing junk unread, so text that was not in the
+/// format at all was accepted as though it were.
+template <class T>
+bool readWhole(std::string_view text, T& out) {
+    if (text.empty()) return false;
+    // from_chars on an unsigned type rejects a sign and leading space, which is what we want: the
+    // writer never emits either, so accepting them would widen the format by accident.
+    std::uint64_t value = 0;
+    const char* const begin = text.data();
+    const char* const end = begin + text.size();
+    const auto [stopped, ec] = std::from_chars(begin, end, value, 10);
+    if (ec != std::errc{} || stopped != end) return false;
+    if (value > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) return false;
+    out = static_cast<T>(value);
+    return true;
+}
+
+}  // namespace
+
 ElementName ElementName::parse(std::string_view text) {
+    // A strict inverse of toString, and strict on purpose.
+    //
+    // These strings arrive from saved documents, from DDC cache blobs, and across the C ABI from
+    // plugins and from the iPad shell -- so some of this input is genuinely untrusted. The previous
+    // parser accepted several kinds of text that toString cannot produce: an unterminated parent
+    // list, a parent digest with trailing junk, out-of-range numbers silently truncated into their
+    // fields, and empty path components, so that `P1.0#0`, `/P1.0#0` and `P1.0#0//P2.0#0` were all
+    // the same name.
+    //
+    // A malformed reference must be REFUSED, not reinterpreted. Every caller already treats a null
+    // result as "this document contains a geometric reference we cannot read"; the failure that
+    // matters is the one where a wrong-but-plausible name resolves to real geometry.
+    //
+    // The empty string is the null name, which is what toString writes for it.
+    if (text.empty()) return {};
+
     std::vector<NameStep> steps;
     std::size_t pos = 0;
-    while (pos < text.size()) {
-        std::size_t end = text.find('/', pos);
-        // A '/' inside a bracketed parent list would break this; parents are hex digests
-        // and commas, so it cannot occur.
-        if (end == std::string_view::npos) end = text.size();
-        std::string_view tok = text.substr(pos, end - pos);
-        pos = end + 1;
-        if (tok.empty()) continue;
+    for (;;) {
+        const std::size_t slash = text.find('/', pos);
+        const std::string_view token =
+            slash == std::string_view::npos ? text.substr(pos) : text.substr(pos, slash - pos);
+        // Empty means a leading, trailing or doubled separator. The writer emits exactly one '/'
+        // between steps and none at either end.
+        if (token.empty()) return {};
 
         NameStep step;
-        switch (tok[0]) {
+        switch (token[0]) {
             case 'P': step.provenance = Provenance::Primitive; break;
             case 'G': step.provenance = Provenance::Generated; break;
             case 'M': step.provenance = Provenance::Modified;  break;
@@ -130,30 +171,54 @@ ElementName ElementName::parse(std::string_view text) {
             case 'U': step.provenance = Provenance::Merged;    break;
             default:  return {};
         }
-        std::string body(tok.substr(1));
-        unsigned long long feat = 0, op = 0, disc = 0;
-        const std::size_t bracket = body.find('[');
-        std::string head = body.substr(0, bracket);
-        if (std::sscanf(head.c_str(), "%llu.%llu#%llu", &feat, &op, &disc) != 3) return {};
-        step.featureSerial = static_cast<std::uint32_t>(feat);
-        step.opTag = static_cast<std::uint16_t>(op);
-        step.discriminator = static_cast<std::uint32_t>(disc);
 
-        if (bracket != std::string::npos) {
-            std::string list = body.substr(bracket + 1);
-            if (!list.empty() && list.back() == ']') list.pop_back();
-            std::istringstream is(list);
-            std::string item;
-            while (std::getline(is, item, ',')) {
-                if (item.empty()) continue;
-                std::uint64_t val = 0;
-                auto [ptr, ec] = std::from_chars(item.data(), item.data() + item.size(), val, 16);
-                if (ec != std::errc{}) return {};
-                step.parents.push_back(val);
-            }
+        const std::string_view body = token.substr(1);
+        std::string_view head = body;
+        std::string_view parents;
+
+        if (const std::size_t bracket = body.find('['); bracket != std::string_view::npos) {
+            // The list must be closed, and closed at the very END of the step.
+            if (body.empty() || body.back() != ']') return {};
+            head = body.substr(0, bracket);
+            parents = body.substr(bracket + 1, body.size() - bracket - 2);
+            if (parents.empty()) return {};   // toString never writes an empty list
+        } else if (body.find(']') != std::string_view::npos) {
+            return {};   // a closing bracket with nothing to close
         }
+
+        const std::size_t dot = head.find('.');
+        const std::size_t hash = head.find('#');
+        if (dot == std::string_view::npos || hash == std::string_view::npos || hash < dot) {
+            return {};
+        }
+        if (!readWhole(head.substr(0, dot), step.featureSerial)) return {};
+        if (!readWhole(head.substr(dot + 1, hash - dot - 1), step.opTag)) return {};
+        if (!readWhole(head.substr(hash + 1), step.discriminator)) return {};
+
+        while (!parents.empty()) {
+            const std::size_t comma = parents.find(',');
+            const std::string_view item =
+                comma == std::string_view::npos ? parents : parents.substr(0, comma);
+            // Exactly the sixteen hex digits toString writes. Checking the length is what rejects
+            // a digest that was truncated in transit, which from_chars alone would happily read as
+            // a smaller number.
+            if (item.size() != 16) return {};
+            std::uint64_t digest = 0;
+            const char* const begin = item.data();
+            const char* const end = begin + item.size();
+            const auto [stopped, ec] = std::from_chars(begin, end, digest, 16);
+            if (ec != std::errc{} || stopped != end) return {};
+            step.parents.push_back(digest);
+            if (comma == std::string_view::npos) break;
+            parents = parents.substr(comma + 1);
+            if (parents.empty()) return {};   // a trailing comma
+        }
+
         steps.push_back(std::move(step));
+        if (slash == std::string_view::npos) break;
+        pos = slash + 1;
     }
+
     return ElementName(std::move(steps));
 }
 
