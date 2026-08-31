@@ -162,6 +162,38 @@ bool Controller::setParameter(const std::string& name, const std::string& text) 
     return true;
 }
 
+bool Controller::renameParameter(const std::string& from, const std::string& to) {
+    const auto& doc = history_.current();
+    const auto* existing = doc.parameter(from);
+    if (existing == nullptr) return false;
+    if (from == to) return true;
+
+    const auto problem = document::parameterNameProblem(doc, to);
+    if (!problem.empty()) {
+        status(problem);
+        return false;
+    }
+
+    // The whole Property, carried across. Not its displayed text: a rename must not be able to
+    // change the number, and a field showing three decimals would round it if it went through
+    // formatting and parsing on the way.
+    document::Property renamed = *existing;
+    renamed.name = to;
+
+    auto rebuilt = document::rebuildFromParameters(
+        doc.withoutParameter(from).withParameter(std::move(renamed)));
+    history_.commit(std::move(rebuilt.document), "Rename " + from);
+    refresh();
+
+    if (!rebuilt.problems.empty()) {
+        status("Renamed to " + to + ", but " + std::to_string(rebuilt.problems.size())
+               + " value(s) still refer to '" + from + "'.");
+    } else {
+        status("Renamed " + from + " to " + to + ".");
+    }
+    return true;
+}
+
 bool Controller::removeParameter(const std::string& name) {
     const auto& doc = history_.current();
     if (doc.parameter(name) == nullptr) return false;

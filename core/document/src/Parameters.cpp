@@ -228,6 +228,10 @@ Reevaluation rebuildFromParameters(const Document& source) {
                 break;
             default: continue;
         }
+        // Only when it actually moved. refresh() runs this after every edit, and an unconditional
+        // write would copy the parameter list once per derived parameter per edit -- for a document
+        // whose parameters have not changed at all.
+        if (digestOf(updated.value) == digestOf(parameter.value)) continue;
         doc = doc.withParameter(std::move(updated));
     }
 

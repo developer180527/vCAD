@@ -143,6 +143,43 @@ TEST_CASE("creating a feature with a formula keeps the link", "[controller][para
     CHECK(lengthOf(c, box, "dx") == Approx(80.0));
 }
 
+TEST_CASE("renaming carries the value exactly and undoes in one step",
+          "[controller][parameters]") {
+    app::Controller c;
+    // A value with more decimals than any field displays. Add-then-remove through the table's own
+    // text would round this; a rename must not be able to change a number at all.
+    REQUIRE(c.setParameter("width", "40.00048828125mm"));
+    REQUIRE(c.setParameter("wall", "width / 8"));
+
+    REQUIRE(c.renameParameter("width", "plate_width"));
+    CHECK(c.document().parameter("width") == nullptr);
+    const auto* renamed = c.document().parameter("plate_width");
+    REQUIRE(renamed != nullptr);
+    CHECK(std::get<units::Length>(renamed->value).base() == 40.00048828125);
+
+    // `wall` still says `width / 8`, which no longer exists -- visibly broken rather than silently
+    // rewritten. That is the deliberate half of the decision.
+    bool wallBroken = false;
+    for (const auto& row : c.parameters()) {
+        if (row.name == "wall") wallBroken = !row.problem.empty();
+    }
+    CHECK(wallBroken);
+
+    // One rename, one undo.
+    REQUIRE(c.undo());
+    CHECK(c.document().parameter("width") != nullptr);
+    CHECK(c.document().parameter("plate_width") == nullptr);
+}
+
+TEST_CASE("a rename to a name already taken is refused", "[controller][parameters]") {
+    app::Controller c;
+    REQUIRE(c.setParameter("width", "40mm"));
+    REQUIRE(c.setParameter("height", "20mm"));
+    CHECK_FALSE(c.renameParameter("width", "height"));
+    CHECK(c.parameters().size() == 2);
+    CHECK(std::get<units::Length>(c.document().parameter("width")->value).base() == Approx(40.0));
+}
+
 TEST_CASE("removing a parameter breaks its users visibly", "[controller][parameters]") {
     // Rather than silently falling back to the number it last had, which would leave the model
     // looking correct and quietly no longer parametric.

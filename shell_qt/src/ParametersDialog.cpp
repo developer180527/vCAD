@@ -153,17 +153,12 @@ void ParametersDialog::commitCell(int row, int column) {
         ok = controller_.setParameter(before.name, table_->item(row, kExpression)->text()
                                                        .toStdString());
     } else {
-        // A rename is add-then-remove, in that order. The reverse would delete the old name while
-        // other parameters still refer to it, and every one of them would fail in between.
-        //
-        // References to the OLD name are not rewritten -- they break, visibly, and say which name
-        // they wanted. Silently rewriting text the user wrote elsewhere is the more dangerous of
-        // the two, and Fusion refuses renames for the same reason.
         const std::string after = table_->item(row, kName)->text().toStdString();
         if (after == before.name) return;
-        const std::string text = before.expression.empty() ? before.value : before.expression;
-        ok = controller_.setParameter(after, text);
-        if (ok) controller_.removeParameter(before.name);
+        // One Controller call. Composing it here out of add-then-remove would make one rename two
+        // undo steps, and would hand the new parameter the value as DISPLAYED -- rounded to
+        // however many decimals this table shows.
+        ok = controller_.renameParameter(before.name, after);
     }
 
     if (ok) emit documentChanged();

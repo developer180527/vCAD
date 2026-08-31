@@ -187,6 +187,16 @@ public:
     /// either, and asking the user to fix it afterwards means they cannot open their own model.
     bool setParameter(const std::string& name, const std::string& text);
 
+    /// Renames one, carrying its value and formula across exactly.
+    ///
+    /// One operation rather than the add-then-remove a shell would otherwise compose, for two
+    /// reasons: that would be two undo steps for one rename, and it would have to hand the new
+    /// parameter the DISPLAYED value -- rounded to however many decimals the field shows.
+    ///
+    /// References to the old name are NOT rewritten. They break, visibly, saying which name they
+    /// wanted. Silently editing text the user wrote elsewhere is the more dangerous of the two.
+    bool renameParameter(const std::string& from, const std::string& to);
+
     /// Removes one. Features using it go red on the next rebuild, naming the parameter, rather
     /// than silently falling back to the number it last had.
     bool removeParameter(const std::string& name);
