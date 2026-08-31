@@ -410,13 +410,15 @@ std::optional<std::size_t> Controller::dimensionSketchGeometry(sketch::GeoId id)
     const auto* g = editing_->find(id);
     if (g == nullptr) return std::nullopt;
 
-    pushSketchUndo();
-
+    // Snapshotted inside each branch, AFTER it knows it will succeed. Taken up here it was left
+    // behind by every refusal below — a zero-length line, a zero radius, a point — and an undo step
+    // that restores an identical sketch reads as undo being broken.
     std::optional<std::size_t> index;
     switch (g->kind) {
         case sketch::GeoKind::Line: {
             const double length = std::hypot(g->p[2] - g->p[0], g->p[3] - g->p[1]);
             if (length < 1e-9) return std::nullopt;
+            pushSketchUndo();
             index = editing_->distance(id, sketch::PointRef::Start, id, sketch::PointRef::End,
                                        length);
             break;
@@ -424,6 +426,7 @@ std::optional<std::size_t> Controller::dimensionSketchGeometry(sketch::GeoId id)
         case sketch::GeoKind::Circle:
         case sketch::GeoKind::Arc:
             if (g->p[2] < 1e-9) return std::nullopt;
+            pushSketchUndo();
             index = editing_->radius(id, g->p[2]);
             break;
         case sketch::GeoKind::Point:
@@ -584,6 +587,10 @@ bool Controller::dimensionSketchAt(float x, float y) {
     return true;
 }
 
+void Controller::discardSketchUndo(std::size_t depthBeforePush) {
+    if (sketchUndo_.size() > depthBeforePush) sketchUndo_.pop_back();
+}
+
 void Controller::pushSketchUndo() {
     if (!editing_) return;
     // Bounded from the front, so the oldest state is the one lost. Undoing to the very beginning of
@@ -649,6 +656,7 @@ bool Controller::offsetSketchSelection(double millimetres) {
     // Collected before anything is added, because adding geometry invalidates nothing here but
     // iterating a container while appending to the sketch it describes is a habit worth not
     // forming.
+    const std::size_t undoDepth = sketchUndo_.size();
     pushSketchUndo();
     const std::vector<sketch::GeoId> sources = sketchSelection_;
     std::size_t made = 0;
@@ -694,6 +702,9 @@ bool Controller::offsetSketchSelection(double millimetres) {
     }
 
     if (made == 0) {
+        // Nothing happened, so nothing to undo. A step that restores an identical sketch reads as
+        // undo being broken.
+        discardSketchUndo(undoDepth);
         status("Nothing there could be offset.");
         return false;
     }
@@ -705,7 +716,7 @@ bool Controller::offsetSketchSelection(double millimetres) {
         // Said out loud: a partial result that reports success is how a user comes to believe the
         // tool worked on geometry it skipped.
         message += ", skipped " + std::to_string(refused)
-                   + (refused == 1 ? " that could not be" : " that could not be");
+                   + (refused == 1 ? " that could not be" : " that could not be offset");
     }
     status(message);
     pushSketchOverlay();
@@ -793,7 +804,14 @@ bool Controller::setSketchDimension(std::size_t constraint, double millimetres) 
             break;
     }
 
-    if (!editing_->setConstraintValue(constraint, millimetres)) return false;
+    // Snapshotted BEFORE the change, because this is the parametric edit the dimension tool exists
+    // for and it was the one edit undo did not record. Worse than missing: creating the dimension
+    // DOES snapshot, so a single undo jumped back past both edits and took the dimension with it.
+    pushSketchUndo();
+    if (!editing_->setConstraintValue(constraint, millimetres)) {
+        discardSketchUndo(sketchUndo_.size() - 1);
+        return false;
+    }
 
     lastSketchSolve_ = editing_->solve();
     status(lastSketchSolve_.message);
@@ -861,6 +879,7 @@ void Controller::clearSketchSelection() {
 
 void Controller::deleteSketchSelection() {
     if (!editing_.has_value() || sketchSelection_.empty()) return;
+    const std::size_t undoDepth = sketchUndo_.size();
     pushSketchUndo();
 
     // Rebuild the sketch without the selected geometry rather than mutating in place: Sketch has no
@@ -913,6 +932,7 @@ void Controller::deleteSketchSelection() {
 
     auto parsed = sketch::Sketch::deserialize(rebuilt);
     if (!parsed) {
+        discardSketchUndo(undoDepth);
         status(parsed.error().message);
         return;
     }
@@ -951,6 +971,7 @@ bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
         }
     }
 
+    const std::size_t undoDepth = sketchUndo_.size();
     pushSketchUndo();
 
     const sketch::GeoId a = sketchSelection_.front();
@@ -970,7 +991,10 @@ bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
             // select two joined curves is the join.
             editing_->tangent(a, sketch::PointRef::End, b, sketch::PointRef::Start);
             break;
-        default: return false;
+        default:
+            // A kind with no handler here changes nothing, so it must leave no step behind.
+            discardSketchUndo(undoDepth);
+            return false;
     }
 
     const auto report = solveSketch();

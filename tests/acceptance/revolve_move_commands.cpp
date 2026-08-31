@@ -190,3 +190,30 @@ TEST_CASE("Revolve's default angle is a full turn", "[revolve][command]") {
     CHECK(parsed.value().base() == Approx(2.0 * std::numbers::pi).margin(1e-6));
     app.cancelCommand();
 }
+
+TEST_CASE("the Revolve panel opens with the selection the button accepted", "[revolve][command]") {
+    // Same mismatch as Hole: enabled by what is selected, refused by the level. With Auto the
+    // default, the angle was never askable and every revolve was a silent full turn.
+    Controller app;
+    const auto sketch = aSketch(app);
+
+    app.setSelectionLevel(Level::Auto);
+    bool picked = false;
+    for (std::uint32_t slot = 0; slot < 128 && !picked; ++slot) {
+        app.scriptNextPick(slot);
+        const auto pick = app.pickAt(10, 10);
+        if (!pick.hit || pick.object != sketch) continue;
+        app.scriptNextPick(slot);
+        if (!app.clickAt(10, 10, /*additive=*/false).changed) continue;
+        picked = app.context().selectedEdges == 1;
+    }
+    REQUIRE(picked);
+
+    const auto* revolve = commandNamed(app, "feature.revolve");
+    REQUIRE(revolve != nullptr);
+    REQUIRE(revolve->enabled(app.context()));
+    REQUIRE(app.beginCommand("feature.revolve"));
+    REQUIRE(app.commandParameters().size() == 1);
+    CHECK(app.commandParameters().front().name == "angle");
+    app.cancelCommand();
+}

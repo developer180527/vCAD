@@ -22,6 +22,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 using namespace cad;
 using Catch::Approx;
@@ -165,4 +166,70 @@ TEST_CASE("a click that draws nothing does not consume an undo step", "[sketch][
     c.setSketchTool(app::Controller::SketchTool::Line);
     c.sketchClickAt(400, 300);
     CHECK_FALSE(c.canUndoSketch());
+}
+
+TEST_CASE("changing a dimension's value is undoable, and only that", "[sketch][undo]") {
+    // The parametric edit the dimension tool exists for, and the one edit undo did not record.
+    // Worse than missing: CREATING the dimension does snapshot, so a single undo used to jump back
+    // past both edits and take the dimension with it.
+    app::Controller c;
+    const auto line = lineIn(c);
+
+    const auto index = c.dimensionSketchGeometry(line);
+    REQUIRE(index);
+    const std::string created = c.activeSketch()->serialize();
+    const std::size_t constraints = c.activeSketch()->constraints().size();
+
+    REQUIRE(c.setSketchDimension(*index, 40.0));
+    REQUIRE(c.activeSketch()->serialize() != created);
+
+    REQUIRE(c.undoSketch());
+    // Back to the size it was created at, with the dimension still there. One undo, one edit.
+    CHECK(c.activeSketch()->serialize() == created);
+    CHECK(c.activeSketch()->constraints().size() == constraints);
+}
+
+TEST_CASE("an edit that refuses leaves no undo step", "[sketch][undo]") {
+    // A snapshot taken before an operation knows whether it will succeed has to be given back when
+    // it refuses. Otherwise the user presses undo, the sketch is restored to an identical state,
+    // and undo looks broken -- which is the reasoning this file's own header gives.
+    struct Case {
+        const char* what;
+        std::function<void(app::Controller&)> refuse;
+    };
+    const std::vector<Case> cases{
+        {"dimension a point, which has no size",
+         [](app::Controller& c) {
+             const auto point = c.activeSketch()->addPoint(5, 5);
+             CHECK_FALSE(c.dimensionSketchGeometry(point));
+         }},
+        {"offset something that cannot be offset",
+         [](app::Controller& c) {
+             const auto point = c.activeSketch()->addPoint(5, 5);
+             c.selectSketchGeometry(point, false);
+             CHECK_FALSE(c.offsetSketchSelection(5.0));
+         }},
+        {"set a value on a constraint that has none",
+         [](app::Controller& c) {
+             // Built straight on the sketch rather than through an undoable operation, so the only
+             // step that could appear is the one the refusal below must not leave.
+             const auto line = c.activeSketch()->addLine(0, 0, 10, 0);
+             const auto horizontal = c.activeSketch()->horizontal(line);
+             CHECK_FALSE(c.setSketchDimension(horizontal, 40.0));   // horizontal has no value
+         }},
+    };
+
+    for (const auto& item : cases) {
+        app::Controller c;
+        lineIn(c);
+        INFO("refusal: " << item.what);
+
+        // Drained first, so what is counted is only what the refusal adds. Geometry added by the
+        // case itself goes straight onto the sketch rather than through an undoable operation.
+        while (c.undoSketch()) {}
+        REQUIRE_FALSE(c.canUndoSketch());
+
+        item.refuse(c);
+        CHECK_FALSE(c.canUndoSketch());
+    }
 }

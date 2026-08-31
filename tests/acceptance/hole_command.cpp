@@ -171,3 +171,37 @@ TEST_CASE("a curved face is refused without leaving wreckage", "[hole][command]"
     }
     CHECK(sawRefusal);
 }
+
+TEST_CASE("the Hole panel opens with the selection the button accepted", "[hole][command]") {
+    // The bug this closes. `enabled` counted what is SELECTED while `beginCommand` tested the
+    // selection LEVEL, and Auto — the default — is neither Face nor Edge. So the button lit up, the
+    // panel refused, and the shell fell back to invoking the command with its hard-coded 8 x 10 mm:
+    // the feature appeared to work and its parameters were unreachable.
+    Controller app;
+    const auto id = aBox(app);
+
+    // Auto, as a new document starts. Not Face — the point is that the level is not what decides.
+    app.setSelectionLevel(Level::Auto);
+    bool picked = false;
+    for (std::uint32_t slot = 0; slot < 128 && !picked; ++slot) {
+        app.scriptNextPick(slot);
+        const auto pick = app.pickAt(10, 10);
+        if (!pick.hit || pick.object != id) continue;
+        app.scriptNextPick(slot);
+        if (!app.clickAt(10, 10, /*additive=*/false).changed) continue;
+        picked = app.context().selectedFaces == 1;
+    }
+    REQUIRE(picked);
+
+    const auto* hole = commandNamed(app, "feature.hole");
+    REQUIRE(hole != nullptr);
+    REQUIRE(hole->enabled(app.context()));
+
+    // Whatever the button accepts, the panel must accept — they ask one question now.
+    REQUIRE(app.beginCommand("feature.hole"));
+    const auto& parameters = app.commandParameters();
+    REQUIRE(parameters.size() == 2);
+    CHECK(parameters[0].name == "diameter");
+    CHECK(parameters[1].name == "depth");
+    app.cancelCommand();
+}

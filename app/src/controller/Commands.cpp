@@ -27,6 +27,20 @@
 
 namespace cad::app {
 
+bool Controller::canDrillHole() const {
+    // By what is SELECTED, never by the selection level. The level says what a click resolves to;
+    // it does not describe what is already selected, and in Auto it is neither Face nor Edge.
+    return context().selectedFaces == 1;
+}
+
+bool Controller::canRevolveSelection() const {
+    if (context().selectedEdges != 1) return false;
+    // And it must be an edge OF A SKETCH: computeRevolve resolves the axis in the profile's own
+    // element map, so an edge of some other body names nothing there.
+    const auto owner = history_.current().find(selectionByKind().edges.front().object);
+    return owner && owner->type() == "Sketch";
+}
+
 bool Controller::beginCommand(const std::string& id) {
     // The parameter set per command. A table rather than a virtual per-command class: there will be
     // dozens of commands and almost all of them are two or three numbers, so a class each would be
@@ -49,7 +63,7 @@ bool Controller::beginCommand(const std::string& id) {
                  units::format(units::millimetres(mm), preferences_.displayUnits)});
         }
     } else if (id == "feature.revolve") {
-        if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Edge) {
+        if (!canRevolveSelection()) {
             status("Select one straight edge of a sketch to revolve it about.");
             return false;
         }
@@ -71,7 +85,7 @@ bool Controller::beginCommand(const std::string& id) {
                  units::format(units::millimetres(0.0), preferences_.displayUnits)});
         }
     } else if (id == "feature.hole") {
-        if (elementSelection_.size() != 1 || selectionLevel_ != SelectionLevel::Face) {
+        if (!canDrillHole()) {
             status("Select one flat face to put the hole in.");
             return false;
         }
@@ -282,22 +296,14 @@ void Controller::registerCommands() {
     // nothing added it here and both shells build their tools from this catalogue. That is the
     // cheapest kind of gap there is, and Hole is the most-used feature in mechanical CAD.
     commands_.push_back({"feature.hole", "Hole", "Drill a hole into the selected face", "hole",
-                         [](const CommandContext& c) { return c.selectedFaces == 1; },
+                         [this](const CommandContext&) { return canDrillHole(); },
                          [this] { addHole(8.0, 10.0); }});
 
     // Revolve. Enabled on one EDGE, which identifies the axis and the profile together: the axis is
     // resolved in the profile's own element map, so it must be an edge of the sketch being revolved.
     commands_.push_back({"feature.revolve", "Revolve",
                          "Turn the selected sketch about one of its edges", "revolve",
-                         [this](const CommandContext& c) {
-                             if (c.selectedEdges != 1) return false;
-                             // And it must be an edge OF A SKETCH: computeRevolve resolves the axis
-                             // in the profile's own element map, so an edge of some other body
-                             // names nothing there.
-                             const auto owner =
-                                 history_.current().find(selectionByKind().edges.front().object);
-                             return owner && owner->type() == "Sketch";
-                         },
+                         [this](const CommandContext&) { return canRevolveSelection(); },
                          [this] { addRevolve(360.0); }});
 
     // Move. One body, and a vector the user types.

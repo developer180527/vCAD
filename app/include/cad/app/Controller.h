@@ -1116,6 +1116,16 @@ private:
     /// Moves the selected body. Millimetres, because the document is.
     void addTranslate(double dxMm, double dyMm, double dzMm);
 
+    /// Whether the current selection is one face to drill, or one sketch edge to turn about.
+    ///
+    /// ONE predicate each, shared by the command's `enabled` and by `beginCommand`. They asked the
+    /// question two different ways and disagreed: `enabled` counted what is selected while
+    /// `beginCommand` tested the selection LEVEL, so with Auto — the default — the button lit up
+    /// and the parameter panel refused, and the shell quietly fell back to invoking the command
+    /// with its hard-coded defaults. A button that is offered has to be a button that works.
+    [[nodiscard]] bool canDrillHole() const;
+    [[nodiscard]] bool canRevolveSelection() const;
+
     /// Drills a hole into the selected FACE, perpendicular to it and at its centre.
     ///
     /// A face rather than a body, because that is what the feature actually takes: the direction
@@ -1210,6 +1220,14 @@ private:
 
     /// Takes a snapshot, if a sketch is open. Called at the START of every mutation.
     void pushSketchUndo();
+
+    /// Abandons the snapshot `pushSketchUndo` just took, when the operation it guarded did nothing.
+    ///
+    /// Pass the stack depth from BEFORE the push. An undo step that restores an identical sketch
+    /// reads as undo being broken — the user presses it and sees no change — so an operation that
+    /// refuses must leave no step behind. `sketchClickAt` has always done this by hand; the sites
+    /// that snapshot before they know whether they will succeed need the same thing.
+    void discardSketchUndo(std::size_t depthBeforePush);
 
     /// The pen's trail while a stroke is in progress: world-space line pairs, cleared on commit.
     std::vector<float> strokeInk_;
