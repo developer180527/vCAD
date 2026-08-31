@@ -2,15 +2,20 @@
 
 #include "cad/kernel/internal/Occt.h"
 
+#include <BRep_Tool.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <gp_Pnt.hxx>
 #include <TopExp.hxx>
+#include <TopoDS.hxx>
 #include <TopTools_DataMapOfShapeInteger.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <optional>
+#include <vector>
 #include <unordered_map>
 
 namespace cad::naming {
@@ -198,36 +203,119 @@ kernel::ShapeHash contentHash(const kernel::Shape& shape, const ElementMap& map)
     kernel::ShapeHash out;
     if (shape.isNull()) return out;
 
-    // Visit faces in ELEMENT-NAME order, never in OCCT traversal order. This is what makes
-    // the hash identical across processes and machines, which is the whole basis for the
+    // Every element, visited in ELEMENT-NAME order, never in OCCT traversal order. That ordering is
+    // what makes the hash identical across processes and machines, which is the whole basis for the
     // DDC's shared tier being worth anything.
-    struct FaceRec {
+    //
+    // # What this has to describe
+    //
+    // It used to describe faces only, and each face only by its area and centroid. Two shapes with
+    // the same face names, areas and centroids therefore hashed identically however differently
+    // those faces were arranged, whatever curves bounded them, and whatever surfaces they lay on --
+    // and edges and vertices contributed nothing at all.
+    //
+    // That mattered in two places. `serialForShapes` in the C ABI derives an operation's naming
+    // serial from its inputs, so two inputs that hash alike mint the same names for different
+    // geometry. And every determinism check in the project -- the cross-process test, the ABI's
+    // run-it-twice self-check -- asserts "same hash, same result", which is only as strong as the
+    // description underneath it. A check that cannot see topology passes on two shapes that differ
+    // in topology.
+    //
+    // Note what this is NOT: it is not the recompute cache key. The DDC keys on
+    // Engine::cacheKeyOf, which is derived from a feature's inputs -- type, version, properties,
+    // upstream keys -- so a collision here has never been able to serve the wrong cached geometry.
+    struct Record {
         ElementName name;
-        std::int64_t area;
-        std::int64_t cx, cy, cz;
+        std::array<std::int64_t, 6> values{};
     };
-    std::vector<FaceRec> faces;
+    std::vector<Record> records;
 
-    for (const auto& f : shape.subShapes(kernel::ShapeType::Face)) {
-        auto name = map.nameOf(f);
-        if (!name) continue;  // unnamed faces are reported separately as NamingLost
+    const auto recordOf = [&map](const kernel::Shape& element) -> std::optional<Record> {
+        auto name = map.nameOf(element);
+        if (!name) return std::nullopt;   // unnamed elements are reported separately
+        const TopoDS_Shape& raw = kernel::occt(const_cast<kernel::Shape&>(element));
+
+        Record record;
+        record.name = *name;
+        // The TYPE. Records are keyed by NAME and a name is unique within a shape, so this only
+        // earns its place ACROSS two shapes, where one name can sit on a face in the first and on
+        // an edge in the second whose length happens to quantise to the same value as the face's
+        // area. Kept because it is one line and clearly right; not covered by a test, because
+        // constructing that coincidence is contrived enough that the test would be asserting its
+        // own setup.
+        record.values[0] = static_cast<std::int64_t>(raw.ShapeType());
+        record.values[1] = static_cast<std::int64_t>(raw.Orientation());
+
+        if (raw.ShapeType() == TopAbs_VERTEX) {
+            // Largely redundant while edges are hashed -- an edge determines its own endpoints --
+            // and not redundant for a shape that is ONLY points, which a sketch can be.
+            const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(raw));
+            record.values[2] = 0;
+            record.values[3] = quantise(p.X());
+            record.values[4] = quantise(p.Y());
+            record.values[5] = quantise(p.Z());
+            return record;
+        }
+
         GProp_GProps props;
-        BRepGProp::SurfaceProperties(kernel::occt(const_cast<kernel::Shape&>(f)), props);
+        if (raw.ShapeType() == TopAbs_EDGE) {
+            BRepGProp::LinearProperties(raw, props);   // length, not area
+        } else {
+            BRepGProp::SurfaceProperties(raw, props);
+        }
         const gp_Pnt c = props.CentreOfMass();
-        faces.push_back({*name, quantise(props.Mass()),
-                         quantise(c.X()), quantise(c.Y()), quantise(c.Z())});
+        record.values[2] = quantise(props.Mass());
+        record.values[3] = quantise(c.X());
+        record.values[4] = quantise(c.Y());
+        record.values[5] = quantise(c.Z());
+        return record;
+    };
+
+    // Faces, then edges, then vertices. Edges and vertices carry the shape's STRUCTURE: two
+    // arrangements of the same faces differ in which curves bound them and where those curves meet,
+    // and nothing above the face level can see that.
+    for (const auto type : {kernel::ShapeType::Face, kernel::ShapeType::Edge,
+                            kernel::ShapeType::Vertex}) {
+        for (const auto& element : shape.subShapes(type)) {
+            if (auto record = recordOf(element)) records.push_back(std::move(*record));
+        }
     }
-    std::sort(faces.begin(), faces.end(),
-              [](const FaceRec& a, const FaceRec& b) { return a.name < b.name; });
+    std::sort(records.begin(), records.end(),
+              [](const Record& a, const Record& b) { return a.name < b.name; });
 
     std::uint64_t lanes[4] = {kFnvOffset, kFnvOffset ^ 0x1111111111111111ULL,
                               kFnvOffset ^ 0x2222222222222222ULL,
                               kFnvOffset ^ 0x3333333333333333ULL};
-    for (const auto& f : faces) {
-        mix(lanes[0], f.name.digest());
-        mix(lanes[1], static_cast<std::uint64_t>(f.area));
-        mix(lanes[2], static_cast<std::uint64_t>(f.cx) ^ static_cast<std::uint64_t>(f.cy));
-        mix(lanes[3], static_cast<std::uint64_t>(f.cz));
+
+    // What the shape IS, and how it is put together, before anything about its elements.
+    //
+    // A solid and a compound holding that solid's own faces have identical faces, identical edges
+    // and identical vertices -- `subShapes` reaches through either one to the same elements. They
+    // are still completely different things: one is a closed body with a volume, the other is a bag
+    // of surfaces. The difference lives entirely in the levels ABOVE a face, so the root's own type
+    // and the counts of solids, shells and wires are what separate them.
+    mix(lanes[0], static_cast<std::uint64_t>(
+                      kernel::occt(const_cast<kernel::Shape&>(shape)).ShapeType()));
+
+    // The COUNTS, per level. Nearly free, and they also separate two shapes that differ only by an
+    // element nobody could name -- which the record loop skips and would otherwise say nothing
+    // about at all.
+    for (const auto type : {kernel::ShapeType::CompSolid, kernel::ShapeType::Solid,
+                            kernel::ShapeType::Shell, kernel::ShapeType::Face,
+                            kernel::ShapeType::Wire, kernel::ShapeType::Edge,
+                            kernel::ShapeType::Vertex}) {
+        mix(lanes[0], static_cast<std::uint64_t>(shape.subShapes(type).size()));
+    }
+    mix(lanes[0], static_cast<std::uint64_t>(records.size()));
+
+    for (const auto& record : records) {
+        mix(lanes[0], record.name.digest());
+        mix(lanes[1], static_cast<std::uint64_t>(record.values[0]));
+        mix(lanes[1], static_cast<std::uint64_t>(record.values[1]));
+        mix(lanes[1], static_cast<std::uint64_t>(record.values[2]));
+        mix(lanes[2], static_cast<std::uint64_t>(record.values[3])
+                          ^ static_cast<std::uint64_t>(record.values[4]));
+        mix(lanes[3], static_cast<std::uint64_t>(record.values[5]));
     }
     // ADR 0005: the element map participates in the content hash.
     mix(lanes[0], map.digest());
