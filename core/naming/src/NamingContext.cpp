@@ -87,12 +87,19 @@ struct NamingContext::Impl {
                 // general: a change that swaps two siblings' positions swaps their
                 // discriminators. When that matters we will need a stronger invariant.
                 const bool needsDiscriminator = siblings.size() > 1;
+                // The size is read BEFORE the move. Written as one braced initialiser with
+                // `std::move(siblings)` alongside `siblings.size()`, the order of evaluation is
+                // unspecified: the move can empty the vector first, leaving the flag array shorter
+                // than the element array and every later index out of bounds. It segfaulted.
+                const std::size_t siblingCount = siblings.size();
                 const auto ordered =
                     needsDiscriminator
                         ? internal::canonicalOrder(std::move(siblings), internal::midpointOf)
-                        : internal::CanonicalOrder{std::move(siblings), false};
+                        : internal::CanonicalOrder{std::move(siblings),
+                                                   std::vector<std::uint8_t>(siblingCount)};
                 siblings = ordered.elements;
                 for (std::size_t k = 0; k < siblings.size(); ++k) {
+                    if (ordered.ambiguous[k] != 0) continue;
                     NameStep step;
                     // featureSerial/opTag are deliberately left at 0 for boundary names.
                     //
@@ -139,7 +146,7 @@ NamingContext::NamingContext(std::uint32_t featureSerial, std::uint16_t opTag)
 NamingContext::~NamingContext() = default;
 
 kernel::Result<ElementMap> NamingContext::nameprimitive(
-    const kernel::Shape& result, const std::vector<kernel::Shape>& taggedFaces) {
+    const kernel::Shape& result, const std::vector<kernel::Shape>& taggedFaces, Naming naming) {
     if (result.isNull()) {
         return kernel::Error{kernel::ErrorCode::InvalidInput, "Cannot name an empty shape."};
     }
@@ -180,6 +187,11 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
         // reference that will one day resolve to the wrong one.
         const auto ordered = internal::canonicalOrder(std::move(faces), internal::measureFace);
         for (std::size_t i = 0; i < ordered.elements.size(); ++i) {
+            // Tied faces are skipped, not numbered. They stay unnamed, which `unnamed()` reports --
+            // strictly for geometry we built, best-effort for geometry we read (see the Naming
+            // parameter). The others keep their positions, so one duplicate pair in an imported
+            // file costs only itself.
+            if (ordered.ambiguous[i] != 0) continue;
             NameStep step;
             step.featureSerial = impl_->featureSerial;
             step.opTag = impl_->opTag;
@@ -210,6 +222,7 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
         }
         const auto curves = internal::canonicalOrder(std::move(curveShapes), internal::midpointOf);
         for (std::size_t i = 0; i < curves.elements.size(); ++i) {
+            if (curves.ambiguous[i] != 0) continue;
             NameStep step;
             step.featureSerial = impl_->featureSerial;
             step.opTag = impl_->opTag;
@@ -253,10 +266,13 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
         for (auto& [owners, siblings] : byOwners) {
             // Two endpoints of one curve share its owner set, so they still need separating -- and
             // those two are at genuinely different positions, so a midpoint tells them apart.
-            const auto ordered = siblings.size() > 1
-                                     ? internal::canonicalOrder(siblings, internal::midpointOf)
-                                     : internal::CanonicalOrder{siblings, false};
+            const auto ordered =
+                siblings.size() > 1
+                    ? internal::canonicalOrder(siblings, internal::midpointOf)
+                    : internal::CanonicalOrder{siblings,
+                                               std::vector<std::uint8_t>(siblings.size())};
             for (std::size_t i = 0; i < ordered.elements.size(); ++i) {
+                if (ordered.ambiguous[i] != 0) continue;
                 NameStep step;
                 step.provenance = Provenance::Boundary;
                 step.parents = owners;
@@ -268,7 +284,11 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
         }
     }
 
-    if (const auto missing = map.unnamed(result); !missing.empty()) {
+    // Under BestEffort an unnamed element is a fact about the file, not a failure of the call.
+    // The collision check below still applies: two elements sharing one name would be a bug here,
+    // not a property of the geometry, and it is never acceptable.
+    if (const auto missing = map.unnamed(result);
+        !missing.empty() && naming == Naming::Strict) {
         return kernel::Error{kernel::ErrorCode::NamingLost,
                              "Some geometry could not be identified.",
                              std::to_string(missing.size())
@@ -464,6 +484,7 @@ kernel::Result<ElementMap> NamingContext::propagate(
         }
         const auto newFaces = internal::canonicalOrder(std::move(unclaimed), internal::measureFace);
         for (std::size_t k = 0; k < newFaces.elements.size(); ++k) {
+            if (newFaces.ambiguous[k] != 0) continue;
             NameStep s;
             s.featureSerial = impl_->featureSerial;
             s.opTag = impl_->opTag;

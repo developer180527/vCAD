@@ -58,9 +58,15 @@ ElementMap resolveClaims(const std::vector<Claim>& claims, std::uint32_t feature
     // which `collisions()` reports and the caller turns into NamingLost.
     for (auto& group : groups) {
         if (group.faces.size() < 2) continue;
-        group.faces = canonicalOrder(std::move(group.faces), [](const TopoDS_Shape& f) {
-                          return measureFace(f);
-                      }).elements;
+        auto ordered = canonicalOrder(std::move(group.faces),
+                                      [](const TopoDS_Shape& f) { return measureFace(f); });
+        // Tied pieces are dropped from the group, so they fall back to the parent's own name and
+        // collide -- which `collisions()` reports. The rest keep their positions and their numbers.
+        std::vector<TopoDS_Shape> keep;
+        for (std::size_t i = 0; i < ordered.elements.size(); ++i) {
+            if (ordered.ambiguous[i] == 0) keep.push_back(ordered.elements[i]);
+        }
+        group.faces = std::move(keep);
     }
 
     // The final name for a claim: unchanged when the name has one claimant, and derived with a

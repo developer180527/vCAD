@@ -91,10 +91,31 @@ public:
     NamingContext(const NamingContext&) = delete;
     NamingContext& operator=(const NamingContext&) = delete;
 
+    /// How much of the result must be nameable for the call to succeed.
+    enum class Naming : std::uint8_t {
+        /// Every element or nothing. For geometry WE built: if we cannot name a face we produced,
+        /// something in the naming layer is wrong and the user must not build on it.
+        Strict,
+
+        /// Name what can be named, and report the rest as absent rather than as failure. For
+        /// geometry we READ.
+        ///
+        /// A supplier's STEP file routinely carries duplicate or coincident faces -- junk left by
+        /// whatever exported it -- which are genuinely indistinguishable by measurement. Under
+        /// Strict those faces are unnamed and the whole import is refused, which means a defect in
+        /// a corner of the part the user was never going to touch stops them opening the file at
+        /// all. They usually want to look at it, measure it, and export it onward.
+        ///
+        /// The honesty is preserved where it matters: the ambiguous faces stay unnamed, so
+        /// attaching a feature to one of them still fails, and says so, at the moment it is tried.
+        BestEffort,
+    };
+
     /// Names a primitive's faces from constructor-supplied tags (never from indices), then
     /// derives all lower-dimensional elements by boundary.
     kernel::Result<ElementMap> nameprimitive(const kernel::Shape& result,
-                                             const std::vector<kernel::Shape>& taggedFaces);
+                                             const std::vector<kernel::Shape>& taggedFaces,
+                                             Naming = Naming::Strict);
 
     /// Propagates names across an operation.
     kernel::Result<ElementMap> propagate(const kernel::Operation& op,

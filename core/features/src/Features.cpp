@@ -536,12 +536,19 @@ kernel::Result<Output> computeImport(const ComputeContext& ctx) {
     auto imported = io::importFile(registry, path.value(), options);
     if (!imported) return imported.error();
 
+    // BEST EFFORT, because this is geometry we read rather than geometry we built.
+    //
+    // Foreign files routinely carry duplicate or coincident faces that no measurement can tell
+    // apart. Refusing the import over them means a defect in a corner of the part stops the user
+    // opening the file at all -- and what they usually want is to look at it, measure it, and
+    // export it onward. So the part opens, the faces that could not be identified are simply
+    // absent from the map, and attaching a feature to one of them fails at that moment, with a
+    // message about that face rather than about the file.
     naming::NamingContext naming(ctx.namingSerial, 0);
-    auto map = naming.nameprimitive(imported.value().shape, {});
+    auto map = naming.nameprimitive(imported.value().shape, {},
+                                    naming::NamingContext::Naming::BestEffort);
     if (!map) {
-        // Foreign geometry that we cannot fully name is usable but not safely referenceable.
-        // Say which, rather than failing the import outright — the user can still see and
-        // export the part.
+        // Still reachable: a collision is a fault in the naming layer, not a property of the file.
         return Error{ErrorCode::NamingLost,
                      "This file was read, but its geometry could not be identified well "
                      "enough to attach features to.",

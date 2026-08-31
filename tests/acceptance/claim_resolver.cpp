@@ -20,12 +20,18 @@
 #include "../../core/naming/src/ClaimResolver.h"
 #include "../../core/naming/src/Measure.h"
 
+#include "cad/app/Controller.h"
+#include "cad/io/Format.h"
 #include "cad/kernel/Primitives.h"
 #include "cad/kernel/Transform.h"
 #include "cad/kernel/internal/Occt.h"
 
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
+
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -227,7 +233,7 @@ TEST_CASE("ordering is decided by the measurement, not by input order", "[naming
 
     const auto a = canonicalOrder(forward, measureFace);
     const auto b = canonicalOrder(backward, measureFace);
-    REQUIRE_FALSE(a.ambiguous);
+    REQUIRE_FALSE(a.anyAmbiguous());
     REQUIRE(a.elements.size() == 3);
     for (std::size_t i = 0; i < a.elements.size(); ++i) {
         CHECK(a.elements[i].IsSame(b.elements[i]));
@@ -258,23 +264,129 @@ TEST_CASE("a measurement that does not separate siblings orders nothing", "[nami
 
     // The wrong measure: every edge measures the same, so nothing can be numbered.
     const auto bySurface = canonicalOrder(raw, measureFace);
-    CHECK(bySurface.ambiguous);
-    CHECK(bySurface.elements.empty());
+    CHECK(bySurface.anyAmbiguous());
+    // Every edge ties with its neighbours, so every one of them is marked.
+    CHECK(bySurface.elements.size() == 3);
+    for (const auto flag : bySurface.ambiguous) CHECK(flag == 1);
 
     // The right one separates them, which is what makes the names mean anything.
     const auto byMidpoint = canonicalOrder(raw, midpointOf);
-    CHECK_FALSE(byMidpoint.ambiguous);
+    CHECK_FALSE(byMidpoint.anyAmbiguous());
     CHECK(byMidpoint.elements.size() == 3);
+}
+
+TEST_CASE("one tied pair does not cost the others their names", "[naming][ordering]") {
+    // The reason ties are marked per element rather than per call. A supplier's STEP file with two
+    // duplicate faces in it -- junk the exporter left behind -- must not leave every OTHER face of
+    // the part unnamed, because that turns a defect in geometry the user will never touch into a
+    // file that refuses to open.
+    using naming::internal::canonicalOrder;
+    using naming::internal::measureFace;
+
+    const auto part = facesOf(40, 30, 20);
+    const auto duplicate = facesOf(40, 30, 20);   // identical, so its faces tie with the first's
+
+    std::vector<TopoDS_Shape> mixed{occtOf(part[0]), occtOf(part[1]), occtOf(duplicate[0])};
+    const auto ordered = canonicalOrder(mixed, measureFace);
+
+    REQUIRE(ordered.elements.size() == 3);
+    CHECK(ordered.anyAmbiguous());
+    std::size_t nameable = 0;
+    for (const auto flag : ordered.ambiguous) {
+        if (flag == 0) ++nameable;
+    }
+    // The tied pair loses its names; the third face keeps its own.
+    CHECK(nameable == 1);
 }
 
 TEST_CASE("a single sibling needs no ordering and is never ambiguous", "[naming][ordering]") {
     const auto faces = facesOf(40, 30, 20);
     const auto one = naming::internal::canonicalOrder({occtOf(faces[0])},
                                                       naming::internal::measureFace);
-    CHECK_FALSE(one.ambiguous);
+    CHECK_FALSE(one.anyAmbiguous());
     CHECK(one.elements.size() == 1);
 
     const auto none = naming::internal::canonicalOrder({}, naming::internal::measureFace);
-    CHECK_FALSE(none.ambiguous);
+    CHECK_FALSE(none.anyAmbiguous());
     CHECK(none.elements.empty());
+}
+
+// ── naming geometry we read, rather than geometry we built ─────────────────────────────
+
+TEST_CASE("a shape with indistinguishable faces can still be named best-effort",
+          "[naming][import]") {
+    // Two coincident copies of the same box, as a compound. Every face of one sits exactly on a
+    // face of the other: same area, same centroid, genuinely indistinguishable by measurement.
+    //
+    // This is not a contrived shape. Supplier STEP files routinely carry duplicated or coincident
+    // faces left behind by whatever exported them, and a user opening one wants to look at the
+    // part, measure it, and export it onward.
+    auto first = kernel::makeBox(40, 30, 20);
+    auto second = kernel::makeBox(40, 30, 20);
+    REQUIRE(first.ok());
+    REQUIRE(second.ok());
+
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    builder.Add(compound, occtOf(first.value().op.shape()));
+    builder.Add(compound, occtOf(second.value().op.shape()));
+    const kernel::Shape doubled = kernel::wrap(compound);
+    REQUIRE(doubled.subShapes(kernel::ShapeType::Face).size() == 12);
+
+    // STRICT refuses: we could not identify everything, and for geometry we built that is a fault.
+    {
+        naming::NamingContext ctx(1, 0);
+        const auto strict = ctx.nameprimitive(doubled, {});
+        CHECK_FALSE(strict.ok());
+    }
+
+    // BEST EFFORT opens it. The faces that cannot be told apart are simply absent -- not guessed
+    // at -- so a reference to one of them fails later, at the moment it is tried, rather than the
+    // whole file being refused now.
+    naming::NamingContext ctx(1, 0);
+    const auto relaxed =
+        ctx.nameprimitive(doubled, {}, naming::NamingContext::Naming::BestEffort);
+    REQUIRE(relaxed.ok());
+
+    // Nothing was invented: no two elements share a name.
+    CHECK(relaxed.value().collisions().empty());
+    // And the ambiguous ones really are absent rather than silently numbered.
+    CHECK_FALSE(relaxed.value().unnamed(doubled).empty());
+}
+
+TEST_CASE("an imported file with unnameable faces still opens", "[naming][import]") {
+    // End to end, through the Import FEATURE rather than through the naming layer directly,
+    // because the decision under test is which mode Import asks for -- and asking for the strict
+    // one is what used to turn a defect in a supplier's export into a file that would not open.
+    auto first = kernel::makeBox(40, 30, 20);
+    auto second = kernel::makeBox(40, 30, 20);
+    REQUIRE(first.ok());
+    REQUIRE(second.ok());
+
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    builder.Add(compound, occtOf(first.value().op.shape()));
+    builder.Add(compound, occtOf(second.value().op.shape()));
+
+    const auto path = std::filesystem::temp_directory_path() / "vcad_duplicate_faces.step";
+    std::filesystem::remove(path);
+    const auto registry = io::FormatRegistry::builtins();
+    REQUIRE(io::exportFile(registry, path.string(), kernel::wrap(compound)));
+
+    app::Controller controller;
+    const auto imported = controller.importFile(path);
+    if (!imported.ok()) INFO(imported.error().message);
+    REQUIRE(imported.ok());
+
+    const auto object = controller.document().find(imported.value());
+    REQUIRE(object);
+    INFO("state " << static_cast<int>(object->state()) << ": " << object->error().message);
+    // Opened, with geometry the user can see, measure and export onward.
+    CHECK(object->state() == document::ObjectState::Clean);
+    REQUIRE(object->output() != nullptr);
+    CHECK(object->output()->shape.volume() > 0.0);
+
+    std::filesystem::remove(path);
 }

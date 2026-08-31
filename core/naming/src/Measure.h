@@ -55,10 +55,14 @@ struct Point3 {
 
 [[nodiscard]] Point3 midpointOf(const TopoDS_Shape&);
 
-/// Siblings put into a canonical order, and whether the measurement actually separated them.
+/// Siblings put into a canonical order, with the ones that could not be separated marked.
 struct CanonicalOrder {
-    std::vector<TopoDS_Shape> elements;   ///< sorted; empty when `ambiguous`
-    bool ambiguous = false;               ///< two or more measured identically
+    std::vector<TopoDS_Shape> elements;    ///< sorted; ALL of them, ambiguous included
+    std::vector<std::uint8_t> ambiguous;   ///< parallel to `elements`; 1 = ties with a neighbour
+
+    [[nodiscard]] bool anyAmbiguous() const {
+        return std::find(ambiguous.begin(), ambiguous.end(), std::uint8_t{1}) != ambiguous.end();
+    }
 };
 
 /// Orders otherwise-indistinguishable siblings so that each can be given a persistent index.
@@ -79,23 +83,31 @@ struct CanonicalOrder {
 /// machine or another build. Since these names are written into user documents and into the DDC's
 /// keys, that is not a theoretical concern.
 ///
-/// So a tie clears the list: the caller cannot number what it cannot tell apart. Every caller then
-/// leaves those elements sharing one name, `ElementMap::collisions` reports it, and the operation
-/// fails with NamingLost. ADR 0005 is explicit that a reference resolving to the WRONG element is
-/// worse than one that fails.
+/// So tied elements are MARKED rather than numbered, and every caller skips them: they end up
+/// unnamed, `ElementMap::unnamed` reports it, and the operation fails with NamingLost. ADR 0005 is
+/// explicit that a reference resolving to the WRONG element is worse than one that fails.
+///
+/// # Why the marking is per element and not per call
+///
+/// Because one bad pair must not cost the rest their names. A supplier's STEP file with two
+/// duplicate faces in it -- common, and usually junk left by the exporter -- would otherwise leave
+/// every OTHER face of the part unnamed too, and the import would be refused over geometry the user
+/// was never going to touch. The unambiguous elements keep their positions in the sorted list, so
+/// their names do not move when a tie elsewhere appears or goes away.
 template <class Measure>
 [[nodiscard]] CanonicalOrder canonicalOrder(std::vector<TopoDS_Shape> elements, Measure measure) {
     std::sort(elements.begin(), elements.end(),
               [&measure](const TopoDS_Shape& a, const TopoDS_Shape& b) {
                   return measure(a) < measure(b);
               });
-    const bool ambiguous =
-        std::adjacent_find(elements.begin(), elements.end(),
-                           [&measure](const TopoDS_Shape& a, const TopoDS_Shape& b) {
-                               return measure(a) == measure(b);
-                           }) != elements.end();
-    if (ambiguous) return CanonicalOrder{{}, true};
-    return CanonicalOrder{std::move(elements), false};
+    std::vector<std::uint8_t> ambiguous(elements.size(), 0);
+    for (std::size_t i = 1; i < elements.size(); ++i) {
+        if (measure(elements[i - 1]) == measure(elements[i])) {
+            ambiguous[i - 1] = 1;
+            ambiguous[i] = 1;
+        }
+    }
+    return CanonicalOrder{std::move(elements), std::move(ambiguous)};
 }
 
 }  // namespace cad::naming::internal
