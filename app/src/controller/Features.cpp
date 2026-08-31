@@ -307,7 +307,23 @@ void Controller::addEdgeFeature(const std::string& type, const std::string& labe
     std::vector<naming::ElementName> edges;
     bool wholeBody = false;
 
-    if (!elementSelection_.empty() && selectionLevel_ == SelectionLevel::Edge) {
+    // Decided by WHAT IS SELECTED, not by which level the user declared.
+    //
+    // This tested `selectionLevel_ == Edge`, which was true when Edge was a mode you switched into.
+    // Auto is the default now — one tap or click takes whatever is under the pointer — so picking
+    // two edges and pressing Fillet fell through to "every edge of the body" and rounded all twelve.
+    // The level says what a click RESOLVES TO; it does not describe what is already selected.
+    const bool edgesPicked =
+        !elementSelection_.empty()
+        && std::all_of(elementSelection_.begin(), elementSelection_.end(),
+                       [this](const ElementSelection& picked) {
+                           const auto object = history_.current().find(picked.object);
+                           if (!object || object->output() == nullptr) return false;
+                           const auto shape = object->output()->map.resolve(picked.element);
+                           return shape && shape->type() == kernel::ShapeType::Edge;
+                       });
+
+    if (edgesPicked) {
         // All from one object. A fillet takes a base shape and edges OF it, so edges from two bodies
         // is not a feature with a strange input -- it is two features, and guessing which one the
         // user meant would silently drop half the selection.

@@ -156,3 +156,42 @@ TEST_CASE("Auto selects the element hit; Body selects the whole part", "[selecti
     // And the override is temporary: the level the user chose is still in force afterwards.
     CHECK(controller.selectionLevel() == Controller::SelectionLevel::Auto);
 }
+
+TEST_CASE("Fillet uses the edges that are selected, whatever the level says", "[selection][auto]") {
+    // Regression: the edge-feature path tested `selectionLevel_ == Edge`, which was true back when
+    // Edge was a mode you switched into. Auto is the default now, so picking two edges and pressing
+    // Fillet fell through to "every edge of the body" and rounded all twelve of them.
+    //
+    // The level says what a CLICK RESOLVES TO. It does not describe what is already selected.
+    Controller controller;
+    REQUIRE(controller.beginCommand("feature.box"));
+    REQUIRE(controller.commitCommand());
+
+    const auto box = controller.selection().front();
+    const auto* body = controller.document().find(box).get();
+    REQUIRE(body != nullptr);
+    REQUIRE(body->output() != nullptr);
+
+    std::vector<naming::ElementName> edges;
+    for (const auto& name : body->output()->map.allNames()) {
+        const auto shape = body->output()->map.resolve(name);
+        if (shape && shape->type() == kernel::ShapeType::Edge) edges.push_back(name);
+    }
+    REQUIRE(edges.size() >= 4);
+
+    controller.setSelectionLevel(Controller::SelectionLevel::Auto);
+    controller.selectElement(box, edges[0], false);
+    controller.selectElement(box, edges[1], true);
+    REQUIRE(controller.elementSelection().size() == 2);
+
+    std::string said;
+    controller.onStatus([&](const std::string& text) { said = text; });
+    for (const auto& command : controller.commands()) {
+        if (command.id == "feature.fillet" && command.invoke) { command.invoke(); break; }
+    }
+
+    // The message names how many edges it acted on, which is the only externally visible
+    // difference between "the two you picked" and "all twelve".
+    INFO("status: " << said);
+    CHECK(said.find("12") == std::string::npos);
+}

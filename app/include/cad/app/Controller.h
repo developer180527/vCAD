@@ -508,6 +508,28 @@ public:
     /// without going through a selection.
     document::ObjectId beginSketchOn(sketch::Plane);
 
+    /// Undoes one SKETCH edit — a stroke, a trim, a constraint, a dimension.
+    ///
+    /// # Why the sketch has its own history
+    ///
+    /// The document's history records features, and a sketch is one feature however long it took to
+    /// draw. So every edit inside the sketch environment used to be outside undo entirely: a
+    /// twenty-minute sketch had exactly one undo step, "Edit Sketch", and pressing undo mid-sketch
+    /// reverted the DOCUMENT while the working copy carried on unchanged — leaving the two
+    /// describing different models.
+    ///
+    /// Snapshots rather than an edit log, because a sketch is small and a snapshot cannot get the
+    /// inverse of an operation wrong. Trimming a curve into two, dropping the constraints that
+    /// referenced its ends, and re-solving is not an operation with an obvious inverse; the state
+    /// before it is exact by construction.
+    ///
+    /// `Controller::undo` routes here automatically while a sketch is open, so a shell needs no
+    /// second shortcut and cannot get the routing wrong.
+    bool undoSketch();
+    bool redoSketch();
+    [[nodiscard]] bool canUndoSketch() const noexcept { return !sketchUndo_.empty(); }
+    [[nodiscard]] bool canRedoSketch() const noexcept { return !sketchRedo_.empty(); }
+
     /// Whether Start Sketch is waiting for the user to choose a plane or face.
     ///
     /// A real state rather than a shell flag, because both shells must behave the same and because
@@ -1149,6 +1171,17 @@ private:
     /// Separate from the drawing tools' own typed input: that one sizes the segment being DRAWN and
     /// belongs to the chain, while this one edits a dimension that already exists. Sharing the
     /// buffer would make Escape mean two different things.
+    /// Snapshots of the sketch before each edit, newest last. See `undoSketch`.
+    ///
+    /// Bounded: a long session would otherwise keep every state it ever passed through. Sixty-four
+    /// steps is far past what anyone undoes in practice and costs a few hundred kilobytes for a
+    /// sketch of any realistic size.
+    std::vector<sketch::Sketch> sketchUndo_;
+    std::vector<sketch::Sketch> sketchRedo_;
+
+    /// Takes a snapshot, if a sketch is open. Called at the START of every mutation.
+    void pushSketchUndo();
+
     /// The pen's trail while a stroke is in progress: world-space line pairs, cleared on commit.
     std::vector<float> strokeInk_;
     std::uint64_t strokeInkRevision_ = 0;

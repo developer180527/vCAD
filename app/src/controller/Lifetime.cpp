@@ -104,8 +104,10 @@ CommandContext Controller::context() const {
     ctx.selectedObjects = selection_.size();
     ctx.selectedElements = elementSelection_.size();
     ctx.documentEmpty = history_.current().size() == 0;
-    ctx.canUndo = history_.canUndo();
-    ctx.canRedo = history_.canRedo();
+    // The sketch's own history counts, or the Undo button greys out while there is plainly
+    // something to undo — which reads as undo being unavailable rather than as a routing detail.
+    ctx.canUndo = history_.canUndo() || canUndoSketch();
+    ctx.canRedo = history_.canRedo() || canRedoSketch();
     return ctx;
 }
 
@@ -190,6 +192,17 @@ void Controller::remove(ObjectId id) {
 }
 
 bool Controller::undo() {
+    // INSIDE A SKETCH, undo means the sketch.
+    //
+    // Routed here rather than in each shell so neither can get it wrong, and because the wrong
+    // answer is not merely unhelpful: undoing the DOCUMENT while a sketch is open reverts features
+    // underneath a working copy that carries on unchanged, leaving the two describing different
+    // models.
+    //
+    // Falls through when the sketch has nothing left to undo, rather than blocking: a user who has
+    // undone back to the start of their sketch and presses again means the step before it.
+    if (environment_ == Environment::Sketch && canUndoSketch()) return undoSketch();
+
     if (!history_.undo()) {
         status("Nothing to undo");
         return false;
@@ -207,6 +220,8 @@ bool Controller::undo() {
 }
 
 bool Controller::redo() {
+    if (environment_ == Environment::Sketch && canRedoSketch()) return redoSketch();
+
     if (!history_.redo()) {
         status("Nothing to redo");
         return false;

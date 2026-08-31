@@ -193,6 +193,7 @@ void Controller::endSketchChain() {
 }
 
 void Controller::clearSketch() {
+    pushSketchUndo();
     if (!editing_.has_value()) return;
     drawing_.clear(drawingContext());
     pushSketchOverlay();
@@ -235,8 +236,22 @@ bool Controller::sketchClickAt(float x, float y, bool additive) {
         return false;
     }
 
+    // Snapshotted BEFORE the edit, and only when there is a sketch to snapshot. A click that
+    // merely starts a chain changes no geometry — the state it would restore is the state you are
+    // already in — so the step is dropped again below if nothing happened.
+    const std::size_t undoDepth = sketchUndo_.size();
+    pushSketchUndo();
+
     const auto outcome = drawing_.click(drawingContext(), *point);
-    if (!outcome.used) return false;
+    if (!outcome.used) {
+        if (sketchUndo_.size() > undoDepth) sketchUndo_.pop_back();
+        return false;
+    }
+    if (!outcome.geometryChanged && sketchUndo_.size() > undoDepth) {
+        // Nothing to undo: an undo step that restores an identical sketch reads as undo being
+        // broken, because the user presses it and sees no change.
+        sketchUndo_.pop_back();
+    }
     if (!outcome.status.empty()) status(outcome.status);
     if (outcome.geometryChanged) {
         // Every mutation is followed by a solve, because a sketch that does not follow its
@@ -327,8 +342,14 @@ bool Controller::sketchStrokeAt(std::span<const std::array<float, 2>> devicePoin
     strokeInk_.clear();
     ++strokeInkRevision_;
 
+    const std::size_t undoDepth = sketchUndo_.size();
+    pushSketchUndo();
+
     const auto outcome = drawing_.stroke(drawingContext(), onPlane);
-    if (!outcome.used) return false;
+    if (!outcome.used || !outcome.geometryChanged) {
+        if (sketchUndo_.size() > undoDepth) sketchUndo_.pop_back();
+        if (!outcome.used) return false;
+    }
     if (!outcome.status.empty()) status(outcome.status);
     if (outcome.geometryChanged) {
         // The same solve-per-edit rule as a click. A sketch that does not follow its constraints

@@ -106,6 +106,11 @@ bool Controller::editSketch(ObjectId id) {
     }
 
     environment_ = Environment::Sketch;
+    // A fresh history per editing session. Undo steps from the last time this sketch was open
+    // describe a sketch that has since been committed, and offering them would undo past the point
+    // the document already recorded.
+    sketchUndo_.clear();
+    sketchRedo_.clear();
     // Slice starts OFF on every sketch: it is a deliberate act, and a part arriving half-missing
     // because the last sketch left it on is alarming rather than helpful.
     slice_ = false;
@@ -405,6 +410,8 @@ std::optional<std::size_t> Controller::dimensionSketchGeometry(sketch::GeoId id)
     const auto* g = editing_->find(id);
     if (g == nullptr) return std::nullopt;
 
+    pushSketchUndo();
+
     std::optional<std::size_t> index;
     switch (g->kind) {
         case sketch::GeoKind::Line: {
@@ -577,6 +584,57 @@ bool Controller::dimensionSketchAt(float x, float y) {
     return true;
 }
 
+void Controller::pushSketchUndo() {
+    if (!editing_) return;
+    // Bounded from the front, so the oldest state is the one lost. Undoing to the very beginning of
+    // a marathon sketch is not something anyone does; undoing the last thing they did is.
+    constexpr std::size_t kMaxSteps = 64;
+    sketchUndo_.push_back(*editing_);
+    if (sketchUndo_.size() > kMaxSteps) sketchUndo_.erase(sketchUndo_.begin());
+    // A new edit ends the redo branch, as it does in every editor: the future you could have gone
+    // back to is not the future you are in now.
+    sketchRedo_.clear();
+}
+
+bool Controller::undoSketch() {
+    if (!editing_ || sketchUndo_.empty()) return false;
+    sketchRedo_.push_back(*editing_);
+    editing_ = sketchUndo_.back();
+    sketchUndo_.pop_back();
+
+    // The selection and any half-drawn shape refer to geometry that may not exist in the state we
+    // just restored. Cleared rather than filtered: a partial selection after an undo is a selection
+    // the user did not make.
+    sketchSelection_.clear();
+    editingDimension_.reset();
+    drawing_.endChain();
+
+    lastSketchSolve_ = editing_->solve();
+    pushSketchOverlay();
+    status("Undo");
+    notifyDocument();
+    notifyView();
+    return true;
+}
+
+bool Controller::redoSketch() {
+    if (!editing_ || sketchRedo_.empty()) return false;
+    sketchUndo_.push_back(*editing_);
+    editing_ = sketchRedo_.back();
+    sketchRedo_.pop_back();
+
+    sketchSelection_.clear();
+    editingDimension_.reset();
+    drawing_.endChain();
+
+    lastSketchSolve_ = editing_->solve();
+    pushSketchOverlay();
+    status("Redo");
+    notifyDocument();
+    notifyView();
+    return true;
+}
+
 bool Controller::offsetSketchSelection(double millimetres) {
     if (!editing_.has_value()) return false;
     if (sketchSelection_.empty()) {
@@ -591,6 +649,7 @@ bool Controller::offsetSketchSelection(double millimetres) {
     // Collected before anything is added, because adding geometry invalidates nothing here but
     // iterating a container while appending to the sketch it describes is a habit worth not
     // forming.
+    pushSketchUndo();
     const std::vector<sketch::GeoId> sources = sketchSelection_;
     std::size_t made = 0;
     std::size_t refused = 0;
@@ -671,8 +730,14 @@ bool Controller::trimSketchAt(float x, float y) {
         return false;
     }
 
+    // Snapshotted before the cut. Trim is the operation that most needs undo and the one whose
+    // inverse is least obvious: it can split a curve in two and drop the constraints that named the
+    // ends it moved, and there is no "un-trim" that puts those back.
+    pushSketchUndo();
+
     const auto result = sketch::trim(*editing_, *target, *at);
     if (!result) {
+        sketchUndo_.pop_back();
         status(result.error().message);
         return false;
     }
@@ -796,6 +861,7 @@ void Controller::clearSketchSelection() {
 
 void Controller::deleteSketchSelection() {
     if (!editing_.has_value() || sketchSelection_.empty()) return;
+    pushSketchUndo();
 
     // Rebuild the sketch without the selected geometry rather than mutating in place: Sketch has no
     // remove-geometry operation, and adding one that also had to rewrite every constraint's targets
@@ -885,6 +951,8 @@ bool Controller::applySketchConstraint(sketch::ConstraintKind kind) {
         }
     }
 
+    pushSketchUndo();
+
     const sketch::GeoId a = sketchSelection_.front();
     const sketch::GeoId b = sketchSelection_.size() > 1 ? sketchSelection_[1] : sketch::kNoGeo;
     switch (kind) {
@@ -944,6 +1012,7 @@ bool Controller::applySketchRadius(double millimetres) {
         status("That constraint needs one circle or arc.");
         return false;
     }
+    pushSketchUndo();
     editing_->radius(id, millimetres);
     const auto report = solveSketch();
     status("Radius applied. " + report.message);
