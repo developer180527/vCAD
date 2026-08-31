@@ -1101,7 +1101,6 @@ void MainWindow::syncWorkspace() {
     }
     const std::size_t index = session_.activeIndex();
     if (index >= editors_.size()) return;
-    auto* c = controller();
     // The VIEWPORT, always. Sketching used to swap to a separate 2D canvas, which put the user in
     // a different world from their model: the part vanished, the camera was unrelated to the one
     // they had arranged, and finishing the sketch teleported them back. A sketch is drawn on a

@@ -250,6 +250,35 @@ public:
         return elementSelection_;
     }
 
+    /// What is selected, sorted by what KIND of thing it is.
+    ///
+    /// # Why this exists
+    ///
+    /// Every feature that takes geometry needs the same answer — "which faces, which edges, which
+    /// bodies" — and each one used to work it out for itself by walking `elementSelection()` and
+    /// checking `selectionLevel()`. That produced the same bug three times over: the level test was
+    /// written when Edge and Face were modes you switched into, and the day Auto became the default
+    /// it stopped being true. Fillet quietly rounded every edge of the body instead of the two you
+    /// picked; Hole and Revolve greyed out with exactly the right thing selected.
+    ///
+    /// The level says what a CLICK RESOLVES TO. It does not describe what is already selected, and
+    /// no feature should ever ask it. This does, once, by resolving each pick's topology — which is
+    /// the same rule `clickAt` uses to honour a level, so the two cannot disagree.
+    struct SelectionSummary {
+        std::vector<document::ObjectId> bodies;   ///< whole objects, from the tree or a double tap
+        std::vector<ElementSelection> faces;
+        std::vector<ElementSelection> edges;
+        std::vector<ElementSelection> vertices;
+
+        /// Whether every element picked belongs to the same object. A feature takes a base shape
+        /// and elements OF it, so a mixed selection is not one feature with a strange input — it is
+        /// two features, and guessing which was meant silently drops half the selection.
+        [[nodiscard]] bool oneOwner() const noexcept;
+        /// The object those elements belong to, or null.
+        [[nodiscard]] document::ObjectId owner() const noexcept;
+    };
+    [[nodiscard]] SelectionSummary selectionByKind() const;
+
     /// Nearest element at a point, in DEVICE pixels.
     ///
     /// Device rather than logical, because that is what the id buffer is indexed in. A shell on a

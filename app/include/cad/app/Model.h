@@ -42,6 +42,13 @@ struct TreeItem {
 struct CommandContext {
     std::size_t selectedObjects = 0;
     std::size_t selectedElements = 0;
+
+    /// Broken down by KIND, so a command can say "one face" rather than counting elements and then
+    /// asking which mode the user is in. Every feature that took geometry used to do the latter,
+    /// and every one of them broke the day the default selection level changed.
+    std::size_t selectedFaces = 0;
+    std::size_t selectedEdges = 0;
+    std::size_t selectedVertices = 0;
     bool documentEmpty = true;
     bool canUndo = false;
     bool canRedo = false;

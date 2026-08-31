@@ -103,6 +103,10 @@ CommandContext Controller::context() const {
     CommandContext ctx;
     ctx.selectedObjects = selection_.size();
     ctx.selectedElements = elementSelection_.size();
+    const auto picked = selectionByKind();
+    ctx.selectedFaces = picked.faces.size();
+    ctx.selectedEdges = picked.edges.size();
+    ctx.selectedVertices = picked.vertices.size();
     ctx.documentEmpty = history_.current().size() == 0;
     // The sketch's own history counts, or the Undo button greys out while there is plainly
     // something to undo — which reads as undo being unavailable rather than as a routing detail.

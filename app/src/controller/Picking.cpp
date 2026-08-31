@@ -47,6 +47,45 @@ ObjectId Controller::addPrimitive(const std::string& type,
     return id;
 }
 
+bool Controller::SelectionSummary::oneOwner() const noexcept {
+    document::ObjectId first;
+    for (const auto* list : {&faces, &edges, &vertices}) {
+        for (const auto& picked : *list) {
+            if (first.isNull()) first = picked.object;
+            else if (picked.object != first) return false;
+        }
+    }
+    return !first.isNull();
+}
+
+document::ObjectId Controller::SelectionSummary::owner() const noexcept {
+    for (const auto* list : {&faces, &edges, &vertices}) {
+        if (!list->empty()) return list->front().object;
+    }
+    return {};
+}
+
+Controller::SelectionSummary Controller::selectionByKind() const {
+    SelectionSummary out;
+    out.bodies = selection_;
+
+    for (const ElementSelection& picked : elementSelection_) {
+        const auto object = history_.current().find(picked.object);
+        if (!object || object->output() == nullptr) continue;
+        // By RESOLVED TOPOLOGY, never by the name: an edge and the face bounding it can share a
+        // feature and an operation, so their names do not distinguish them.
+        const auto shape = object->output()->map.resolve(picked.element);
+        if (!shape) continue;
+        switch (shape->type()) {
+            case kernel::ShapeType::Face:   out.faces.push_back(picked); break;
+            case kernel::ShapeType::Edge:   out.edges.push_back(picked); break;
+            case kernel::ShapeType::Vertex: out.vertices.push_back(picked); break;
+            default: break;
+        }
+    }
+    return out;
+}
+
 Controller::Pick Controller::pickAt(std::uint32_t x, std::uint32_t y) {
     Pick out;
     if (active_.picker == nullptr) return out;

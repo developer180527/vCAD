@@ -261,7 +261,11 @@ void Controller::registerCommands() {
     const auto oneWithEdges = [this](const CommandContext& c) {
         // Either input: picked edges, or a single body whose edges we would take wholesale. A
         // greyed-out Fillet with three edges selected would read as the selection not counting.
-        if (!elementSelection_.empty() && selectionLevel_ == SelectionLevel::Edge) return true;
+        //
+        // Asks WHAT IS SELECTED rather than which level the user is in. The level test this
+        // replaced was written when Edge was a mode you switched into, and it silently stopped
+        // being true the day Auto became the default.
+        if (c.selectedEdges > 0) return true;
         return c.selectedObjects == 1 && !edgesOf(selection_.front()).empty();
     };
     commands_.push_back({"feature.fillet", "Fillet", "Round every edge of the selected body",
@@ -278,10 +282,7 @@ void Controller::registerCommands() {
     // nothing added it here and both shells build their tools from this catalogue. That is the
     // cheapest kind of gap there is, and Hole is the most-used feature in mechanical CAD.
     commands_.push_back({"feature.hole", "Hole", "Drill a hole into the selected face", "hole",
-                         [this](const CommandContext& c) {
-                             return c.selectedElements == 1
-                                    && selectionLevel_ == SelectionLevel::Face;
-                         },
+                         [](const CommandContext& c) { return c.selectedFaces == 1; },
                          [this] { addHole(8.0, 10.0); }});
 
     // Revolve. Enabled on one EDGE, which identifies the axis and the profile together: the axis is
@@ -289,12 +290,12 @@ void Controller::registerCommands() {
     commands_.push_back({"feature.revolve", "Revolve",
                          "Turn the selected sketch about one of its edges", "revolve",
                          [this](const CommandContext& c) {
-                             if (c.selectedElements != 1
-                                 || selectionLevel_ != SelectionLevel::Edge) {
-                                 return false;
-                             }
+                             if (c.selectedEdges != 1) return false;
+                             // And it must be an edge OF A SKETCH: computeRevolve resolves the axis
+                             // in the profile's own element map, so an edge of some other body
+                             // names nothing there.
                              const auto owner =
-                                 history_.current().find(elementSelection_.front().object);
+                                 history_.current().find(selectionByKind().edges.front().object);
                              return owner && owner->type() == "Sketch";
                          },
                          [this] { addRevolve(360.0); }});
