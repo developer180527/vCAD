@@ -12,6 +12,7 @@
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
+#include <TopTools_MapOfShape.hxx>
 #include <BRepTools_History.hxx>
 
 #include <algorithm>
@@ -268,6 +269,14 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
                              std::to_string(missing.size()) +
                                  " unnamed sub-elements after naming a primitive"};
     }
+    // A primitive should never collide with itself, so this is a check on the tagging rather than
+    // on the geometry: two faces given one tag would otherwise be indistinguishable for good.
+    if (const auto ambiguous = map.collisions(); !ambiguous.empty()) {
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "Two faces of this shape ended up with the same identity.",
+                             std::to_string(ambiguous.size()) + " colliding names, first: "
+                                 + ambiguous.front().toString()};
+    }
     return map;
 }
 
@@ -314,32 +323,163 @@ kernel::Result<ElementMap> NamingContext::propagate(
 
     ElementMap out;
 
-    // Result faces claimed so far, keyed by the face itself. A second claimant is a merge,
-    // not an overwrite.
-    std::map<FaceMetric, ElementName> claimed;
+    // Claims are COLLECTED, not bound as they arrive.
+    //
+    // Two different things can happen to a face, and they need opposite treatment:
+    //
+    //   * a MERGE -- two input faces land on one result face. Both names must resolve, so both are
+    //     bound and one is recorded as the alias of the other.
+    //   * a SPLIT -- one input face becomes several result faces, all reported as `Modified` of the
+    //     same parent. They are different elements and must get different names.
+    //
+    // Binding on arrival can only see the first of these. The second needs every claimant of a name
+    // in hand before any of them can be named, because the discriminator depends on how many there
+    // are and on their canonical order. Splits were therefore silently unnameable: `bind` kept the
+    // last claimant and the earlier faces became unreachable, with `unnamed()` reporting nothing
+    // wrong because every face did have a name. Fusing two overlapping boxes lost eight elements
+    // that way, and had done since booleans existed.
+    struct Claim {
+        TopoDS_Shape face;      ///< the RESULT face being claimed
+        ElementName name;
+        TopoDS_Shape parent;    ///< the INPUT element the name came from
+    };
+    std::vector<Claim> claims;
+    TopTools_MapOfShape claimedFaces;   ///< so pass 2 can ask what is spoken for before any binding
+    const auto claim = [&](const TopoDS_Shape& face, ElementName name, const TopoDS_Shape& parent) {
+        claimedFaces.Add(face);
+        claims.push_back(Claim{face, std::move(name), parent});
+    };
 
-    const auto claim = [&](const TopoDS_Shape& face, ElementName name) {
-        const FaceMetric key = measureFace(face);
-        const auto it = claimed.find(key);
-        if (it == claimed.end()) {
-            claimed.emplace(key, name);
-            out.bind(kernel::wrap(face), std::move(name));
-            return;
-        }
-        // Two input faces landed on one result face: a merge (two coplanar faces unified,
-        // say). BOTH names must resolve to the face — a user reference to either one has to
-        // survive — so bind the newcomer as well, and record which name is canonical.
+    // Binds everything collected, discriminating split siblings. Called once, after the reporting
+    // and fallback passes have had their say.
+    const auto settleClaims = [&] {
+        // Grouped by NAME AND PARENT, and the parent half is what keeps this honest.
         //
-        // Binding is what makes resolution work; the alias entry only records canonicity.
-        // Recording the alias without binding would leave the smaller name unresolvable,
-        // which is the subtle version of exactly the bug this layer exists to prevent.
-        out.bind(kernel::wrap(face), name);
-        if (name < it->second) {
-            out.alias(name, it->second);
-            it->second = name;
-        } else {
-            out.alias(it->second, name);
+        // Several result faces sharing a name mean one of two completely different things:
+        //
+        //   * they came from the SAME input face, which split. They are pieces of one element and
+        //     numbering them is right.
+        //   * they came from DIFFERENT input faces that happen to carry the same name -- which is
+        //     what an unstamped COPY produces. Those are two unrelated elements that the naming
+        //     layer cannot tell apart, and numbering them by area order would assign a user's
+        //     reference to one of two bodies by geometric accident. That must stay a collision so
+        //     the guard refuses it.
+        //
+        // Grouping on the name alone conflates the two and silently "fixes" the second, which is
+        // the more dangerous of them.
+        struct Siblings {
+            std::uint64_t name = 0;
+            TopoDS_Shape parent;
+            std::vector<TopoDS_Shape> faces;
+        };
+        std::vector<Siblings> groups;
+        const auto groupFor = [&](const Claim& c) -> Siblings& {
+            for (auto& g : groups) {
+                if (g.name == c.name.digest() && g.parent.IsSame(c.parent)) return g;
+            }
+            groups.push_back(Siblings{c.name.digest(), c.parent, {}});
+            return groups.back();
+        };
+        for (const auto& c : claims) {
+            auto& group = groupFor(c);
+            const bool seen = std::any_of(group.faces.begin(), group.faces.end(),
+                                          [&](const TopoDS_Shape& f) { return f.IsSame(c.face); });
+            if (!seen) group.faces.push_back(c.face);
         }
+
+        // Canonical order within each split, so the pieces are numbered the same way on every
+        // rebuild and on every machine. Measure order -- area then centroid, quantised -- is what
+        // the rest of this file already uses for exactly this purpose.
+        //
+        // It inherits that scheme's known weakness: two pieces of identical area and centroid
+        // cannot be separated, and a change that swaps two pieces' positions swaps their names.
+        // That is the same fragility ADR 0005 records for split edges, and no stronger invariant
+        // is available without a change to the naming scheme itself.
+        for (auto& group : groups) {
+            if (group.faces.size() < 2) continue;
+            std::sort(group.faces.begin(), group.faces.end(),
+                      [](const TopoDS_Shape& a, const TopoDS_Shape& b) {
+                          return measureFace(a) < measureFace(b);
+                      });
+            // A TIE means the ordering is not defined by anything in this code -- std::sort leaves
+            // equal elements in an unspecified order, and the discriminator is taken straight from
+            // that order. Numbering them anyway would hand a user's reference to one of two
+            // indistinguishable pieces by whatever the standard library happened to do, and would
+            // do it silently and differently on another machine.
+            //
+            // So the group is left UNDISCRIMINATED. Its pieces then share a name, `collisions()`
+            // sees it, and the operation fails with NamingLost -- which is the honest answer: we
+            // cannot tell these two apart, and ADR 0005 is explicit that a wrong reference is worse
+            // than a failed one.
+            const bool tied = std::adjacent_find(group.faces.begin(), group.faces.end(),
+                                                 [](const TopoDS_Shape& a, const TopoDS_Shape& b) {
+                                                     return measureFace(a) == measureFace(b);
+                                                 }) != group.faces.end();
+            if (tied) group.faces.clear();
+        }
+
+        // The final name for a claim: unchanged when the name has one claimant, and derived with a
+        // sibling index when it has several. Unchanged is the important half -- a face that did not
+        // split keeps exactly the name it had before this fix existed, so no reference in any saved
+        // document moves.
+        const auto finalName = [&](const Claim& c) {
+            const ElementName& name = c.name;
+            const auto& faces = groupFor(c).faces;
+            if (faces.size() < 2) return name;
+            const auto at = std::find_if(faces.begin(), faces.end(),
+                                         [&](const TopoDS_Shape& f) { return f.IsSame(c.face); });
+            NameStep step;
+            step.featureSerial = impl_->featureSerial;
+            step.opTag = impl_->opTag;
+            // Modified, not Generated: a split piece IS the parent face, in part. Calling it
+            // Generated would say the operation created something new, and "the top face" would
+            // stop meaning anything about the pieces it became.
+            step.provenance = Provenance::Modified;
+            step.discriminator = static_cast<std::uint32_t>(at - faces.begin()) + 1;
+            step.parents = {name.digest()};
+            return name.derive(step);
+        };
+
+        // Result faces claimed so far, keyed by the FACE ITSELF -- by topological identity, not by
+        // its measurements.
+        //
+        // This used to be keyed by FaceMetric, which is a quantised (area, centroid) tuple and is
+        // therefore not an identity: two genuinely different result faces sharing one metric were
+        // treated as the same face and sent down the merge path, aliasing two unrelated names
+        // together. A measurement is a heuristic for MATCHING; it is never an identity, and the
+        // comment here claimed identity while the container provided a measurement.
+        std::vector<std::pair<TopoDS_Shape, ElementName>> claimed;
+        const auto findClaim = [&claimed](const TopoDS_Shape& face) {
+            return std::find_if(claimed.begin(), claimed.end(), [&](const auto& e) {
+                return e.first.IsSame(face);
+            });
+        };
+        for (const auto& c : claims) {
+            const TopoDS_Shape& face = c.face;
+            ElementName resolved = finalName(c);
+            const auto it = findClaim(face);
+            if (it == claimed.end()) {
+                claimed.emplace_back(face, resolved);
+                out.bind(kernel::wrap(face), std::move(resolved));
+                continue;
+            }
+            if (it->second == resolved) continue;   // the same claim twice; nothing to alias
+            // Two input faces landed on one result face: a merge (two coplanar faces unified,
+            // say). BOTH names must resolve to the face — a user reference to either one has to
+            // survive — so bind the newcomer as well, and record which name is canonical.
+            //
+            // Binding is what makes resolution work; the alias entry only records canonicity.
+            // Recording the alias without binding would leave the smaller name unresolvable,
+            // which is the subtle version of exactly the bug this layer exists to prevent.
+            out.bind(kernel::wrap(face), resolved);
+            if (resolved < it->second) {
+                out.alias(resolved, it->second);
+                it->second = resolved;
+            } else {
+                out.alias(it->second, resolved);
+            }
+        }
+        claims.clear();
     };
 
     auto resultFaces = result.subShapes(kernel::ShapeType::Face);
@@ -361,19 +501,19 @@ kernel::Result<ElementMap> NamingContext::propagate(
                 bool reported = false;
                 for (const auto& m : reportedModified(of)) {
                     if (m.ShapeType() != TopAbs_FACE) continue;
-                    claim(m, *name);   // same element, altered: keep the name
+                    claim(m, *name, of);   // same element, altered: keep the name
                     reported = true;
                 }
                 for (const auto& g : reportedGenerated(of)) {
                     if (g.ShapeType() != TopAbs_FACE) continue;
                     NameStep s{impl_->featureSerial, impl_->opTag, Provenance::Generated, 0,
                                {name->digest()}};
-                    claim(g, name->derive(s));
+                    claim(g, name->derive(s), of);
                     reported = true;
                 }
                 if (!reported) {
                     // Untouched face carried straight through.
-                    claim(of, *name);
+                    claim(of, *name, of);
                 }
             }
 
@@ -387,7 +527,7 @@ kernel::Result<ElementMap> NamingContext::propagate(
                     if (g.ShapeType() != TopAbs_FACE) continue;
                     NameStep s{impl_->featureSerial, impl_->opTag, Provenance::Generated, 0,
                                {name->digest()}};
-                    claim(g, name->derive(s));
+                    claim(g, name->derive(s), oe);
                 }
             }
         }
@@ -398,24 +538,41 @@ kernel::Result<ElementMap> NamingContext::propagate(
     // for algorithms like ShapeUpgrade_UnifySameDomain that are not MakeShape at all. Match
     // leftover result faces against input faces by measure. This is not a nicety; without it
     // ordinary boolean results come out partly anonymous.
-    std::map<FaceMetric, ElementName> inputByMetric;
+    // The matched input FACE travels with the name, because a claim has to say which parent it
+    // came from -- that is what separates a split from two bodies the naming layer cannot tell
+    // apart. See settleClaims.
+    // Every input face that shares a metric, not just the first.
+    //
+    // This was an emplace into a map keyed by metric, which silently kept the FIRST face with a
+    // given measurement and discarded the rest -- so when two input faces measured the same, a
+    // leftover result face was matched to whichever of them happened to be visited first. The
+    // ambiguity did not disappear; only the evidence of it did.
+    std::map<FaceMetric, std::vector<std::pair<ElementName, TopoDS_Shape>>> inputByMetric;
     for (std::size_t i = 0; i < inputs.size(); ++i) {
         if (inputs[i]->isNull()) continue;
         for (const auto& face : inputs[i]->subShapes(kernel::ShapeType::Face)) {
             if (const auto n = inputMaps[i]->nameOf(face)) {
-                inputByMetric.emplace(measureFace(kernel::occt(const_cast<kernel::Shape&>(face))),
-                                      *n);
+                const TopoDS_Shape& inFace = kernel::occt(const_cast<kernel::Shape&>(face));
+                inputByMetric[measureFace(inFace)].emplace_back(*n, inFace);
             }
         }
     }
     for (const auto& face : resultFaces) {
-        if (out.nameOf(face)) continue;
         const TopoDS_Shape& of = kernel::occt(const_cast<kernel::Shape&>(face));
+        if (claimedFaces.Contains(of)) continue;
         const auto it = inputByMetric.find(measureFace(of));
-        if (it != inputByMetric.end()) {
-            claim(of, it->second);
+        // Exactly one candidate, or none. Several means this measurement does not identify an
+        // input face, so there is no answer to give -- the result face is left unnamed and
+        // `unnamed()` raises NamingLost. Picking one would be a guess wearing a fact's clothes.
+        if (it != inputByMetric.end() && it->second.size() == 1) {
+            claim(of, it->second.front().first, it->second.front().second);
         }
     }
+
+    // Everything the reports and the fallback had to say is now in. Bound in one pass, so that a
+    // name claimed by several faces can be split into siblings -- which is impossible to see from
+    // inside a single claim.
+    settleClaims();
 
     // --- 3. genuinely new faces ---------------------------------------------------------
     // A cut's tool faces, for instance. They belong to this feature and are tagged by their
@@ -446,6 +603,82 @@ kernel::Result<ElementMap> NamingContext::propagate(
         return kernel::Error{kernel::ErrorCode::NamingLost,
                              "Some geometry could not be identified after this operation.",
                              std::to_string(missing.size()) + " unnamed sub-elements"};
+    }
+    // The other half of the same guarantee. An element with NO name is caught above; two elements
+    // with the SAME name are caught here, because `bind` keeps the last and the earlier one becomes
+    // unreachable — a reference that silently means one arbitrary element of two is worse than one
+    // that fails, and ADR 0005 exists so this is detectable at the moment it happens.
+    if (const auto ambiguous = out.collisions(); !ambiguous.empty()) {
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "Two pieces of this shape ended up with the same identity, so a "
+                             "reference to one of them would be ambiguous.",
+                             std::to_string(ambiguous.size()) + " colliding names, first: "
+                                 + ambiguous.front().toString()};
+    }
+    return out;
+}
+
+kernel::Result<ElementMap> NamingContext::nameCopy(const kernel::Operation& op,
+                                                   const kernel::Shape& source,
+                                                   const ElementMap& sourceMap,
+                                                   NamingContext::Instance instance) {
+    // Propagate first, which puts the SOURCE's names onto the copy's elements. That is the wrong
+    // answer on its own -- it is what makes a copy indistinguishable from its source -- but it is
+    // the correct correspondence, and correspondence is what the stamping below needs.
+    auto moved = propagate(op, {&source}, {&sourceMap});
+    if (!moved) return moved.error();
+
+    NameStep step;
+    step.featureSerial = impl_->featureSerial;
+    step.opTag = impl_->opTag;
+    step.provenance = Provenance::Generated;
+    step.discriminator = instance.key();
+
+    const auto stamp = [&step](const ElementName& name) {
+        NameStep mine = step;
+        mine.parents = {name.digest()};
+        return name.derive(mine);
+    };
+
+    // Two passes, so that an ALIAS stays an alias. A name whose element is bound under a different
+    // name is not a second element -- it is a merge's second reference, kept alive on purpose --
+    // and binding both independently would give the copy two unrelated names for one face and lose
+    // the relationship that says why.
+    //
+    // UNREACHABLE TODAY, and deliberately kept: `propagate` builds its output from each input
+    // face's canonical name, so the map handed to the loop below has aliases only if the operation
+    // itself merged faces, and no copy operation does -- a rigid transform maps one face to one
+    // face. There is therefore no fixture that exercises this, and a test claiming to would be
+    // asserting a property of an empty set. It is written the correct way round so that the first
+    // copy operation that DOES merge does not silently flatten, which is the kind of thing that is
+    // free now and archaeology later.
+    ElementMap out;
+    std::vector<std::pair<ElementName, ElementName>> aliases;   // canonical, alias
+    for (const auto& name : moved.value().allNames()) {
+        const auto shape = moved.value().resolve(name);
+        if (!shape) continue;
+        const auto canonical = moved.value().nameOf(*shape);
+        if (canonical && *canonical == name) {
+            out.bind(*shape, stamp(name));
+        } else if (canonical) {
+            aliases.emplace_back(*canonical, name);
+        }
+    }
+    for (const auto& [canonical, alias] : aliases) out.alias(stamp(canonical), stamp(alias));
+
+    if (const auto missing = out.unnamed(op.shape()); !missing.empty()) {
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "Some geometry could not be identified after copying this shape.",
+                             std::to_string(missing.size()) + " unnamed sub-elements"};
+    }
+    // The same guard the other two entry points carry. It should be unreachable here -- one step
+    // appended to distinct names leaves them distinct -- which is exactly why it is worth keeping:
+    // if it ever fires, the assumption it rests on has stopped being true.
+    if (const auto ambiguous = out.collisions(); !ambiguous.empty()) {
+        return kernel::Error{kernel::ErrorCode::NamingLost,
+                             "Two pieces of this copy ended up with the same identity.",
+                             std::to_string(ambiguous.size()) + " colliding names, first: "
+                                 + ambiguous.front().toString()};
     }
     return out;
 }

@@ -13,7 +13,12 @@
 
 #include "Model.h"
 
+#include "cad/kernel/Booleans.h"
+#include "cad/kernel/Transform.h"
+
 #include <catch2/catch_test_macros.hpp>
+
+#include <set>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
 
@@ -195,4 +200,327 @@ TEST_CASE("M1: names round-trip through text", "[m1][naming]") {
         INFO(text);
         CHECK(ElementName::parse(text) == name);
     }
+}
+
+// ── copies, and why Pattern cannot be built by propagate-and-fuse ───────────────────────
+//
+// A pattern makes N copies of ONE source, so every copy's faces trace back to the same
+// provenance. These two cases pin what that costs and the guard that now catches it. Written as an
+// experiment before Pattern was designed, and kept because both halves are load-bearing: the
+// limitation shapes how Pattern must be built, and the guard is what stops it being built wrongly.
+
+TEST_CASE("M1: a copy is indistinguishable from its source by name", "[m1][naming][multiplicity]") {
+    // The root of it. A rigid transform reports its elements as Modified — "the SAME element,
+    // moved" — which is exactly right for a MOVE and exactly wrong for a COPY. The naming layer
+    // cannot tell the two apart, so a translated body carries the original's names verbatim.
+    auto source = box(40.0, 30.0, 20.0, /*serial=*/1);
+    REQUIRE(source.ok());
+    const auto top = faceName(source.value(), BoxFace::ZMax);
+    REQUIRE(top.ok());
+
+    // And a fresh feature serial does not separate them: the serial rides on names the operation
+    // MINTS, and a transform mints none.
+    for (const std::uint32_t serial : {2u, 7u, 99u}) {
+        auto moved = cad::kernel::translate(source.value().shape, 200.0, 0.0, 0.0);
+        REQUIRE(moved.ok());
+        cad::naming::NamingContext ctx(serial, 0);
+        const cad::kernel::Shape* shape = &source.value().shape;
+        const cad::naming::ElementMap* map = &source.value().map;
+        auto copied = ctx.propagate(moved.value(), {shape}, {map});
+        REQUIRE(copied.ok());
+        INFO("feature serial " << serial);
+        CHECK(copied.value().resolve(top.value()).has_value());
+    }
+}
+
+TEST_CASE("M1: two copies of one source refuse to be named together", "[m1][naming][multiplicity]") {
+    // What a linear pattern's final step would do, and what it used to do SILENTLY: 52 bindings
+    // with 46 unique names, no unnamed elements, and `resolveAll` returning one arbitrary winner
+    // because it short-circuits on an exact hit before consulting the family. A fillet on "the top
+    // face" of a six-instance pattern would have rounded one of them, with a green recompute.
+    //
+    // Refused now, at the moment it happens. That does not make Pattern work — it makes Pattern
+    // impossible to build the wrong way, which is the point of ADR 0005. Building it right means
+    // MINTING a name per instance rather than propagating one: NameStep::discriminator already
+    // exists to separate otherwise-identical siblings, so the name format needs no change.
+    auto source = box(40.0, 30.0, 20.0, 1);
+    REQUIRE(source.ok());
+
+    auto moved = cad::kernel::translate(source.value().shape, 200.0, 0.0, 0.0);
+    REQUIRE(moved.ok());
+    cad::naming::NamingContext copyCtx(2, 0);
+    const cad::kernel::Shape* sourceShape = &source.value().shape;
+    const cad::naming::ElementMap* sourceMap = &source.value().map;
+    auto copyMap = copyCtx.propagate(moved.value(), {sourceShape}, {sourceMap});
+    REQUIRE(copyMap.ok());
+    const cad::kernel::Shape copyShape = moved.value().shape();
+
+    auto fused = cad::kernel::booleanFuse(source.value().shape, copyShape);
+    REQUIRE(fused.ok());
+
+    cad::naming::NamingContext fuseCtx(3, 0);
+    auto fusedMap = fuseCtx.propagate(fused.value(), {sourceShape, &copyShape},
+                                      {sourceMap, &copyMap.value()});
+    REQUIRE_FALSE(fusedMap.ok());
+    CHECK(fusedMap.error().code == cad::kernel::ErrorCode::NamingLost);
+    INFO(fusedMap.error().detail);
+    CHECK_FALSE(fusedMap.error().detail.empty());
+}
+
+TEST_CASE("M1: a named copy is a different thing from its source", "[m1][naming][multiplicity]") {
+    // The half that WORKS. The two tests above pin the problem and the guard; this is the way
+    // through it, and it is what a Pattern feature will be built on.
+    auto source = box(40.0, 30.0, 20.0, 1);
+    REQUIRE(source.ok());
+    const auto top = faceName(source.value(), BoxFace::ZMax);
+    REQUIRE(top.ok());
+
+    auto moved = cad::kernel::translate(source.value().shape, 200.0, 0.0, 0.0);
+    REQUIRE(moved.ok());
+    cad::naming::NamingContext ctx(2, 0);
+    auto copy = ctx.nameCopy(moved.value(), source.value().shape, source.value().map, {1, 0});
+    REQUIRE(copy.ok());
+
+    // Same element count -- nothing was lost in the stamping.
+    CHECK(copy.value().size() == source.value().map.size());
+
+    // And NOT the source's names: a reference to the original's top face must not resolve inside
+    // the copy, or the two are the same thing again.
+    CHECK_FALSE(copy.value().resolve(top.value()).has_value());
+
+    // The original is untouched, so references taken before the copy still work.
+    CHECK(source.value().map.resolve(top.value()).has_value());
+}
+
+TEST_CASE("M1: two copies of one source are distinct from each other",
+          "[m1][naming][multiplicity]") {
+    auto source = box(40.0, 30.0, 20.0, 1);
+    REQUIRE(source.ok());
+
+    const auto instanceMap = [&](double dx, cad::naming::NamingContext::Instance instance) {
+        auto moved = cad::kernel::translate(source.value().shape, dx, 0.0, 0.0);
+        REQUIRE(moved.ok());
+        cad::naming::NamingContext ctx(2, 0);
+        auto map = ctx.nameCopy(moved.value(), source.value().shape, source.value().map, instance);
+        REQUIRE(map.ok());
+        return std::pair{moved.value().shape(), std::move(map.value())};
+    };
+
+    auto [shapeA, mapA] = instanceMap(200.0, {1, 0});
+    auto [shapeB, mapB] = instanceMap(400.0, {2, 0});
+
+    // No name in one appears in the other. This is the property a pattern needs and the property
+    // propagate() cannot provide.
+    for (const auto& name : mapA.allNames()) {
+        INFO(name.toString());
+        CHECK_FALSE(mapB.resolve(name).has_value());
+    }
+
+    // Which is what makes them fusable: the collision guard now has nothing to complain about.
+    auto fused = cad::kernel::booleanFuse(shapeA, shapeB);
+    REQUIRE(fused.ok());
+    cad::naming::NamingContext fuseCtx(3, 0);
+    const cad::kernel::Shape* a = &shapeA;
+    const cad::kernel::Shape* b = &shapeB;
+    auto fusedMap = fuseCtx.propagate(fused.value(), {a, b}, {&mapA, &mapB});
+    if (!fusedMap.ok()) INFO(fusedMap.error().detail);
+    REQUIRE(fusedMap.ok());
+    CHECK(fusedMap.value().collisions().empty());
+}
+
+TEST_CASE("M1: a copy's names are the same on every rebuild", "[m1][naming][multiplicity]") {
+    // A name that changed between rebuilds would break every reference into the pattern the moment
+    // anything upstream was edited -- the exact failure M1 exists to prevent, arriving through a
+    // new door.
+    const auto namesOfInstance = [](cad::naming::NamingContext::Instance instance) {
+        auto source = box(40.0, 30.0, 20.0, 1);
+        REQUIRE(source.ok());
+        auto moved = cad::kernel::translate(source.value().shape, 200.0, 0.0, 0.0);
+        REQUIRE(moved.ok());
+        cad::naming::NamingContext ctx(2, 0);
+        auto map = ctx.nameCopy(moved.value(), source.value().shape, source.value().map, instance);
+        REQUIRE(map.ok());
+        std::vector<std::string> names;
+        for (const auto& name : map.value().allNames()) names.push_back(name.toString());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+
+    CHECK(namesOfInstance({1, 0}) == namesOfInstance({1, 0}));
+    CHECK(namesOfInstance({1, 0}) != namesOfInstance({2, 0}));
+}
+
+TEST_CASE("M1: an instance is identified by its coordinate, not by a running number",
+          "[m1][naming][multiplicity]") {
+    // Why (i, j) rather than 0..N. A rectangular pattern numbered flat renumbers EVERY instance
+    // when its row count changes -- go from 3x3 to 3x8 and the fourth hole becomes the ninth -- so
+    // a fillet on it silently moves to a different hole. That is the same class of failure the
+    // whole collision guard exists to prevent, arriving one level up.
+    using Instance = cad::naming::NamingContext::Instance;
+
+    // Distinct coordinates pack to distinct keys, and the two axes do not alias each other: (1,0)
+    // and (0,1) are different instances, which a flat counter cannot express at all.
+    CHECK(Instance{1, 0}.key() != Instance{0, 1}.key());
+    CHECK(Instance{0, 0}.key() == 0u);
+    CHECK(Instance{1, 2}.key() == ((1u << 16) | 2u));
+    CHECK(Instance{0xFFFF, 0xFFFF}.key() == 0xFFFFFFFFu);
+
+    // And the name follows the coordinate, so the same instance of a 3x3 and of a 3x8 pattern
+    // carries the same name -- nothing about the pattern's SIZE is baked into it.
+    const auto nameFor = [](Instance instance) {
+        auto source = box(40.0, 30.0, 20.0, 1);
+        REQUIRE(source.ok());
+        auto moved = cad::kernel::translate(source.value().shape, 200.0, 0.0, 0.0);
+        REQUIRE(moved.ok());
+        cad::naming::NamingContext ctx(2, 0);
+        auto map = ctx.nameCopy(moved.value(), source.value().shape, source.value().map, instance);
+        REQUIRE(map.ok());
+        std::vector<std::string> names;
+        for (const auto& n : map.value().allNames()) names.push_back(n.toString());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+    CHECK(nameFor({1, 2}) == nameFor({1, 2}));
+    CHECK(nameFor({1, 2}) != nameFor({2, 1}));
+}
+
+// ── split faces ────────────────────────────────────────────────────────────────────────
+//
+// The other half of the multiplicity problem, and the one that was already shipping. A boolean
+// that cuts one face into two reports BOTH pieces as `Modified` of the same parent, so both
+// claimed one name and `bind` kept the last. The earlier piece stayed in the geometry and became
+// unreachable: `unnamed()` saw nothing wrong, because every face did have a name.
+
+TEST_CASE("M1: fusing two overlapping solids names every face", "[m1][naming][splits]") {
+    // Two boxes overlapping by half. Nothing exotic -- this is the most ordinary boolean there is,
+    // and before split pieces were discriminated it lost eight elements silently.
+    auto a = box(40.0, 30.0, 20.0, 1);
+    auto b = box(40.0, 30.0, 20.0, 2);
+    REQUIRE(a.ok());
+    REQUIRE(b.ok());
+
+    auto shifted = cad::kernel::translate(b.value().shape, 20.0, 0.0, 0.0);
+    REQUIRE(shifted.ok());
+    cad::naming::NamingContext moveCtx(2, 0);
+    auto shiftedMap = moveCtx.propagate(shifted.value(), {&b.value().shape}, {&b.value().map});
+    REQUIRE(shiftedMap.ok());
+    const cad::kernel::Shape shiftedShape = shifted.value().shape();
+
+    auto fused = cad::kernel::booleanFuse(a.value().shape, shiftedShape);
+    REQUIRE(fused.ok());
+    cad::naming::NamingContext ctx(3, 0);
+    auto map = ctx.propagate(fused.value(), {&a.value().shape, &shiftedShape},
+                             {&a.value().map, &shiftedMap.value()});
+    if (!map.ok()) INFO(map.error().detail);
+    REQUIRE(map.ok());
+
+    CHECK(map.value().collisions().empty());
+    CHECK(map.value().unnamed(fused.value().shape()).empty());
+
+    // Every face reachable by exactly one name, and every name resolving. Counting both directions
+    // is the point: the old failure had all the faces named and some of the names unreachable.
+    const auto faces = fused.value().shape().subShapes(cad::kernel::ShapeType::Face);
+    std::set<std::string> distinct;
+    for (const auto& face : faces) {
+        const auto name = map.value().nameOf(face);
+        REQUIRE(name.has_value());
+        distinct.insert(name->toString());
+    }
+    CHECK(distinct.size() == faces.size());
+}
+
+TEST_CASE("M1: a face that does not split keeps the name it always had", "[m1][naming][splits]") {
+    // The compatibility half. Discriminating split siblings must not renumber anything else, or
+    // every reference in every saved document moves -- which is the failure this layer exists to
+    // prevent, arriving as its own fix.
+    auto plain = box(40.0, 30.0, 20.0, 1);
+    REQUIRE(plain.ok());
+    const auto top = faceName(plain.value(), BoxFace::ZMax);
+    REQUIRE(top.ok());
+
+    // A cut that touches only one side leaves the top face whole.
+    auto tool = box(10.0, 10.0, 60.0, 2);
+    REQUIRE(tool.ok());
+    auto moved = cad::kernel::translate(tool.value().shape, 100.0, 0.0, 0.0);
+    REQUIRE(moved.ok());
+    cad::naming::NamingContext moveCtx(2, 0);
+    auto movedMap = moveCtx.propagate(moved.value(), {&tool.value().shape}, {&tool.value().map});
+    REQUIRE(movedMap.ok());
+    const cad::kernel::Shape movedShape = moved.value().shape();
+
+    auto fused = cad::kernel::booleanFuse(plain.value().shape, movedShape);
+    REQUIRE(fused.ok());
+    cad::naming::NamingContext ctx(3, 0);
+    auto map = ctx.propagate(fused.value(), {&plain.value().shape, &movedShape},
+                             {&plain.value().map, &movedMap.value()});
+    REQUIRE(map.ok());
+
+    // The original name still resolves, unchanged and underived.
+    CHECK(map.value().resolve(top.value()).has_value());
+}
+
+TEST_CASE("M1: split pieces are numbered the same way every time", "[m1][naming][splits]") {
+    // A sibling index that moved between rebuilds would be worse than no index at all: every
+    // reference into a split face would land on the other piece after an unrelated edit.
+    const auto namesOfFuse = [] {
+        auto a = box(40.0, 30.0, 20.0, 1);
+        auto b = box(40.0, 30.0, 20.0, 2);
+        REQUIRE(a.ok());
+        REQUIRE(b.ok());
+        auto shifted = cad::kernel::translate(b.value().shape, 20.0, 0.0, 0.0);
+        REQUIRE(shifted.ok());
+        cad::naming::NamingContext moveCtx(2, 0);
+        auto shiftedMap = moveCtx.propagate(shifted.value(), {&b.value().shape}, {&b.value().map});
+        REQUIRE(shiftedMap.ok());
+        const cad::kernel::Shape shiftedShape = shifted.value().shape();
+        auto fused = cad::kernel::booleanFuse(a.value().shape, shiftedShape);
+        REQUIRE(fused.ok());
+        cad::naming::NamingContext ctx(3, 0);
+        auto map = ctx.propagate(fused.value(), {&a.value().shape, &shiftedShape},
+                                 {&a.value().map, &shiftedMap.value()});
+        REQUIRE(map.ok());
+        std::vector<std::string> names;
+        for (const auto& n : map.value().allNames()) names.push_back(n.toString());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+    CHECK(namesOfFuse() == namesOfFuse());
+}
+
+TEST_CASE("M1: names do not depend on the order inputs were passed", "[m1][naming][splits]") {
+    // A boolean's two operands are a SET, so naming its result must not depend on which was
+    // written first. It did: a merged face is bound under both names, `bind` records the first
+    // binding as the shape's own name, and every edge and vertex is then derived from that -- so
+    // swapping the arguments renamed geometry that had not changed.
+    //
+    // Invisible in one process, fatal across two: the DDC's shared tier keys on these names, so two
+    // machines that assembled the same boolean differently would never hit each other's cache.
+    const auto namesFor = [](bool swapped) {
+        auto a = box(40.0, 30.0, 20.0, 1);
+        auto b = box(40.0, 30.0, 20.0, 2);
+        REQUIRE(a.ok());
+        REQUIRE(b.ok());
+        auto shifted = cad::kernel::translate(b.value().shape, 20.0, 0.0, 0.0);
+        REQUIRE(shifted.ok());
+        cad::naming::NamingContext moveCtx(2, 0);
+        auto shiftedMap = moveCtx.propagate(shifted.value(), {&b.value().shape}, {&b.value().map});
+        REQUIRE(shiftedMap.ok());
+        const cad::kernel::Shape shiftedShape = shifted.value().shape();
+
+        auto fused = swapped ? cad::kernel::booleanFuse(shiftedShape, a.value().shape)
+                             : cad::kernel::booleanFuse(a.value().shape, shiftedShape);
+        REQUIRE(fused.ok());
+        cad::naming::NamingContext ctx(3, 0);
+        auto map = swapped
+                       ? ctx.propagate(fused.value(), {&shiftedShape, &a.value().shape},
+                                       {&shiftedMap.value(), &a.value().map})
+                       : ctx.propagate(fused.value(), {&a.value().shape, &shiftedShape},
+                                       {&a.value().map, &shiftedMap.value()});
+        REQUIRE(map.ok());
+        std::vector<std::string> names;
+        for (const auto& n : map.value().allNames()) names.push_back(n.toString());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+    CHECK(namesFor(false) == namesFor(true));
 }

@@ -79,6 +79,16 @@ void ElementMap::alias(const ElementName& canonical, ElementName also) {
     const auto it = impl_->byDigest.find(canonical.digest());
     if (it != impl_->byDigest.end()) {
         impl_->byFamily[also.family().digest()].push_back(it->second);
+
+        // And nameOf() must agree about which name is canonical.
+        //
+        // `bind` binds shapeToEntry only on a shape's FIRST binding, so an element bound under two
+        // names keeps pointing at whichever arrived first -- which is claim order, i.e. input
+        // order. Declaring a different name canonical afterwards left nameOf() answering with the
+        // old one, and deriveBoundaries names every edge and vertex from nameOf() of its bounding
+        // faces. So the names of a merged shape's edges depended on the order its inputs happened
+        // to be passed in, while the canonical rule (lexicographically smallest) is order-free.
+        impl_->shapeToEntry.Bind(impl_->entries[it->second].shape, static_cast<int>(it->second));
     }
 }
 
@@ -147,6 +157,27 @@ std::uint64_t ElementMap::digest() const noexcept {
     std::uint64_t h = kFnvOffset;
     for (auto d : digests) mix(h, d);
     return h;
+}
+
+std::vector<ElementName> ElementMap::collisions() const {
+    // First binding per digest, then anything that lands on it holding a different element.
+    std::unordered_map<std::uint64_t, std::size_t> firstSeen;
+    std::unordered_map<std::uint64_t, bool> reported;
+    std::vector<ElementName> out;
+
+    for (std::size_t i = 0; i < impl_->entries.size(); ++i) {
+        const std::uint64_t digest = impl_->entries[i].name.digest();
+        const auto [it, inserted] = firstSeen.emplace(digest, i);
+        if (inserted) continue;
+        // IsSame, not IsEqual: orientation does not make an element a different element, and a
+        // face bound once forward and once reversed is still one face.
+        if (impl_->entries[it->second].shape.IsSame(impl_->entries[i].shape)) continue;
+        if (!reported[digest]) {
+            reported[digest] = true;
+            out.push_back(impl_->entries[i].name);
+        }
+    }
+    return out;
 }
 
 std::vector<kernel::Shape> ElementMap::unnamed(const kernel::Shape& owner) const {
