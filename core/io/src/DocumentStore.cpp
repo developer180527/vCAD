@@ -315,6 +315,10 @@ kernel::Result<void> saveDocument(const document::Document& doc,
             if (!meta.ok()) return sqlError(db.get(), "The document could not be written.");
             const std::pair<const char*, std::string> rows[]{
                 {"schema_version", std::to_string(kDocumentSchemaVersion)},
+                // Which naming scheme derived this file's element references. Separate from the
+                // schema version because they change for unrelated reasons: the schema is about
+                // what the file CONTAINS, this is about what its names MEAN.
+                {"naming_scheme_version", std::to_string(naming::kNamingSchemeVersion)},
                 {"kind", kind},
                 {"application", "vCAD 0.0.1"},
                 // The id allocator's high-water mark. See Document::withNextId for why losing
@@ -418,6 +422,9 @@ kernel::Result<DocumentInfo> readDocumentInfo(const std::filesystem::path& path)
         const std::string key = meta.asText(0);
         const std::string value = meta.asText(1);
         if (key == "schema_version") info.schemaVersion = std::atoi(value.c_str());
+        else if (key == "naming_scheme_version") {
+            info.namingSchemeVersion = std::atoi(value.c_str());
+        }
         else if (key == "kind") info.kind = value;
         else if (key == "application") info.application = value;
     }
@@ -433,6 +440,15 @@ kernel::Result<DocumentInfo> readDocumentInfo(const std::filesystem::path& path)
 kernel::Result<document::Document> loadDocument(const std::filesystem::path& path) {
     auto info = readDocumentInfo(path);
     if (!info) return info.error();
+    // A NEWER naming scheme is refused for the same reason a newer schema is: its element
+    // references were derived by rules this build does not have, so every one of them would either
+    // fail to resolve or -- far worse -- resolve to whatever this build's rules happen to name the
+    // same way. An older scheme is a different matter and opens; see DocumentInfo.
+    if (info.value().namingSchemeVersion > naming::kNamingSchemeVersion) {
+        return Error{ErrorCode::Unsupported,
+                     "This document was written by a newer version of vCAD.",
+                     "naming scheme version " + std::to_string(info.value().namingSchemeVersion)};
+    }
     if (info.value().schemaVersion > kDocumentSchemaVersion) {
         return Error{ErrorCode::Unsupported,
                      "This document was written by a newer version of vCAD.",

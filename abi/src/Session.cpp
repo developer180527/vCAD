@@ -5,6 +5,7 @@
 // other languages and other processes' idea of "undefined behaviour" is our crash report.
 
 #include "Loader.h"
+#include "SerialLedger.h"
 #include "cad/abi/cad_plugin_abi.h"
 
 #include <bit>
@@ -74,6 +75,9 @@ struct Session {
     };
     std::unordered_map<std::uint64_t, StoredShape> shapes;
     std::uint64_t nextShape = 1;
+
+    /// Naming serials for host-built shapes, and the requests they came from. See SerialLedger.h.
+    cad::abi::SerialLedger serials;
 
     /// Computes currently on the stack. A CadComputeCtx indexes this rather than pointing at a
     /// ComputeContext, so a plugin that stores one and uses it later gets a clean rejection
@@ -510,7 +514,7 @@ cad::kernel::Shape* lookup(Session& s, CadShape handle) {
 /// names, which is the same content-addressing the rest of the system already runs on. These are
 /// intermediates handed to a plugin, not document features; when a plugin's output lands in a
 /// document it is renamed with that feature's serial (PICKUP.md step 3b).
-std::uint32_t serialFor(const char* op, std::initializer_list<double> values) {
+std::uint64_t fingerprintFor(const char* op, std::initializer_list<double> values) {
     std::uint64_t h = 1469598103934665603ULL;   // FNV-1a, as everywhere else in this codebase
     const auto mix = [&h](std::uint64_t v) {
         for (int i = 0; i < 8; ++i) {
@@ -520,17 +524,14 @@ std::uint32_t serialFor(const char* op, std::initializer_list<double> values) {
     };
     for (const char* c = op; *c != '\0'; ++c) mix(static_cast<std::uint64_t>(*c));
     for (const double v : values) mix(std::bit_cast<std::uint64_t>(v));
-    // Folded to 32 bits because that is what NamingContext takes. Never zero: 0 is what an
-    // uninitialised serial looks like, and a collision with it would be invisible.
-    const auto folded = static_cast<std::uint32_t>((h >> 32) ^ (h & 0xFFFFFFFFULL));
-    return folded == 0 ? 1u : folded;
+    return h;
 }
 
 /// The same, for an operation over shapes that already carry names. Named differently rather than
 /// overloaded: both take an initializer_list, and a braced list at the call site cannot
 /// disambiguate them.
-std::uint32_t serialForShapes(const char* op,
-                              std::initializer_list<const Session::StoredShape*> inputs) {
+std::uint64_t fingerprintForShapes(const char* op,
+                                   std::initializer_list<const Session::StoredShape*> inputs) {
     std::uint64_t h = 1469598103934665603ULL;
     const auto mix = [&h](std::uint64_t v) {
         for (int i = 0; i < 8; ++i) {
@@ -543,9 +544,10 @@ std::uint32_t serialForShapes(const char* op,
         if (in == nullptr) continue;
         mix(cad::naming::contentHash(in->shape, in->names).fold64());
     }
-    const auto folded = static_cast<std::uint32_t>((h >> 32) ^ (h & 0xFFFFFFFFULL));
-    return folded == 0 ? 1u : folded;
+    return h;
 }
+
+
 
 Session::ActiveCompute* activeCompute(Session& s, CadComputeCtx cc) {
     const auto it = s.computes.find(cc);
@@ -564,13 +566,17 @@ Session::ActiveCompute* innermostCompute(Session& s) {
 }
 
 /// The (serial, opTag) a host-built shape should be named with.
-std::pair<std::uint32_t, std::uint16_t> namingIdentityFor(Session& s, const char* op,
-                                                          std::initializer_list<double> args) {
+std::optional<std::pair<std::uint32_t, std::uint16_t>> namingIdentityFor(
+    Session& s, const char* op, std::initializer_list<double> args) {
+    // Inside a compute the FEATURE's serial wins, and that one is an object id: unique by
+    // construction, with no hashing and nothing to collide.
     if (Session::ActiveCompute* active = innermostCompute(s); active != nullptr &&
                                                               active->ctx != nullptr) {
-        return {active->ctx->namingSerial, active->opTag++};
+        return std::pair{active->ctx->namingSerial, active->opTag++};
     }
-    return {serialFor(op, args), 0};
+    const auto serial = s.serials.serialFor(fingerprintFor(op, args));
+    if (!serial) return std::nullopt;
+    return std::pair{*serial, std::uint16_t{0}};
 }
 
 CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out) {
@@ -588,8 +594,13 @@ CadStatus hostMakeBox(void* ctx, double dx, double dy, double dz, CadShape* out)
     // The serial is derived from the request, so identical calls name identically. See
     // serialFor: counting interns instead made these names session-dependent.
     // once register_feature lands, a plugin's compute output takes its feature's serial instead.
-    const auto [serial, opTag] = namingIdentityFor(*s, "make_box", {dx, dy, dz});
-    cad::naming::NamingContext naming(serial, opTag);
+    const auto identity = namingIdentityFor(*s, "make_box", {dx, dy, dz});
+    if (!identity) {
+        s->hostError = "Two different shapes would end up with the same internal identity, so a "
+                       "reference to one of them could mean the other.";
+        return CAD_ERR_NAMING_LOST;
+    }
+    cad::naming::NamingContext naming(identity->first, identity->second);
     auto map = naming.nameprimitive(built.value().op.shape(), built.value().taggedFaces);
     if (!map) {
         s->hostError = map.error().message;
@@ -619,13 +630,22 @@ CadStatus hostBoolean(void* ctx, CadShape a, CadShape b, CadShape* out, bool cut
     // so a plugin that fused two named boxes got back anonymous geometry — nothing downstream
     // could reference a face of it, which is exactly the failure PLUGIN_CONTRACT.md 4.2 tells
     // plugins not to cause. The host must not cause it either.
-    std::uint32_t serial = serialForShapes(cut ? "boolean_cut" : "boolean_fuse",
-                                          {leftStored, rightStored});
+    std::uint32_t serial = 0;
     std::uint16_t opTag = 0;
     if (Session::ActiveCompute* active = innermostCompute(*s);
         active != nullptr && active->ctx != nullptr) {
+        // Inside a compute the FEATURE's serial wins: an object id, unique by construction.
         serial = active->ctx->namingSerial;
         opTag = active->opTag++;
+    } else {
+        const auto derived = s->serials.serialFor(fingerprintForShapes(
+            cut ? "boolean_cut" : "boolean_fuse", {leftStored, rightStored}));
+        if (!derived) {
+            s->hostError = "Two different shapes would end up with the same internal identity, so "
+                           "a reference to one of them could mean the other.";
+            return CAD_ERR_NAMING_LOST;
+        }
+        serial = *derived;
     }
     cad::naming::NamingContext naming(serial, opTag);
     auto map = naming.propagate(result.value(),

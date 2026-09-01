@@ -113,6 +113,14 @@ kernel::Result<void> Controller::saveTo(const std::filesystem::path& path,
 }
 
 kernel::Result<void> Controller::loadFrom(const std::filesystem::path& path) {
+    // Read the header BEFORE the model, so that a document written under an older naming scheme can
+    // be reported as such. Its element references -- every fillet's edges, every hole's face -- were
+    // derived by rules this build no longer uses, so some of them may resolve to nothing.
+    //
+    // Said out loud rather than left to be discovered. The alternative is a part that was finished
+    // last week opening with red features and nothing about the user's model to explain why.
+    const auto info = io::readDocumentInfo(path);
+
     auto loaded = io::loadDocument(path);
     if (!loaded) return loaded.error();
 
@@ -124,7 +132,14 @@ kernel::Result<void> Controller::loadFrom(const std::filesystem::path& path) {
     refresh();
     savedDigest_ = saveDigest();
     fitView();
-    status("Opened " + path.filename().string());
+
+    if (info && info.value().namingSchemeVersion < naming::kNamingSchemeVersion) {
+        status("Opened " + path.filename().string()
+               + " — it was built with an older naming scheme, so some references to faces and "
+                 "edges may need re-selecting.");
+    } else {
+        status("Opened " + path.filename().string());
+    }
     return {};
 }
 

@@ -65,6 +65,40 @@ struct NameStep {
 ///  - **Delete**: the element is gone. The reference resolves to nothing and the dependent
 ///    feature fails legibly. It must NEVER rebind to a neighbour — a wrong answer here
 ///    silently corrupts a user's model, which is worse than an error.
+/// The version of the NAMING SCHEME -- how a derivation chain is turned into a name.
+///
+/// # Why this number has to exist, and has to exist early
+///
+/// Element names are written into saved documents. A fillet does not store "round that face", it
+/// stores "round the face called P1.0#4". So changing how a name is DERIVED does not just change
+/// this build's behaviour: it changes the meaning of every file already written. The fillet asks
+/// for a name nothing answers to any more, and a part that was finished last week opens broken,
+/// with nothing about the user's model having changed to explain it.
+///
+/// There are exactly three things an application can do with a file whose names it no longer
+/// computes the same way: refuse it, silently reinterpret it, or open it and say what is uncertain.
+/// The middle one is what you get by DEFAULT, by doing nothing, and it is the one that must never
+/// ship -- a reference resolving to the wrong face is the failure this whole layer exists to
+/// prevent.
+///
+/// Stamping the version is what makes the third option possible. It cannot be retrofitted: a file
+/// written without it can never afterwards be told apart from one written by any other build, so
+/// every day spent saving unstamped files is a day of files that cannot be classified later.
+///
+/// # What this does NOT cover
+///
+/// Foreign files -- STEP, IGES, STL -- carry no vCAD names at all, so no change to this scheme can
+/// break one. Imported geometry is renamed from scratch on every read. What IS covered is a
+/// reference INTO imported geometry stored in a vCAD document: a fillet on a face of an imported
+/// part records that face's name, and that name came from this scheme.
+///
+/// Bump this whenever a change would give the same geometry a different name than a previous
+/// build did, and only then.
+///
+///   1: M1 through M4. Derivation chains, boundary naming, split siblings by canonical measure,
+///      open-sketch curves by midpoint and their vertices by the edges they bound.
+inline constexpr int kNamingSchemeVersion = 1;
+
 class ElementName {
 public:
     ElementName() = default;

@@ -41,6 +41,12 @@ constexpr int kDocumentSchemaVersion = 2;
 /// one of them to show a name and a kind.
 struct DocumentInfo {
     int schemaVersion = 0;
+
+    /// Which naming scheme wrote this file's element references. See naming::kNamingSchemeVersion.
+    ///
+    /// Zero means the file predates the stamp, so nothing can be said about it -- which is exactly
+    /// the situation the stamp exists to stop happening again.
+    int namingSchemeVersion = 0;
     std::string kind;          ///< "Part", "Assembly", ... — matches app::DocumentKind's names
     std::string application;   ///< which build wrote it, for bug reports
     std::size_t objectCount = 0;
