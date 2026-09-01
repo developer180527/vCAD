@@ -55,6 +55,38 @@ struct Point3 {
 
 [[nodiscard]] Point3 midpointOf(const TopoDS_Shape&);
 
+/// How boundary siblings are ordered: an edge that split, or the two edges a seam produces.
+///
+/// # Why more than a midpoint
+///
+/// Siblings here already share a parent set -- that is what makes them siblings -- so the only
+/// thing separating them is geometry, and a midpoint alone leaves genuine cases undecided. Two
+/// edges bounding the same faces with the same centre cannot be numbered, so both are refused and
+/// the operation fails with NamingLost. ADR 0005 records midpoint ordering as the main source of
+/// naming failure in this scheme, and this is the half of it that is fixable.
+///
+/// # Why the midpoint stays FIRST
+///
+/// Compatibility, and it is not negotiable. Wherever midpoints already differ, the extra terms are
+/// never consulted and the order is exactly what it was -- so no name in any saved document moves.
+/// The additional terms only decide cases that previously had no answer at all. A key that reordered
+/// existing siblings would rename references in files people have, which is the one thing this layer
+/// must not do casually.
+struct BoundaryKey {
+    Point3 midpoint;        ///< first, and usually decisive
+    std::int64_t extent{};  ///< length for an edge; zero for a vertex
+    Point3 low, high;       ///< endpoints, sorted, so the key does not depend on orientation
+    int curve{};            ///< GeomAbs_CurveType, so a line and an arc are never confused
+
+    friend bool operator==(const BoundaryKey&, const BoundaryKey&) = default;
+    bool operator<(const BoundaryKey& o) const {
+        return std::tie(midpoint, extent, low, high, curve)
+               < std::tie(o.midpoint, o.extent, o.low, o.high, o.curve);
+    }
+};
+
+[[nodiscard]] BoundaryKey boundaryKeyOf(const TopoDS_Shape&);
+
 /// Siblings put into a canonical order, with the ones that could not be separated marked.
 struct CanonicalOrder {
     std::vector<TopoDS_Shape> elements;    ///< sorted; ALL of them, ambiguous included

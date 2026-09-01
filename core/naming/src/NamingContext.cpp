@@ -82,10 +82,16 @@ struct NamingContext::Impl {
                 // Siblings share a boundary set — an edge split in two, or the two edges a
                 // cylinder's seam produces. Order them canonically by midpoint.
                 //
-                // THIS IS THE FRAGILE PART OF THE SCHEME (ADR 0005). Midpoint ordering is
-                // stable under the parameter changes we care about but is not stable in
-                // general: a change that swaps two siblings' positions swaps their
-                // discriminators. When that matters we will need a stronger invariant.
+                // THIS IS THE FRAGILE PART OF THE SCHEME (ADR 0005). The ordering is stable under
+                // the parameter changes we care about but is not stable in general: a change that
+                // swaps two siblings' positions swaps their discriminators.
+                //
+                // The key is boundaryKeyOf rather than a bare midpoint -- midpoint FIRST, then
+                // length, endpoints and curve type. Wherever midpoints already differ the extra
+                // terms are never reached and the order is exactly what it was, so no saved name
+                // moves; they only decide siblings that a midpoint alone left tied, which used to
+                // be refused outright. What remains genuinely undecidable is still refused, because
+                // numbering by unspecified sort order is the wrong kind of answer.
                 const bool needsDiscriminator = siblings.size() > 1;
                 // The size is read BEFORE the move. Written as one braced initialiser with
                 // `std::move(siblings)` alongside `siblings.size()`, the order of evaluation is
@@ -94,7 +100,7 @@ struct NamingContext::Impl {
                 const std::size_t siblingCount = siblings.size();
                 const auto ordered =
                     needsDiscriminator
-                        ? internal::canonicalOrder(std::move(siblings), internal::midpointOf)
+                        ? internal::canonicalOrder(std::move(siblings), internal::boundaryKeyOf)
                         : internal::CanonicalOrder{std::move(siblings),
                                                    std::vector<std::uint8_t>(siblingCount)};
                 siblings = ordered.elements;

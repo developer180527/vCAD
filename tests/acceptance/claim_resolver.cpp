@@ -26,7 +26,10 @@
 #include "cad/kernel/Transform.h"
 #include "cad/kernel/internal/Occt.h"
 
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRep_Builder.hxx>
+#include <TopoDS_Edge.hxx>
+#include <gp_Pnt.hxx>
 #include <TopoDS_Compound.hxx>
 
 #include <catch2/catch_test_macros.hpp>
@@ -389,4 +392,92 @@ TEST_CASE("an imported file with unnameable faces still opens", "[naming][import
     CHECK(object->output()->shape.volume() > 0.0);
 
     std::filesystem::remove(path);
+}
+
+// ── boundary siblings ──────────────────────────────────────────────────────────────────
+//
+// Edges and vertices are named by the faces they bound. Two that bound the SAME faces are
+// siblings, and only geometry can separate them -- which ADR 0005 records as the main source of
+// naming failure in this scheme.
+
+namespace {
+
+/// A straight edge between two points, as a raw shape.
+TopoDS_Shape lineFrom(double x1, double y1, double z1, double x2, double y2, double z2) {
+    BRepBuilderAPI_MakeEdge made(gp_Pnt(x1, y1, z1), gp_Pnt(x2, y2, z2));
+    REQUIRE(made.IsDone());
+    return made.Edge();
+}
+
+}   // namespace
+
+TEST_CASE("siblings sharing a midpoint are separated by their length", "[naming][boundary]") {
+    // A midpoint alone leaves these undecidable, and undecidable meant refused: the operation
+    // failed with NamingLost over two edges that are obviously different things.
+    using naming::internal::boundaryKeyOf;
+    using naming::internal::canonicalOrder;
+    using naming::internal::midpointOf;
+
+    const auto shorter = lineFrom(-5, 0, 0, 5, 0, 0);
+    const auto longer = lineFrom(-10, 0, 0, 10, 0, 0);
+    REQUIRE(midpointOf(shorter) == midpointOf(longer));   // the case that used to have no answer
+
+    const auto byMidpoint = canonicalOrder({shorter, longer}, midpointOf);
+    CHECK(byMidpoint.anyAmbiguous());
+
+    const auto byKey = canonicalOrder({shorter, longer}, boundaryKeyOf);
+    CHECK_FALSE(byKey.anyAmbiguous());
+    // Shorter first: the key's terms are compared in order, and length follows the midpoint.
+    CHECK(byKey.elements[0].IsSame(shorter));
+}
+
+TEST_CASE("siblings sharing a midpoint AND a length are separated by their ends",
+          "[naming][boundary]") {
+    using naming::internal::boundaryKeyOf;
+    using naming::internal::canonicalOrder;
+
+    const auto across = lineFrom(-10, 0, 0, 10, 0, 0);
+    const auto upright = lineFrom(0, -10, 0, 0, 10, 0);
+    const auto ordered = canonicalOrder({across, upright}, boundaryKeyOf);
+    CHECK_FALSE(ordered.anyAmbiguous());
+}
+
+TEST_CASE("the midpoint still decides first", "[naming][boundary]") {
+    // The compatibility guarantee, and the reason the extra terms were appended rather than mixed
+    // in. Wherever midpoints already differ the rest of the key is never consulted, so the order --
+    // and therefore every name in every saved document -- is exactly what it was before.
+    using naming::internal::boundaryKeyOf;
+    using naming::internal::canonicalOrder;
+
+    // The one nearer the origin is much longer, so a key that weighed length first would swap them.
+    const auto nearAndLong = lineFrom(-40, 0, 0, 40, 0, 0);      // midpoint (0,0,0)
+    const auto farAndShort = lineFrom(99, 0, 0, 101, 0, 0);      // midpoint (100,0,0)
+
+    const auto ordered = canonicalOrder({farAndShort, nearAndLong}, boundaryKeyOf);
+    REQUIRE(ordered.elements.size() == 2);
+    CHECK(ordered.elements[0].IsSame(nearAndLong));
+}
+
+TEST_CASE("siblings that are genuinely the same shape are still refused", "[naming][boundary]") {
+    // The richer key narrows what cannot be decided; it does not pretend the remainder away. Two
+    // coincident duplicate edges agree on every term there is, and numbering them by whatever
+    // std::sort happened to do would be the wrong kind of answer.
+    using naming::internal::boundaryKeyOf;
+    using naming::internal::canonicalOrder;
+
+    const auto first = lineFrom(0, 0, 0, 10, 0, 0);
+    const auto second = lineFrom(0, 0, 0, 10, 0, 0);
+    const auto ordered = canonicalOrder({first, second}, boundaryKeyOf);
+    CHECK(ordered.anyAmbiguous());
+}
+
+TEST_CASE("an edge's key does not depend on which way it runs", "[naming][boundary]") {
+    // First and last vertex swap with orientation, and the same edge reversed is the same edge. A
+    // key that moved with direction would reorder siblings for a reason that has nothing to do with
+    // where they are.
+    using naming::internal::boundaryKeyOf;
+
+    const auto forward = lineFrom(0, 0, 0, 10, 5, 2);
+    const auto backward = lineFrom(10, 5, 2, 0, 0, 0);
+    CHECK(boundaryKeyOf(forward) == boundaryKeyOf(backward));
 }
