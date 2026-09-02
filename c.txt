@@ -1,1 +1,28 @@
- 
+A mirrored copy, and what happens when it lands on its source
+
+nameCopy had only ever been exercised against translate, with the copy
+placed 200 mm away. Two things about that fixture were doing quiet work,
+and both are wrong for a Mirror feature.
+
+It was a translation. A reflection is the transform most likely to break
+anything leaning on geometry rather than provenance: a mirrored face has the
+source's area and shape, so a tie-breaker comparing measurements sees a twin
+where a translation gave it a stranger.
+
+And the copy was far away. Bodies 200 mm apart fuse without a single face
+splitting, so every existing copy test took the easy path through propagate.
+The point of a mirror is that the copy lands against the original.
+
+Three contact cases, chosen by mirror plane: clear at x = -100, face to face
+at x = 0, overlapping at x = 30. All three come out with unnamed() and
+collisions() empty. The overlap is the one worth having, 36000 mm3 against
+the source's 24000, so the bodies really merged, into pieces whose twins
+across the mirror plane have identical areas. That is the tie the
+discriminator refuses to guess at, and it resolves it.
+
+The overlap case was written to accept either outcome, clean names or an
+honest NamingLost, because it was not obvious which it would reach. Under a
+mutation that stops nameCopy stamping it passed by taking the refusal
+branch, while five other cases failed. A test that accepts both cannot
+notice the day it stops being the first one, so the hedge is gone and the
+same mutation now fails six.
