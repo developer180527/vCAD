@@ -703,6 +703,8 @@ CAD_API CadStatus   cad_object_face_count(CadSession, CadObject, uint64_t* out);
 CAD_API CadStatus   cad_object_edge_count(CadSession, CadObject, uint64_t* out);
 CAD_API CadStatus   cad_object_cache_key(CadSession, CadObject, uint64_t* out);
 CAD_API CadStatus   cad_object_is_valid_shape(CadSession, CadObject, int32_t* out);
+/* Enclosed volume in mm^3. CAD_ERR_NOT_DONE when the shape could not be measured -- *out is
+ * untouched in that case, and is never a non-finite number. */
 CAD_API CadStatus   cad_object_volume(CadSession, CadObject, double* out);
 
 /* Content hash of an object's output, as a 64-hex-char string. Empty if not computed. */

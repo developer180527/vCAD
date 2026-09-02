@@ -101,3 +101,33 @@ TEST_CASE("identical valid hashes still dedupe", "[hash][cache][render]") {
     // And two different shapes do not.
     CHECK(gpu.uploadVertices(aHash(43), vertices) != first);
 }
+
+TEST_CASE("fold64 and hex do NOT carry validity, and must not be compared", "[hash][cache]") {
+    // The trap, pinned rather than the fix.
+    //
+    // `operator==` was written to make an invalid hash equal nothing, including itself. Every
+    // consumer that reaches past it -- to `fold64()` for a key, or to `hex()` for a string -- loses
+    // that protection silently, because both are perfectly well-defined on an invalid hash and
+    // neither looks dangerous at the call site.
+    //
+    // Four places in the C ABI did exactly that and were found by reading, not by a failing test:
+    // a naming serial derived from folded input hashes, a determinism self-check comparing folds, a
+    // volume accessor, and a content-hash accessor. This states the property that makes all four
+    // wrong, so the next one is caught here instead.
+    cad::kernel::ShapeHash first;
+    first.valid = false;
+    cad::kernel::ShapeHash second;
+    second.valid = false;
+
+    // Unequal by the operator, as designed.
+    CHECK_FALSE(first == second);
+    CHECK_FALSE(first == first);
+
+    // And EQUAL by their fold, which is the whole problem: two shapes nobody could identify produce
+    // one key, so anything keyed on the fold treats them as the same shape.
+    CHECK(first.fold64() == second.fold64());
+
+    // The same for the string form: not empty, not obviously wrong, and shared by every failure.
+    CHECK(first.hex() == second.hex());
+    CHECK(first.hex().size() == 64);
+}

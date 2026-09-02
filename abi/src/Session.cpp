@@ -35,6 +35,7 @@
 
 #include <exception>
 #include <map>
+#include <cmath>
 #include <optional>
 #include <memory>
 #include <mutex>
@@ -530,8 +531,15 @@ std::uint64_t fingerprintFor(const char* op, std::initializer_list<double> value
 /// The same, for an operation over shapes that already carry names. Named differently rather than
 /// overloaded: both take an initializer_list, and a braced list at the call site cannot
 /// disambiguate them.
-std::uint64_t fingerprintForShapes(const char* op,
-                                   std::initializer_list<const Session::StoredShape*> inputs) {
+/// Nothing when any input could not be hashed.
+///
+/// An invalid ShapeHash has all-zero lanes, so `fold64()` on one returns a FIXED value that every
+/// unhashable shape shares. Folding it in regardless would give two genuinely different shapes an
+/// identical fingerprint -- at which point SerialLedger sees one request rather than a collision,
+/// and hands the same naming serial to both. That is the exact failure ShapeHash::valid exists to
+/// prevent, arriving through the one path that mints names.
+std::optional<std::uint64_t> fingerprintForShapes(
+    const char* op, std::initializer_list<const Session::StoredShape*> inputs) {
     std::uint64_t h = 1469598103934665603ULL;
     const auto mix = [&h](std::uint64_t v) {
         for (int i = 0; i < 8; ++i) {
@@ -542,7 +550,9 @@ std::uint64_t fingerprintForShapes(const char* op,
     for (const char* c = op; *c != '\0'; ++c) mix(static_cast<std::uint64_t>(*c));
     for (const Session::StoredShape* in : inputs) {
         if (in == nullptr) continue;
-        mix(cad::naming::contentHash(in->shape, in->names).fold64());
+        const auto hash = cad::naming::contentHash(in->shape, in->names);
+        if (!hash.ok()) return std::nullopt;
+        mix(hash.fold64());
     }
     return h;
 }
@@ -638,8 +648,14 @@ CadStatus hostBoolean(void* ctx, CadShape a, CadShape b, CadShape* out, bool cut
         serial = active->ctx->namingSerial;
         opTag = active->opTag++;
     } else {
-        const auto derived = s->serials.serialFor(fingerprintForShapes(
-            cut ? "boolean_cut" : "boolean_fuse", {leftStored, rightStored}));
+        const auto fingerprint = fingerprintForShapes(cut ? "boolean_cut" : "boolean_fuse",
+                                                      {leftStored, rightStored});
+        if (!fingerprint) {
+            s->hostError = "One of these shapes could not be identified, so the result could not "
+                           "be named.";
+            return CAD_ERR_NAMING_LOST;
+        }
+        const auto derived = s->serials.serialFor(*fingerprint);
         if (!derived) {
             s->hostError = "Two different shapes would end up with the same internal identity, so "
                            "a reference to one of them could mean the other.";
@@ -953,7 +969,11 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
         }
 
         const cad::kernel::ShapeHash repeat = cad::naming::contentHash(again->shape, again->names);
-        if (first.fold64() != repeat.fold64()) {
+        // The OPERATOR, not fold64. Two failed hashes fold to the same number, so comparing folds
+        // reports "deterministic" precisely when neither shape could be identified. ShapeHash's
+        // operator== makes an invalid hash equal nothing, including itself, so an unhashable result
+        // reads as non-deterministic -- which is the honest answer: we cannot tell.
+        if (!(first == repeat)) {
             return cad::kernel::Error{
                 cad::kernel::ErrorCode::Internal,
                 std::string("'") + feature->type +
@@ -1958,7 +1978,16 @@ CadStatus cad_object_volume(CadSession handle, CadObject id, double* out) {
         if (out == nullptr) return fail(s, CAD_ERR_INVALID_INPUT, "Missing output pointer.");
         const auto* output = outputOf(s, id);
         if (output == nullptr) return fail(s, CAD_ERR_NOT_DONE, "Object has no geometry yet.");
-        *out = output->shape.volume();
+        const double volume = output->shape.volume();
+        // NaN is how `Shape::volume` reports that it could not measure -- a good sentinel in
+        // process, because it cannot be mistaken for a measurement. It is a bad thing to hand
+        // across a C boundary whose contract is a status code: a plugin testing `v > 0` gets a
+        // correct false, but one accumulating `total += v` silently poisons its own arithmetic and
+        // nothing in the signature warns it. The status is where a failure belongs here.
+        if (!std::isfinite(volume)) {
+            return fail(s, CAD_ERR_NOT_DONE, "This shape's volume could not be measured.");
+        }
+        *out = volume;
         return CAD_OK;
     });
 }
@@ -1966,7 +1995,12 @@ CadStatus cad_object_volume(CadSession handle, CadObject id, double* out) {
 const char* cad_object_content_hash(CadSession handle, CadObject id) {
     return withSessionStr(handle, [&](Session& s) {
         if (const auto* output = outputOf(s, id)) {
-            s.scratch = cad::naming::contentHash(output->shape, output->map).hex();
+            // EMPTY when the hash could not be computed, which is what this function's contract
+            // already says means "not computed". The lanes of an invalid hash are all zero, so
+            // hex() on one returns sixty-four zeros -- a plausible-looking digest that every
+            // unhashable shape shares, and that a plugin would reasonably store and compare.
+            const auto hash = cad::naming::contentHash(output->shape, output->map);
+            if (hash.ok()) s.scratch = hash.hex();
         }
     });
 }
