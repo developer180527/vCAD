@@ -61,10 +61,21 @@ The rule that came out of it, which generalises: **a rendering claim is not esta
 counter.** Any scale or correctness claim needs a pixel assertion on more than one part at more
 than one transform.
 
-### 2. Eleven operations
+### 2. Not enough operations
 
-No revolve, sweep, loft, hole, shell, draft, rib, pattern or mirror. This is the honest distance to
-a usable modeller, and it is mostly ordinary work now that sketches and extrude exist.
+Missing as FEATURES a user can reach: sweep, loft, shell, draft, rib, pattern, mirror. This is the
+honest distance to a usable modeller, and it is mostly ordinary work now that sketches and extrude
+exist.
+
+`rotate` and `mirror` exist in the kernel but have no feature wired to them, which is the
+distinction this section is careful about: an operation the kernel can perform and a user cannot
+reach is not a capability.
+
+The list below is checked by `tests/acceptance/docs_claims.cpp` against the command catalogue, so
+it cannot quietly go stale the way "no revolve, no hole" did once both had shipped. Edit the marker
+and the prose together.
+
+<!-- guarded:missing-features sweep loft shell draft rib pattern mirror -->
 
 ### 3. No assemblies, drawings, or simulation
 
@@ -100,7 +111,8 @@ strongest.
 
 1. **Fix instancing.** The one place the project currently misrepresents itself.
 2. **Autosave and recovery.** Days of work; loses hours of a user's work without it.
-3. **More features** — revolve, hole, pattern, mirror. Ordinary work, large payoff.
+3. **More features** — pattern and mirror first, both unblocked now that `nameCopy` and the kernel's
+   `rotate`/`mirror` exist. Ordinary work, large payoff.
 4. **Point selection in sketches** — unlocks the five constraints that act on points, including
    Distance, which is what makes a sketch dimensioned rather than merely constrained.
 5. **The plugin loader**, with the module ownership table crash attribution needs (ADR 0010).

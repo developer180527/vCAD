@@ -47,8 +47,8 @@ a document model with references *between* documents, and ours is single-documen
 
 **Drawings do not exist.** Projected, section, detail and broken views; dimensioning; GD&T; BOM
 tables; sheet formats; revision blocks. The hard primitive is closer than it looks — OCCT's
-`TKHLR` is already linked and does hidden-line removal — but the paper-space layer, the view
-generation and the annotation model are all absent.
+`TKHLR` does hidden-line removal, though it is **not** linked today — but the paper-space layer,
+the view generation and the annotation model are all absent.
 
 **Then the long tail**, which is laborious rather than interesting: sheet metal, weldments,
 surfacing, mold tools, the pattern family, configurations and design tables, equations, splines,

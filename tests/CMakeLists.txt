@@ -84,7 +84,8 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/naming_scheme_version.cpp
                                  acceptance/mesh_import.cpp
                                  acceptance/transform_rotate_mirror.cpp
-                                 acceptance/mirror_copy.cpp)
+                                 acceptance/mirror_copy.cpp
+                                 acceptance/docs_claims.cpp)
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)

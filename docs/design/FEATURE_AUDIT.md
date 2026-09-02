@@ -169,8 +169,9 @@ exists — wireframe and shaded+edges are stand-ins), origin plane visibility, s
 ### Tier 3 — scope, not function
 
 Assemblies and drawings, both of which are architectural rather than laborious (assemblies need
-inter-document references the document model does not have; drawings need a paper-space layer, though
-OCCT's `TKHLR` for hidden-line removal is already linked). Then sheet metal, weldments, surfacing,
+inter-document references the document model does not have; drawings need a paper-space layer, and
+OCCT's `TKHLR` does hidden-line removal but is **not** linked — one line in
+`core/kernel/CMakeLists.txt`). Then sheet metal, weldments, surfacing,
 mold tools, simulation, CAM, PDM.
 
 ### Known ceilings, measured

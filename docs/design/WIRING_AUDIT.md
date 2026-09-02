@@ -159,8 +159,9 @@ still to be written, and the audits have said so consistently.
 Industry: projected/section/detail/broken views, dimensioning, GD&T, BOM tables, sheet formats,
 revision blocks, associativity back to the model.
 
-vCAD: nothing. The hard primitive is closer than it looks — OCCT's `TKHLR` (hidden-line removal) is
-already linked — but paper space, view generation and the annotation model are all unwritten.
+vCAD: nothing. The hard primitive is closer than it looks — OCCT's `TKHLR` (hidden-line removal)
+ships with the kernel, though it is **not** linked today — but paper space, view generation and the
+annotation model are all unwritten.
 
 ## 2.5 Interop and data — **the closest to parity**
 
