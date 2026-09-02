@@ -22,9 +22,13 @@
 #include "Viewport.h"
 
 #include "cad/app/Controller.h"
+#include "cad/render/BgfxBackend.h"
 
 #include <QAbstractButton>
 #include <QApplication>
+
+#include <filesystem>
+#include <system_error>
 #include <QMouseEvent>
 #include <QAction>
 #include <QTableWidget>
@@ -62,6 +66,22 @@ void move(QWidget* target, QPointF at) {
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     QApplication app(argc, argv);
+
+    // Shaders resolve against the EXECUTABLE, exactly as main.cpp does it.
+    //
+    // Without this the probe inherited the working directory instead, so it passed when run from
+    // build/shell_qt and reported "SHELL WIRING IS BROKEN" when run from the repo root -- no
+    // renderer came up, so every check that needed one failed. A diagnostic whose answer depends on
+    // where you stood when you asked it is worse than no diagnostic: it was chased twice as a real
+    // regression before anyone noticed the pattern.
+    if (argc > 0 && argv[0] != nullptr && *argv[0] != '\0') {
+        std::error_code ec;
+        const std::filesystem::path exe =
+            std::filesystem::weakly_canonical(std::filesystem::path(argv[0]), ec);
+        if (!ec && exe.has_parent_path()) {
+            cad::render::setShaderDirectory((exe.parent_path() / "shaders").string());
+        }
+    }
 
     cadqt::MainWindow window;
     window.resize(1200, 800);
