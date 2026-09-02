@@ -160,6 +160,7 @@ endif()
 
 if(CAD_BUILD_SPIKES)
   add_subdirectory(spikes)
+  add_subdirectory(tools/import_probe)
 endif()
 
 cad_add_layering_check()

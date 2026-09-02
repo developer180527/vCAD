@@ -27,6 +27,14 @@
 #include "cad/kernel/internal/Occt.h"
 
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Wire.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Edge.hxx>
 #include <gp_Pnt.hxx>
@@ -480,4 +488,50 @@ TEST_CASE("an edge's key does not depend on which way it runs", "[naming][bounda
     const auto forward = lineFrom(0, 0, 0, 10, 5, 2);
     const auto backward = lineFrom(10, 5, 2, 0, 0, 0);
     CHECK(boundaryKeyOf(forward) == boundaryKeyOf(backward));
+}
+
+TEST_CASE("a washer's two circles are named, not refused", "[naming][boundary]") {
+    // The case the richer key exists for, reached through real geometry rather than through
+    // canonicalOrder directly -- so it pins that deriveBoundaries actually ASKS for that key.
+    //
+    // An annular face: the outer circle and the inner circle each bound this one face, which makes
+    // them siblings, and both are centred on the same point. A midpoint alone cannot separate them,
+    // so both were refused and naming a washer failed outright. Their lengths differ by exactly the
+    // ratio of the radii, which the key's second term sees immediately.
+    const gp_Pln plane(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+    const auto circleAt = [](double radius) {
+        BRepBuilderAPI_MakeEdge edge(gp_Circ(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), radius));
+        REQUIRE(edge.IsDone());
+        BRepBuilderAPI_MakeWire wire(edge.Edge());
+        REQUIRE(wire.IsDone());
+        return wire.Wire();
+    };
+
+    BRepBuilderAPI_MakeFace face(plane, circleAt(20.0));
+    REQUIRE(face.IsDone());
+    face.Add(TopoDS::Wire(circleAt(10.0).Reversed()));
+    REQUIRE(face.IsDone());
+    const kernel::Shape washer = kernel::wrap(face.Face());
+
+    // The premise: the two edges really do share a centre, so this is not a test that would pass
+    // for some other reason.
+    const auto edges = washer.subShapes(kernel::ShapeType::Edge);
+    REQUIRE(edges.size() == 2);
+    CHECK(naming::internal::midpointOf(occtOf(edges[0]))
+          == naming::internal::midpointOf(occtOf(edges[1])));
+
+    naming::NamingContext ctx(1, 0);
+    const auto map = ctx.nameprimitive(washer, {});
+    if (!map.ok()) INFO(map.error().detail);
+    REQUIRE(map.ok());
+
+    // Both circles named, and named differently -- a reference to the bore is not a reference to
+    // the rim.
+    const auto outerName = map.value().nameOf(edges[0]);
+    const auto innerName = map.value().nameOf(edges[1]);
+    REQUIRE(outerName.has_value());
+    REQUIRE(innerName.has_value());
+    CHECK_FALSE(*outerName == *innerName);
+    CHECK(map.value().collisions().empty());
+    CHECK(map.value().unnamed(washer).empty());
 }

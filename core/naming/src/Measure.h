@@ -22,6 +22,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <type_traits>
+#include <utility>
 #include <tuple>
 #include <vector>
 
@@ -126,20 +128,43 @@ struct CanonicalOrder {
 /// every OTHER face of the part unnamed too, and the import would be refused over geometry the user
 /// was never going to touch. The unambiguous elements keep their positions in the sorted list, so
 /// their names do not move when a tie elsewhere appears or goes away.
+/// # Measured ONCE per element
+///
+/// The obvious spelling puts `measure(a) < measure(b)` in the comparator, which computes both
+/// measurements afresh on every comparison -- so sorting n elements costs about 2n log n
+/// measurements rather than n. That is not a micro-optimisation here: each measurement is a full
+/// OCCT mass-property computation, and `boundaryKeyOf` adds vertex lookups and a curve adaptor on
+/// top.
+///
+/// Measured on real files with tools/import_probe: naming one 37,817-triangle mesh took over six
+/// minutes, and a 487-face STEP part took 741 SECONDS while a 664-face part beside it took ten --
+/// the difference being how many siblings landed in one group to be sorted. Keying first turns
+/// ~1.15 million property computations into 37,817.
+///
+/// The order and the ambiguity flags are identical either way; only the cost changes.
 template <class Measure>
 [[nodiscard]] CanonicalOrder canonicalOrder(std::vector<TopoDS_Shape> elements, Measure measure) {
-    std::sort(elements.begin(), elements.end(),
-              [&measure](const TopoDS_Shape& a, const TopoDS_Shape& b) {
-                  return measure(a) < measure(b);
-              });
-    std::vector<std::uint8_t> ambiguous(elements.size(), 0);
-    for (std::size_t i = 1; i < elements.size(); ++i) {
-        if (measure(elements[i - 1]) == measure(elements[i])) {
+    using Key = std::invoke_result_t<Measure&, const TopoDS_Shape&>;
+
+    std::vector<std::pair<Key, TopoDS_Shape>> keyed;
+    keyed.reserve(elements.size());
+    for (auto& element : elements) keyed.emplace_back(measure(element), std::move(element));
+
+    std::sort(keyed.begin(), keyed.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::vector<std::uint8_t> ambiguous(keyed.size(), 0);
+    for (std::size_t i = 1; i < keyed.size(); ++i) {
+        if (keyed[i - 1].first == keyed[i].first) {
             ambiguous[i - 1] = 1;
             ambiguous[i] = 1;
         }
     }
-    return CanonicalOrder{std::move(elements), std::move(ambiguous)};
+
+    std::vector<TopoDS_Shape> sorted;
+    sorted.reserve(keyed.size());
+    for (auto& [key, element] : keyed) sorted.push_back(std::move(element));
+    return CanonicalOrder{std::move(sorted), std::move(ambiguous)};
 }
 
 }  // namespace cad::naming::internal

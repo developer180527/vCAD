@@ -147,3 +147,6 @@ CMakeUserPresets.json    # per-developer; CMakePresets.json is shared
 # Without this, the exhibits above match *.dylib/*.so/*.dll and the museum only ever passes on the
 # machine that built them -- which is how the guarantee stops being checked in CI.
 !tests/museum/**
+
+# Real-world CAD files: large, and mostly not ours to redistribute.
+tests/data/real/

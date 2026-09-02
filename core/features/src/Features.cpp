@@ -536,6 +536,26 @@ kernel::Result<Output> computeImport(const ComputeContext& ctx) {
     auto imported = io::importFile(registry, path.value(), options);
     if (!imported) return imported.error();
 
+    // A MESH is not named at all, and that is not a shortcut.
+    //
+    // A mesh format carries no B-rep topology, so the reader turns every triangle into a face. One
+    // NASA STL in the corpus is 37,827 of them. Naming those means measuring every triangle,
+    // sorting them, and deriving a boundary name for each of ~113,000 edges and their vertices --
+    // measured at 13 s to read and over a minute to name, for names that are worthless:
+    //
+    //   * nobody references "triangle 24,912"; a triangle is not a feature;
+    //   * any re-tessellation renumbers all of them, so the names are not stable either;
+    //   * and no feature can be built on one, which is what a name is FOR.
+    //
+    // So a mesh comes in as geometry you can see, measure and export onward, with no element names.
+    // The format itself says which it is -- Capabilities::solids is documented as "true B-rep;
+    // false means the format is mesh-only" -- so this asks the provider rather than guessing from
+    // face counts. A STEP file with 37,000 faces is a real B-rep and still gets named.
+    if (const auto* provider = registry.forPath(path.value());
+        provider != nullptr && !provider->capabilities().solids) {
+        return Output{imported.value().shape, naming::ElementMap{}};
+    }
+
     // BEST EFFORT, because this is geometry we read rather than geometry we built.
     //
     // Foreign files routinely carry duplicate or coincident faces that no measurement can tell
