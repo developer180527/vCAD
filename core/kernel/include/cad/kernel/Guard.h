@@ -29,7 +29,15 @@ namespace cad::kernel {
 /// a translation — where the only unacceptable value is a non-finite one.
 [[nodiscard]] inline bool isFinite(double v) noexcept { return std::isfinite(v); }
 
-/// Every single call into OCCT goes through here. No exceptions.
+/// Every call into OCCT goes through here, and that is checked rather than asserted — see
+/// `tests/acceptance/occt_guarded.cpp`, which reads the sources and fails on an unguarded call.
+///
+/// This comment used to read "every single call into OCCT goes through here, no exceptions", and it
+/// was false for as long as it existed. `core/naming` called `BRepGProp` directly on every
+/// operation, and `Shape::measure`/`volume` did too. Nothing below them caught anything: no shell
+/// installs a top-level handler, so the failure mode was not a bad answer, it was a dead process
+/// during an ordinary rebuild. A safety claim in a header is worse than no claim, because people
+/// reason from it — which is exactly why the claim above is now a test.
 ///
 /// OCCT 8.x made `Standard_Failure` inherit `std::exception`, so one catch clause covers
 /// OCCT throws, our throws, and std throws. Do NOT reintroduce the pre-8.0

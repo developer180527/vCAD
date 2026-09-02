@@ -182,6 +182,28 @@ public:
                                         const ElementMap& sourceMap, Instance);
 
 private:
+    /// The bodies of the three entry points above, which reach OCCT directly.
+    ///
+    /// Every public entry point is a thin `kernel::guard` around one of these, because this layer
+    /// calls into OCCT on every operation — mass properties, explorers, `Modified()` and
+    /// `Generated()` — and did so with nothing catching a `Standard_Failure`. `Guard.h` claimed
+    /// every call into OCCT went through it; this module was the counter-example, and the failure
+    /// mode was not a bad name but a terminated process, since no shell installs a top-level
+    /// handler either.
+    ///
+    /// Split rather than wrapped in place so the guarded and unguarded halves stay legible: the
+    /// interesting code keeps its indentation and its own early returns, and the wrapper says
+    /// exactly one thing.
+    kernel::Result<ElementMap> nameprimitiveUnguarded(const kernel::Shape& result,
+                                                      const std::vector<kernel::Shape>& taggedFaces,
+                                                      Naming);
+    kernel::Result<ElementMap> propagateUnguarded(const kernel::Operation& op,
+                                                  const std::vector<const kernel::Shape*>& inputs,
+                                                  const std::vector<const ElementMap*>& inputMaps);
+    kernel::Result<ElementMap> nameCopyUnguarded(const kernel::Operation& op,
+                                                 const kernel::Shape& source,
+                                                 const ElementMap& sourceMap, Instance);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

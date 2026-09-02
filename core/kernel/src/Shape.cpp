@@ -139,27 +139,56 @@ Result<void> Shape::validate() const {
     });
 }
 
+/// Why these two report failure as NaN rather than as zero.
+///
+/// Both return a plain value, not a `Result` -- they are called in comparisons and in log lines all
+/// over the codebase, and threading a Result through every one of those would cost more than it
+/// bought. But the OCCT calls beneath them can throw, and nothing above catches: no shell installs
+/// a top-level handler, so an exception here ends the process rather than the operation.
+///
+/// So they are guarded, and a failure has to be represented in the return value. Zero is the wrong
+/// choice and it is the tempting one: zero volume is what a FACE legitimately measures, and zero
+/// area is what a degenerate edge measures, so a zero would be indistinguishable from a real answer
+/// and would quietly pass `volume() > 0` style checks as a plain "no".
+///
+/// NaN cannot be mistaken for a measurement, and every comparison against it is false -- so a
+/// caller asking `volume() > 0.0` gets "no" from a failure exactly as it does from an empty shape,
+/// while a caller comparing two measurements never sees a failed one match anything, including
+/// itself. That is the honest reading of "we could not measure this".
+namespace {
+constexpr double kUnmeasurable = std::numeric_limits<double>::quiet_NaN();
+}  // namespace
+
 Shape::Measure Shape::measure() const {
     if (isNull()) return {};
-    if (impl_->shape.ShapeType() == TopAbs_VERTEX) {
-        const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(impl_->shape));
-        return {0.0, p.X(), p.Y(), p.Z()};
+    const auto measured = guard("measure a shape", [&] {
+        if (impl_->shape.ShapeType() == TopAbs_VERTEX) {
+            const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(impl_->shape));
+            return Measure{0.0, p.X(), p.Y(), p.Z()};
+        }
+        GProp_GProps props;
+        if (impl_->shape.ShapeType() == TopAbs_EDGE) {
+            BRepGProp::LinearProperties(impl_->shape, props);
+        } else {
+            BRepGProp::SurfaceProperties(impl_->shape, props);
+        }
+        const gp_Pnt c = props.CentreOfMass();
+        return Measure{props.Mass(), c.X(), c.Y(), c.Z()};
+    });
+    if (!measured) {
+        return Measure{kUnmeasurable, kUnmeasurable, kUnmeasurable, kUnmeasurable};
     }
-    GProp_GProps props;
-    if (impl_->shape.ShapeType() == TopAbs_EDGE) {
-        BRepGProp::LinearProperties(impl_->shape, props);
-    } else {
-        BRepGProp::SurfaceProperties(impl_->shape, props);
-    }
-    const gp_Pnt c = props.CentreOfMass();
-    return {props.Mass(), c.X(), c.Y(), c.Z()};
+    return measured.value();
 }
 
 double Shape::volume() const {
     if (isNull()) return 0.0;
-    GProp_GProps props;
-    BRepGProp::VolumeProperties(impl_->shape, props);
-    return props.Mass();
+    const auto measured = guard("measure a shape's volume", [&] {
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(impl_->shape, props);
+        return props.Mass();
+    });
+    return measured ? measured.value() : kUnmeasurable;
 }
 
 Operation::Operation() : impl_(std::make_unique<Impl>()) {}

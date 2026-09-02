@@ -151,7 +151,7 @@ NamingContext::NamingContext(std::uint32_t featureSerial, std::uint16_t opTag)
 
 NamingContext::~NamingContext() = default;
 
-kernel::Result<ElementMap> NamingContext::nameprimitive(
+kernel::Result<ElementMap> NamingContext::nameprimitiveUnguarded(
     const kernel::Shape& result, const std::vector<kernel::Shape>& taggedFaces, Naming naming) {
     if (result.isNull()) {
         return kernel::Error{kernel::ErrorCode::InvalidInput, "Cannot name an empty shape."};
@@ -319,7 +319,7 @@ kernel::Result<ElementMap> NamingContext::nameprimitive(
     return map;
 }
 
-kernel::Result<ElementMap> NamingContext::propagate(
+kernel::Result<ElementMap> NamingContext::propagateUnguarded(
     const kernel::Operation& op,
     const std::vector<const kernel::Shape*>& inputs,
     const std::vector<const ElementMap*>& inputMaps) {
@@ -522,14 +522,14 @@ kernel::Result<ElementMap> NamingContext::propagate(
     return out;
 }
 
-kernel::Result<ElementMap> NamingContext::nameCopy(const kernel::Operation& op,
-                                                   const kernel::Shape& source,
-                                                   const ElementMap& sourceMap,
-                                                   NamingContext::Instance instance) {
+kernel::Result<ElementMap> NamingContext::nameCopyUnguarded(const kernel::Operation& op,
+                                                           const kernel::Shape& source,
+                                                           const ElementMap& sourceMap,
+                                                           NamingContext::Instance instance) {
     // Propagate first, which puts the SOURCE's names onto the copy's elements. That is the wrong
     // answer on its own -- it is what makes a copy indistinguishable from its source -- but it is
     // the correct correspondence, and correspondence is what the stamping below needs.
-    auto moved = propagate(op, {&source}, {&sourceMap});
+    auto moved = propagateUnguarded(op, {&source}, {&sourceMap});
     if (!moved) return moved.error();
 
     NameStep step;
@@ -585,6 +585,45 @@ kernel::Result<ElementMap> NamingContext::nameCopy(const kernel::Operation& op,
                                  + ambiguous.front().toString()};
     }
     return out;
+}
+
+// The guarded entry points.
+//
+// `guard` wraps whatever the lambda returns, so a lambda returning Result<ElementMap> yields
+// Result<Result<ElementMap>>. Flattened explicitly, the same way `planeOf` does it, because the
+// inner failures are OURS -- a lost name, a collision -- and must keep their own messages rather
+// than being reported as an OCCT exception.
+
+kernel::Result<ElementMap> NamingContext::nameprimitive(
+    const kernel::Shape& result, const std::vector<kernel::Shape>& taggedFaces, Naming naming) {
+    auto guarded = kernel::guard("name a primitive's faces", [&]() -> kernel::Result<ElementMap> {
+        return nameprimitiveUnguarded(result, taggedFaces, naming);
+    });
+    if (!guarded) return guarded.error();
+    return guarded.value();
+}
+
+kernel::Result<ElementMap> NamingContext::propagate(
+    const kernel::Operation& op,
+    const std::vector<const kernel::Shape*>& inputs,
+    const std::vector<const ElementMap*>& inputMaps) {
+    auto guarded = kernel::guard("carry names through the operation",
+                                 [&]() -> kernel::Result<ElementMap> {
+                                     return propagateUnguarded(op, inputs, inputMaps);
+                                 });
+    if (!guarded) return guarded.error();
+    return guarded.value();
+}
+
+kernel::Result<ElementMap> NamingContext::nameCopy(const kernel::Operation& op,
+                                                   const kernel::Shape& source,
+                                                   const ElementMap& sourceMap,
+                                                   NamingContext::Instance instance) {
+    auto guarded = kernel::guard("name a copy", [&]() -> kernel::Result<ElementMap> {
+        return nameCopyUnguarded(op, source, sourceMap, instance);
+    });
+    if (!guarded) return guarded.error();
+    return guarded.value();
 }
 
 }  // namespace cad::naming
