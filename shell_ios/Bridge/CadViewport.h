@@ -65,6 +65,50 @@ NS_ASSUME_NONNULL_BEGIN
 /// prove the rail is showing real commands rather than a hard-coded list.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)commands;
 
+#pragma mark - A command in progress
+//
+// `runCommand:` invokes with the feature's DIRECT-INVOKE defaults and was, until now, the only way
+// across this bridge. That made every parameterised command un-configurable on the iPad by
+// construction: a Hole was always 8 x 10 mm, and no amount of tapping could change it. The desktop
+// had exactly this bug and it was fixed in a5501d6 -- the button lit up, the panel refused, and the
+// shell fell back to the hard-coded numbers.
+//
+// A parameterised command is STARTED, edited, then committed or abandoned. That state lives in
+// `app/` because both shells need it and because committing is a document edit; these five methods
+// are the whole of it, marshalled the same way `commands` and `dimensionLabels` are.
+
+/// Starts a parameterised command. NO when the command has no fields to fill, in which case the
+/// caller should `runCommand:` instead -- that is not a failure, it is a primitive with nothing to
+/// ask. Also NO when the selection is wrong for it, with the reason on the status line.
+- (BOOL)beginCommand:(NSString *)commandId;
+
+/// The id of the command being edited, or an empty string when none is.
+@property(nonatomic, readonly, copy) NSString *activeCommand;
+
+/// The fields the active command is asking for: `name`, `label`, `kind`, `value`.
+///
+/// `kind` is one of length, angle, real, integer, text, bool -- enough for the shell to choose a
+/// keyboard and a control without knowing what feature it is editing. `value` is already formatted
+/// in the user's display units, because the one place that knows about units is below this bridge.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)commandParameters;
+
+/// Text in, as everywhere else in this shell. NO when the text will not parse, leaving the previous
+/// value intact so a half-typed entry cannot destroy a good one.
+- (BOOL)setCommandParameter:(NSString *)name to:(NSString *)text;
+
+/// Applies the command and clears the panel. NO if it could not run.
+- (BOOL)commitCommand;
+
+/// Abandons it, changing nothing.
+- (void)cancelCommand;
+
+/// What the current selection measures: `label` and `value`, both ready to show.
+///
+/// Formatted below the bridge for the same reason the parameters are: the units, the precision and
+/// the choice of which rows a vertex has are model rules, not iPad rules, and a shell that
+/// re-derived them would eventually disagree with the desktop about what a face's area is.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)measurement;
+
 /// One row per model-tree item: `label`, `kind`, `state`.
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)tree;
 

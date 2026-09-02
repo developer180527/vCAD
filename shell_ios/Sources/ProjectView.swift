@@ -61,6 +61,14 @@ struct ProjectView: View {
     @State private var sketchTool = "line"
     /// The dimension being typed into, and its text. Nil when none is open.
     @State private var dimensionText: String?
+    /// The fields of a parameterised command that is open, empty when none is.
+    ///
+    /// Mirrored into Swift rather than read from the bridge on every redraw: SwiftUI evaluates a
+    /// body whenever it likes, and a TextField bound to a value that is re-fetched mid-edit loses
+    /// what is being typed into it.
+    @State private var commandFields: [[String: String]] = []
+    /// Field name to the text currently in its box, before it has been accepted.
+    @State private var commandEdits: [String: String] = [:]
     /// Which constraints the current sketch selection can take, from the model.
     @State private var constraints: [String] = []
     /// Dimension labels, placed by the model in view points.
@@ -144,6 +152,14 @@ struct ProjectView: View {
                 VStack {
                     Spacer()
                     dimensionField(text)
+                    Spacer()
+                }
+            }
+
+            if !commandFields.isEmpty {
+                VStack {
+                    Spacer()
+                    commandPanel()
                     Spacer()
                 }
             }
@@ -410,7 +426,19 @@ struct ProjectView: View {
             title, symbol,
             action: on
                 ? {
-                    viewport?.runCommand(id)
+                    // A parameterised command is STARTED, not invoked. `beginCommand` says which
+                    // kind this is: false means the feature declares no fields -- a primitive with
+                    // nothing to ask -- and then a direct invoke is the whole interaction.
+                    //
+                    // Before this the iPad only had the second path, so every command took its
+                    // hard-coded default and a Hole was always 8 x 10 mm. That is the desktop bug
+                    // a5501d6 fixed; the iPad had it by construction because the bridge exposed no
+                    // other way across.
+                    if viewport?.beginCommand(id) == true {
+                        openCommandPanel()
+                    } else {
+                        viewport?.runCommand(id)
+                    }
                     refreshCommandState()
                 } : nil)
     }
@@ -444,6 +472,89 @@ struct ProjectView: View {
         .padding(10)
         .background(Palette.chrome, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    /// Reads the fields the shared layer is asking for, once, when a command opens.
+    private func openCommandPanel() {
+        commandFields = viewport?.commandParameters() ?? []
+        commandEdits = [:]
+        for field in commandFields {
+            if let name = field["name"] { commandEdits[name] = field["value"] ?? "" }
+        }
+    }
+
+    private func closeCommandPanel() {
+        commandFields = []
+        commandEdits = [:]
+    }
+
+    /// The fields of the command in progress.
+    ///
+    /// Every label, every default and the ORDER come from the feature's own declaration through the
+    /// bridge -- nothing here knows what a Hole is. That is what stops this panel drifting from the
+    /// desktop's the way the enable predicates once did: there is one statement of what a feature
+    /// needs, and both shells render it.
+    private func commandPanel() -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(commandFields, id: \.self) { field in
+                let name = field["name"] ?? ""
+                HStack(spacing: 8) {
+                    Text(field["label"] ?? name)
+                        .foregroundStyle(Palette.secondaryText)
+                        .frame(width: 90, alignment: .leading)
+                    TextField(
+                        "Value",
+                        text: Binding(
+                            get: { commandEdits[name] ?? "" },
+                            set: { commandEdits[name] = $0 })
+                    )
+                    // A count is whole; everything else can carry a decimal, a unit suffix, or a
+                    // parameter name, so the plain keyboard is the only one that can type them.
+                    .keyboardType(field["kind"] == "integer" ? .numberPad : .default)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 150)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button("Create") { commitCommandPanel() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Palette.accent)
+                Button("Cancel") {
+                    viewport?.cancelCommand()
+                    closeCommandPanel()
+                    refreshCommandState()
+                }
+                .tint(Palette.secondaryText)
+            }
+        }
+        .padding(12)
+        .background(Palette.chrome, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.hairline, lineWidth: 1))
+    }
+
+    private func commitCommandPanel() {
+        // Every field pushed down BEFORE committing, and a refusal stops the commit.
+        //
+        // Left open with the text intact when one will not parse, like the dimension field: a typo
+        // is corrected rather than retyped, and the shared layer has already said what was wrong.
+        // Committing anyway would build the feature from the last value that DID parse, which is a
+        // shape the user did not ask for and did not see refused.
+        for field in commandFields {
+            guard let name = field["name"] else { continue }
+            let text = commandEdits[name] ?? ""
+            if viewport?.setCommandParameter(name, to: text) != true {
+                showStatus("\(field["label"] ?? name): that is not a value.")
+                return
+            }
+        }
+
+        if viewport?.commitCommand() == true {
+            closeCommandPanel()
+        } else {
+            showStatus("That command could not run.")
+        }
+        refreshCommandState()
     }
 
     private func applyDimension() {

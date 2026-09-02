@@ -1006,6 +1006,95 @@ NSString *constraintName(cad::sketch::ConstraintKind kind) {
     return out;
 }
 
+#pragma mark - A command in progress
+
+namespace {
+
+/// The wire name for a parameter's kind.
+///
+/// A string rather than an integer, because the consumer is Swift across an Objective-C dictionary
+/// and a number there is a magic constant nobody can read at the call site. Kept in one place so
+/// the two shells cannot come to disagree about what "angle" means.
+NSString *kindName(cad::app::CommandParameter::Kind kind) {
+    using Kind = cad::app::CommandParameter::Kind;
+    switch (kind) {
+        case Kind::Length:  return @"length";
+        case Kind::Angle:   return @"angle";
+        case Kind::Real:    return @"real";
+        case Kind::Integer: return @"integer";
+        case Kind::Bool:    return @"bool";
+        case Kind::Text:    break;
+    }
+    return @"text";
+}
+
+}   // namespace
+
+- (BOOL)beginCommand:(NSString *)commandId {
+    if (_controller == nullptr) return NO;
+    return _controller->beginCommand(std::string(commandId.UTF8String)) ? YES : NO;
+}
+
+- (NSString *)activeCommand {
+    if (_controller == nullptr) return @"";
+    return [NSString stringWithUTF8String:_controller->activeCommand().c_str()];
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)commandParameters {
+    if (_controller == nullptr) return @[];
+    NSMutableArray *out = [NSMutableArray array];
+    for (const auto &p : _controller->commandParameters()) {
+        [out addObject:@{
+            @"name" : [NSString stringWithUTF8String:p.name.c_str()],
+            @"label" : [NSString stringWithUTF8String:p.label.c_str()],
+            @"kind" : kindName(p.kind),
+            @"value" : [NSString stringWithUTF8String:p.value.c_str()],
+        }];
+    }
+    return out;
+}
+
+- (BOOL)setCommandParameter:(NSString *)name to:(NSString *)text {
+    if (_controller == nullptr) return NO;
+    return _controller->setCommandParameter(std::string(name.UTF8String),
+                                            std::string(text.UTF8String))
+               ? YES
+               : NO;
+}
+
+- (BOOL)commitCommand {
+    if (_controller == nullptr) return NO;
+
+    // The same first-body framing runCommand: does, and for the same reason: fitView on an empty
+    // document has nothing to frame, so a first box created through the PANEL rather than through
+    // a direct invoke would be drawn somewhere off screen. Only on the first body -- re-framing
+    // after every commit would yank the view out from under someone mid-edit.
+    const bool wasEmpty = _controller->stats().objects == 0;
+    const bool ok = _controller->commitCommand();
+    _controller->refresh();
+    if (wasEmpty && _controller->stats().objects > 0) _controller->fitView();
+    _dirty = YES;
+    return ok ? YES : NO;
+}
+
+- (void)cancelCommand {
+    if (_controller == nullptr) return;
+    _controller->cancelCommand();
+    _dirty = YES;
+}
+
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)measurement {
+    if (_controller == nullptr) return @[];
+    NSMutableArray *out = [NSMutableArray array];
+    for (const auto &row : _controller->measureSelection()) {
+        [out addObject:@{
+            @"label" : [NSString stringWithUTF8String:row.label.c_str()],
+            @"value" : [NSString stringWithUTF8String:row.value.c_str()],
+        }];
+    }
+    return out;
+}
+
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)tree {
     if (_controller == nullptr) return @[];
     NSMutableArray *out = [NSMutableArray array];
