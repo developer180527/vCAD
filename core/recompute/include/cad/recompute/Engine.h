@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cad/document/Document.h"
+#include "cad/recompute/FeatureInputs.h"
 #include "cad/kernel/Result.h"
 
 #include <functional>
@@ -59,6 +60,11 @@ struct FeatureType {
     /// Optional. Null means "this feature reads nothing outside the document", which is the
     /// correct answer for every purely parametric feature.
     ExternalInputsFn externalInputs;
+
+    /// What the feature needs before it can run: which selection, and which values. See
+    /// FeatureInputs.h for why this belongs to the FEATURE rather than to the four places that
+    /// used to work it out separately and drift apart.
+    FeatureInputs inputs;
 };
 
 /// Registry of feature types. Plugins add to this; nothing else knows what a "Pad" is.

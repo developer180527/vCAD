@@ -166,6 +166,19 @@ public:
     /// expression, so that changing what it refers to moves this too.
     bool setProperty(document::ObjectId, const std::string& name, const std::string& text);
 
+    /// Whether the current selection satisfies a feature's declared inputs.
+    ///
+    /// One question, asked in one place, by everything that needs the answer: whether the button
+    /// lights up, whether the panel opens, and what the refusal says. Four separate answers to it
+    /// is what left Hole and Revolve unreachable -- see recompute/FeatureInputs.h.
+    ///
+    /// Returns the feature's own prompt when nothing acceptable is selected, and an empty string
+    /// when the selection is fine.
+    [[nodiscard]] std::string selectionShortfall(const std::string& featureType) const;
+
+    /// The feature type a command creates, or empty when it creates none.
+    [[nodiscard]] static std::string featureTypeOf(const std::string& commandId);
+
     // ── named parameters ──────────────────────────────────────────────────────────────────
 
     struct ParameterRow {
@@ -1167,8 +1180,6 @@ private:
     /// `beginCommand` tested the selection LEVEL, so with Auto — the default — the button lit up
     /// and the parameter panel refused, and the shell quietly fell back to invoking the command
     /// with its hard-coded defaults. A button that is offered has to be a button that works.
-    [[nodiscard]] bool canDrillHole() const;
-    [[nodiscard]] bool canRevolveSelection() const;
 
     /// Drills a hole into the selected FACE, perpendicular to it and at its centre.
     ///

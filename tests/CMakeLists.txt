@@ -83,6 +83,7 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/serial_ledger.cpp
                                  acceptance/naming_scheme_version.cpp
                                  acceptance/mesh_import.cpp
+                                 acceptance/feature_inputs.cpp
                                  acceptance/transform_rotate_mirror.cpp
                                  acceptance/mirror_copy.cpp
                                  acceptance/docs_claims.cpp

@@ -26,89 +26,129 @@
 #include <tuple>
 
 #include <algorithm>
+#include <unordered_map>
 #include <chrono>
 
 namespace cad::app {
 
-bool Controller::canDrillHole() const {
-    // By what is SELECTED, never by the selection level. The level says what a click resolves to;
-    // it does not describe what is already selected, and in Auto it is neither Face nor Edge.
-    return context().selectedFaces == 1;
+/// The feature type a command id creates, or empty for a command that creates no feature.
+///
+/// The one place the two vocabularies meet. Commands are named for what the USER does
+/// ("feature.hole"); features are named for what they ARE ("Hole"), because that name is written
+/// into saved documents and cannot follow a menu rename.
+std::string Controller::featureTypeOf(const std::string& commandId) {
+    static const std::unordered_map<std::string, std::string> kTypes{
+        {"feature.box", "Box"},         {"feature.cylinder", "Cylinder"},
+        {"feature.extrude", "Extrude"}, {"feature.revolve", "Revolve"},
+        {"feature.hole", "Hole"},       {"feature.translate", "Translate"},
+        {"feature.fillet", "Fillet"},   {"feature.chamfer", "Chamfer"},
+        {"feature.cut", "Cut"},         {"feature.fuse", "Fuse"},
+        {"feature.common", "Common"},
+    };
+    const auto found = kTypes.find(commandId);
+    return found == kTypes.end() ? std::string{} : found->second;
 }
 
-bool Controller::canRevolveSelection() const {
-    if (context().selectedEdges != 1) return false;
-    // And it must be an edge OF A SKETCH: computeRevolve resolves the axis in the profile's own
-    // element map, so an edge of some other body names nothing there.
-    const auto owner = history_.current().find(selectionByKind().edges.front().object);
-    return owner && owner->type() == "Sketch";
+std::string Controller::selectionShortfall(const std::string& featureType) const {
+    const recompute::FeatureType* type = registry_.find(featureType);
+    if (type == nullptr) return "That feature is not installed.";
+    const auto& inputs = type->inputs;
+    if (inputs.accepts.empty()) return {};   // a primitive needs nothing selected
+
+    const auto selected = selectionByKind();
+    const auto ownerOf = [this](document::ObjectId id) -> std::string {
+        const auto object = history_.current().find(id);
+        return object ? object->type() : std::string{};
+    };
+
+    // Counted by WHAT IS SELECTED, never by the selection level. The level says what a click
+    // resolves to; it does not describe what is already selected, and under Auto it is neither
+    // Face nor Edge. That confusion is what made Hole and Revolve impossible to invoke.
+    const auto satisfies = [&](const recompute::FeatureInputs::Requirement& need) {
+        using Of = recompute::FeatureInputs::Requirement::Of;
+        std::size_t count = 0;
+        bool ownersMatch = true;
+
+        const auto tally = [&](const auto& picks) {
+            count = picks.size();
+            for (const auto& pick : picks) {
+                if (!need.ownerType.empty() && ownerOf(pick.object) != need.ownerType) {
+                    ownersMatch = false;
+                }
+            }
+        };
+        switch (need.of) {
+            case Of::Face:   tally(selected.faces); break;
+            case Of::Edge:   tally(selected.edges); break;
+            case Of::Vertex: tally(selected.vertices); break;
+            case Of::Object:
+                count = selection_.size();
+                for (const auto& id : selection_) {
+                    if (!need.ownerType.empty() && ownerOf(id) != need.ownerType) {
+                        ownersMatch = false;
+                    }
+                }
+                break;
+        }
+        if (!ownersMatch || count < need.least) return false;
+        return need.most == 0 || count <= need.most;
+    };
+
+    for (const auto& need : inputs.accepts) {
+        if (satisfies(need)) return {};
+    }
+    return inputs.prompt.empty() ? "That is not the right selection for this." : inputs.prompt;
 }
 
 bool Controller::beginCommand(const std::string& id) {
-    // The parameter set per command. A table rather than a virtual per-command class: there will be
-    // dozens of commands and almost all of them are two or three numbers, so a class each would be
-    // ceremony without benefit. A command that needs more than this gets its own panel later.
+    // Built from the FEATURE'S OWN DECLARATION, not from a table here. The table this replaces
+    // listed each feature's selection rule, its refusal message and its fields -- all of which the
+    // feature also stated elsewhere, and all of which drifted. See recompute/FeatureInputs.h.
     commandParameters_.clear();
-    if (id == "feature.extrude") {
-        if (selection_.size() != 1) {
-            status("Select a sketch to extrude.");
-            return false;
+
+    const std::string type = featureTypeOf(id);
+    const recompute::FeatureType* feature = type.empty() ? nullptr : registry_.find(type);
+    if (feature == nullptr || feature->inputs.values.empty()) {
+        return false;   // no values to type: the shell invokes it directly, as before
+    }
+
+    if (const auto shortfall = selectionShortfall(type); !shortfall.empty()) {
+        status(shortfall);
+        return false;
+    }
+
+    for (const auto& value : feature->inputs.values) {
+        CommandParameter parameter;
+        parameter.name = value.name;
+        parameter.label = value.label;
+        using Kind = recompute::FeatureInputs::Value::Kind;
+        switch (value.kind) {
+            case Kind::Angle:
+                parameter.kind = CommandParameter::Kind::Angle;
+                parameter.value = units::format(units::Angle::fromBase(value.base));
+                break;
+            case Kind::Count:
+                parameter.kind = CommandParameter::Kind::Integer;
+                parameter.value = std::to_string(static_cast<long long>(value.base));
+                break;
+            case Kind::Number:
+                parameter.kind = CommandParameter::Kind::Real;
+                parameter.value = document::toString(document::PropertyValue{value.base});
+                break;
+            case Kind::Bool:
+                parameter.kind = CommandParameter::Kind::Bool;
+                parameter.value = value.base != 0.0 ? "true" : "false";
+                break;
+            case Kind::Length:
+            default:
+                parameter.kind = CommandParameter::Kind::Length;
+                // Shown in the user's units. The declaration holds base units precisely so that a
+                // preference cannot change what the feature means, only how it is displayed.
+                parameter.value =
+                    units::format(units::Length::fromBase(value.base), preferences_.displayUnits);
+                break;
         }
-        commandParameters_.push_back(
-            {"distance", "Distance", CommandParameter::Kind::Length,
-             units::format(units::millimetres(10.0), preferences_.displayUnits)});
-    } else if (id == "feature.box") {
-        for (const auto& [name, label, mm] : {std::tuple{"dx", "Length", 100.0},
-                                              std::tuple{"dy", "Width", 60.0},
-                                              std::tuple{"dz", "Height", 40.0}}) {
-            commandParameters_.push_back(
-                {name, label, CommandParameter::Kind::Length,
-                 units::format(units::millimetres(mm), preferences_.displayUnits)});
-        }
-    } else if (id == "feature.revolve") {
-        if (!canRevolveSelection()) {
-            status("Select one straight edge of a sketch to revolve it about.");
-            return false;
-        }
-        // A full turn, which is what a revolve usually is — and what computeRevolve defaults to
-        // when no angle is stored, so the panel and the compute agree on the same answer.
-        commandParameters_.push_back({"angle", "Angle", CommandParameter::Kind::Angle,
-                                      units::format(units::Angle::fromBase(2.0 * std::numbers::pi))});
-    } else if (id == "feature.translate") {
-        if (selection_.size() != 1) {
-            status("Select one body to move.");
-            return false;
-        }
-        // Zero, not a guess. A move is a vector the user has in mind; defaulting to something
-        // non-zero would move the part the moment the panel opened.
-        for (const auto& [name, label] : {std::pair{"dx", "X"}, std::pair{"dy", "Y"},
-                                          std::pair{"dz", "Z"}}) {
-            commandParameters_.push_back(
-                {name, label, CommandParameter::Kind::Length,
-                 units::format(units::millimetres(0.0), preferences_.displayUnits)});
-        }
-    } else if (id == "feature.hole") {
-        if (!canDrillHole()) {
-            status("Select one flat face to put the hole in.");
-            return false;
-        }
-        // 8 mm and 10 mm: an ordinary clearance hole rather than a round number that fits nothing.
-        // The depth is what a user changes most, so it is second and therefore focused after a Tab.
-        for (const auto& [name, label, mm] : {std::tuple{"diameter", "Diameter", 8.0},
-                                              std::tuple{"depth", "Depth", 10.0}}) {
-            commandParameters_.push_back(
-                {name, label, CommandParameter::Kind::Length,
-                 units::format(units::millimetres(mm), preferences_.displayUnits)});
-        }
-    } else if (id == "feature.cylinder") {
-        for (const auto& [name, label, mm] : {std::tuple{"radius", "Radius", 25.0},
-                                              std::tuple{"height", "Height", 80.0}}) {
-            commandParameters_.push_back(
-                {name, label, CommandParameter::Kind::Length,
-                 units::format(units::millimetres(mm), preferences_.displayUnits)});
-        }
-    } else {
-        return false;   // no parameters: the shell invokes it directly, as before
+        commandParameters_.push_back(std::move(parameter));
     }
 
     activeCommand_ = id;
@@ -241,6 +281,13 @@ void Controller::cancelCommand() {
 void Controller::registerCommands() {
     const auto always = [](const CommandContext&) { return true; };
 
+    // Enablement DERIVED from the feature's declared inputs. One rule, read from the feature,
+    // instead of a predicate per command written beside it and drifting from it.
+    const auto needs = [this](const char* commandId) {
+        const std::string type = featureTypeOf(commandId);
+        return [this, type](const CommandContext&) { return selectionShortfall(type).empty(); };
+    };
+
     commands_.push_back({"feature.box", "Box", "Create a rectangular block", "box", always,
                          [this] { addPrimitive("Box", {{"dx", 100}, {"dy", 60}, {"dz", 40}}); }});
     commands_.push_back({"feature.cylinder", "Cylinder", "Create a cylinder", "cylinder", always,
@@ -293,15 +340,7 @@ void Controller::registerCommands() {
                          [this] { beginSketch(); }});
     commands_.push_back({"feature.extrude", "Extrude",
                          "Extrude the selected sketch into a solid", "extrude",
-                         [this](const CommandContext& c) {
-                             // Enabled only for a SKETCH selection. A generic "one thing selected"
-                             // predicate would offer Extrude on a box, which then fails -- and a
-                             // button that lights up and then refuses is worse than a dim one.
-                             if (c.selectedObjects != 1) return false;
-                             const auto object = history_.current().find(selection_.front());
-                             return object != nullptr && object->type() == "Sketch";
-                         },
-                         [this] { addExtrude(10.0); }});
+                         needs("feature.extrude"), [this] { addExtrude(10.0); }});
 
     commands_.push_back({"feature.cut", "Cut", "Subtract the second selection from the first",
                          "cut", twoSelected, [this] { addBoolean("Cut", "Cut"); }});
@@ -313,13 +352,12 @@ void Controller::registerCommands() {
 
     // Edge features. Enabled on a single selection that HAS edges — asking for a fillet on a
     // feature with no computed output should not offer itself as available.
-    const auto oneWithEdges = [this](const CommandContext& c) {
-        // Either input: picked edges, or a single body whose edges we would take wholesale. A
-        // greyed-out Fillet with three edges selected would read as the selection not counting.
-        //
-        // Asks WHAT IS SELECTED rather than which level the user is in. The level test this
-        // replaced was written when Edge was a mode you switched into, and it silently stopped
-        // being true the day Auto became the default.
+    // Fillet and Chamfer keep a SUPPLEMENTARY predicate on top of the declaration. "Picked edges
+    // or one body" is declared; "and that body must actually have edges" is a question about
+    // geometry rather than about the selection, and inventing a way to declare it would be a
+    // larger thing to get wrong than this exception is.
+    const auto oneWithEdges = [this, needs](const CommandContext& c) {
+        if (!needs("feature.fillet")(c)) return false;
         if (c.selectedEdges > 0) return true;
         return c.selectedObjects == 1 && !edgesOf(selection_.front()).empty();
     };
@@ -337,19 +375,19 @@ void Controller::registerCommands() {
     // nothing added it here and both shells build their tools from this catalogue. That is the
     // cheapest kind of gap there is, and Hole is the most-used feature in mechanical CAD.
     commands_.push_back({"feature.hole", "Hole", "Drill a hole into the selected face", "hole",
-                         [this](const CommandContext&) { return canDrillHole(); },
+                         needs("feature.hole"),
                          [this] { addHole(8.0, 10.0); }});
 
     // Revolve. Enabled on one EDGE, which identifies the axis and the profile together: the axis is
     // resolved in the profile's own element map, so it must be an edge of the sketch being revolved.
     commands_.push_back({"feature.revolve", "Revolve",
                          "Turn the selected sketch about one of its edges", "revolve",
-                         [this](const CommandContext&) { return canRevolveSelection(); },
+                         needs("feature.revolve"),
                          [this] { addRevolve(360.0); }});
 
     // Move. One body, and a vector the user types.
     commands_.push_back({"feature.translate", "Move", "Move the selected body", "move",
-                         [](const CommandContext& c) { return c.selectedObjects == 1; },
+                         needs("feature.translate"),
                          [this] { addTranslate(10.0, 0.0, 0.0); }});
 
     commands_.push_back({"edit.delete", "Delete", "Delete the selected features", "delete",

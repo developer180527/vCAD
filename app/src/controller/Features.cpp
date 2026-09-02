@@ -144,11 +144,14 @@ void Controller::addRevolve(double degrees) {
     // `computeRevolve` resolves the axis name in the PROFILE's own element map, so the axis has to
     // be an edge of the sketch being revolved -- not of some other body. Selecting the edge
     // therefore identifies both inputs at once, and there is nothing left to guess.
-    const auto selected = selectionByKind();
-    if (selected.edges.size() != 1) {
-        status("Select one straight edge of a sketch to revolve it about.");
+    // Asked of the FEATURE'S declaration, so this guard and the button's enablement cannot come to
+    // disagree -- which is exactly how Revolve became impossible to invoke while computing
+    // correctly. The message comes from there too, so there is one wording to keep right.
+    if (const auto shortfall = selectionShortfall("Revolve"); !shortfall.empty()) {
+        status(shortfall);
         return;
     }
+    const auto selected = selectionByKind();
     const ElementSelection picked = selected.edges.front();
 
     const auto object = history_.current().find(picked.object);
@@ -246,11 +249,11 @@ void Controller::addHole(double diameterMm, double depthMm) {
     // A FACE, singular. The feature drills perpendicular to one flat face at its centre, so "which
     // face" is the whole input and two of them is two holes -- which is a reasonable thing to want
     // and not a reasonable thing to guess.
-    const auto selected = selectionByKind();
-    if (selected.faces.size() != 1) {
-        status("Select one flat face to put the hole in.");
+    if (const auto shortfall = selectionShortfall("Hole"); !shortfall.empty()) {
+        status(shortfall);
         return;
     }
+    const auto selected = selectionByKind();
     const ElementSelection picked = selected.faces.front();
 
     // Refused HERE, before a feature exists, rather than by the compute.

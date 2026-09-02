@@ -1,5 +1,8 @@
 #include "cad/features/Builtins.h"
 
+#include <numbers>
+#include <tuple>
+
 #include "cad/kernel/Booleans.h"
 #include "cad/kernel/Shape.h"
 #include "cad/naming/ElementName.h"
@@ -613,20 +616,71 @@ bool resolveSketchFrame(const document::Document& doc, document::ObjectId sketch
 
 recompute::FeatureRegistry builtins() {
     using namespace cad::recompute;
+    using Of = FeatureInputs::Requirement::Of;
+    using Kind = FeatureInputs::Value::Kind;
+
+    // Every requirement and every default, in ONE place per feature. The command's enablement, its
+    // panel, its refusal message and the property names it stores are all read from here -- see
+    // FeatureInputs.h for the four-way drift this replaces.
+    const auto lengths = [](std::initializer_list<std::tuple<const char*, const char*, double>> v) {
+        std::vector<FeatureInputs::Value> out;
+        for (const auto& [name, label, mm] : v) out.push_back({name, label, Kind::Length, mm});
+        return out;
+    };
+
     FeatureRegistry r;
-    r.add({"Box", 1, computeBox});
-    r.add({"Cylinder", 1, computeCylinder});
-    r.add({"Fillet", 1, computeFillet});
-    r.add({"Chamfer", 1, computeChamfer});
-    r.add({"Cut", 1, computeBoolean<&kernel::booleanCut>});
-    r.add({"Fuse", 1, computeBoolean<&kernel::booleanFuse>});
-    r.add({"Common", 1, computeBoolean<&kernel::booleanCommon>});
+    r.add({"Box", 1, computeBox, nullptr,
+           // No selection: a primitive is the one kind of feature that needs nothing to exist.
+           {{}, {}, lengths({{"dx", "Length", 100.0}, {"dy", "Width", 60.0},
+                             {"dz", "Height", 40.0}})}});
+    r.add({"Cylinder", 1, computeCylinder, nullptr,
+           {{}, {}, lengths({{"radius", "Radius", 25.0}, {"height", "Height", 80.0}})}});
+    r.add({"Fillet", 1, computeFillet, nullptr,
+           // Picked edges, or a whole body whose edges we take wholesale. The body alternative
+           // additionally needs the body to HAVE edges, which is a question about geometry rather
+           // than about the selection -- so Fillet keeps a supplementary predicate for that half.
+           {{{Of::Edge, 1, 0, ""}, {Of::Object, 1, 1, ""}},
+            "Select edges, or one body to round every edge of.",
+            lengths({{"radius", "Radius", 5.0}})}});
+    r.add({"Chamfer", 1, computeChamfer, nullptr,
+           {{{Of::Edge, 1, 0, ""}, {Of::Object, 1, 1, ""}},
+            "Select edges, or one body to bevel every edge of.",
+            lengths({{"distance", "Distance", 3.0}})}});
+    r.add({"Cut", 1, computeBoolean<&kernel::booleanCut>, nullptr,
+           {{{Of::Object, 2, 2, ""}}, "Select two bodies.", {}}});
+    r.add({"Fuse", 1, computeBoolean<&kernel::booleanFuse>, nullptr,
+           {{{Of::Object, 2, 2, ""}}, "Select two bodies.", {}}});
+    r.add({"Common", 1, computeBoolean<&kernel::booleanCommon>, nullptr,
+           {{{Of::Object, 2, 2, ""}}, "Select two bodies.", {}}});
     r.add({"Sketch", 1, computeSketch});
     r.add({"Plane", 1, computePlane});
-    r.add({"Revolve", 1, computeRevolve});
-    r.add({"Hole", 1, computeHole});
-    r.add({"Extrude", 1, computeExtrude});
-    r.add({"Translate", 1, computeTranslate});
+    r.add({"Revolve", 1, computeRevolve, nullptr,
+           // An edge OF A SKETCH. The axis is resolved in the profile's own element map, so an edge
+           // of some other body names nothing there.
+           //
+           // A full turn by default, which is what a revolve usually is -- and what computeRevolve
+           // falls back to when no angle is stored, so the panel and the compute agree.
+           {{{Of::Edge, 1, 1, "Sketch"}},
+            "Select one straight edge of a sketch to revolve it about.",
+            {{"angle", "Angle", Kind::Angle, 2.0 * std::numbers::pi}}}});
+    r.add({"Hole", 1, computeHole, nullptr,
+           // One face is its ENTIRE geometric input: position and direction both come from it, so
+           // there is nothing to pick afterwards and nothing to guess.
+           //
+           // 8 mm and 10 mm: an ordinary clearance hole rather than a round number that fits
+           // nothing. Depth is second because it is what a user changes most, so Tab reaches it.
+           {{{Of::Face, 1, 1, ""}}, "Select one flat face to put the hole in.",
+            lengths({{"diameter", "Diameter", 8.0}, {"depth", "Depth", 10.0}})}});
+    r.add({"Extrude", 1, computeExtrude, nullptr,
+           // A SKETCH, not any object. Offering Extrude on a box lights a button that then refuses,
+           // which is worse than a dim one.
+           {{{Of::Object, 1, 1, "Sketch"}}, "Select a sketch to extrude.",
+            lengths({{"distance", "Distance", 10.0}})}});
+    r.add({"Translate", 1, computeTranslate, nullptr,
+           // Zero, not a guess. A move is a vector the user has in mind; a non-zero default would
+           // move the part the moment the panel opened.
+           {{{Of::Object, 1, 1, ""}}, "Select one body to move.",
+            lengths({{"dx", "X", 0.0}, {"dy", "Y", 0.0}, {"dz", "Z", 0.0}})}});
     // Import is the ONE built-in that reads outside the document, so it is the one that has to
     // declare it. Everything else is a pure function of its properties.
     r.add({"Import", 1, computeImport,
