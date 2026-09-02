@@ -121,74 +121,163 @@ TEST_CASE("a command that offers itself can be invoked", "[reachability]") {
     CHECK(sawEnabled);
 }
 
-// ── the blind spot this guard had ──────────────────────────────────────────────────────
+// ── the blind spot this guard had, and the one it still had after that ─────────────────
 //
 // Everything above walks the FEATURE REGISTRY, so it can only see capabilities that are features.
 // Measure is a Controller query -- it changes nothing, so it has no FeatureType -- and it shipped
 // complete, tested and invisible while this file reported green. That was the fifth capability to
 // do so, and the guard built to stop it structurally could not.
 //
-// So the question widens from "does every feature have a command" to "does every command reach a
-// button". That covers queries, edits, view commands and anything else added later, without
-// needing a list of what kinds exist.
+// So the question widened from "does every feature have a command" to "does every command reach a
+// button". That covers queries, edits, view commands and anything else added later, without needing
+// a list of what kinds exist.
 //
-// Read from the Qt shell's source rather than from a running window: the ribbon is built across
-// several tabs and environments, and a test that instantiated one would be testing Qt. What makes
-// this sound is that both shells build their tools from the same catalogue, so a command missing
-// from the source is missing from the UI.
+// And then it was wrong the same way a second time, one level up. It read the QT shell only, so a
+// command with a desktop button and no iPad button passed clean -- and four had already drifted
+// that way: Hole, Revolve, Move and Measure. The iPad test that does exist,
+// ios_shell_commands.cpp, asks the mirror-image question -- every id the Swift names must exist in
+// the catalogue -- which cannot see a command the Swift never names. Two guards, both green, and
+// the shells drifting apart between them.
+//
+// A guard that checks one of two shells is not a guard against divergence; it is a guard against
+// divergence in one direction. So the scan below runs over BOTH, with its exemptions kept per
+// shell, because the two legitimately reach some things differently.
+//
+// Read from source rather than from a running window: the ribbon is built across several tabs and
+// environments, a SwiftUI view cannot be instantiated here at all, and a test that tried would be
+// testing the toolkit. What makes it sound is that both shells build their tools from the same
+// catalogue, so a command absent from the source is absent from the UI.
+
+#include "Platform.h"
 
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 namespace {
 
-/// Commands with no button, and the reason each is allowed not to have one.
-const std::map<std::string, std::string>& exemptCommands() {
-    static const std::map<std::string, std::string> kExempt{
-        {"sketch.edit",
-         "Reached from the browser's context menu on a sketch, which is where a user looks for it "
-         "-- not from the ribbon."},
+/// One shell, its sources, and the commands it is allowed not to name.
+struct Shell {
+    std::string name;
+    std::vector<std::string> sources;                  ///< repo-relative
+    std::map<std::string, std::string> exemptCommands; ///< id -> why
+};
+
+/// Both shells.
+///
+/// An exemption has to say why a BUTTON IS THE WRONG SHAPE, or -- where it is a real gap -- say
+/// that plainly and name it as one. The distinction matters: the first kind is a decision and stays,
+/// the second is a debt and is meant to leave.
+const std::vector<Shell>& shells() {
+    static const std::vector<Shell> kShells{
+        Shell{"Qt desktop",
+              {"shell_qt/src/MainWindow.cpp"},
+              {{"sketch.edit",
+                "Reached from the browser's context menu on a sketch, which is where a user looks "
+                "for it -- not from the ribbon."}}},
+
+        Shell{"iPad",
+              {"shell_ios/Sources/ProjectView.swift", "shell_ios/Sources/Rail.swift",
+               "shell_ios/Sources/HomeView.swift", "shell_ios/Sources/Settings.swift"},
+              {
+                  // Reached, but not by command id. The iPad drives these through dedicated bridge
+                  // methods because entering a sketch there is a two-step gesture -- pick a plane by
+                  // tapping the model -- rather than one button press. CadViewport.mm:
+                  // startSketch, beginSketchAt:, finishSketch, cancelSketch.
+                  {"feature.sketch", "Bridge method startSketch / beginSketchAt:, not a command id."},
+                  {"sketch.finish", "Bridge method finishSketch."},
+                  {"sketch.cancel", "Bridge method cancelSketch."},
+                  {"view.fit", "Bridge method fitCamera, wired to the Fit item in the view rail."},
+
+                  // KNOWN GAPS. Not decisions -- debts, recorded here so they are visible and
+                  // countable rather than discoverable only by someone diffing two shells by hand.
+                  //
+                  // Wiring the buttons alone would not finish these. The iPad bridge exposes
+                  // runCommand: and nothing else -- no beginCommand, no commandParameters, no
+                  // commitCommand -- so every command there takes its hard-coded direct-invoke
+                  // default. A Hole would always be 8 x 10 mm with no way to change it, which is
+                  // exactly the bug a5501d6 fixed on the desktop. The parameter flow has to cross
+                  // the bridge first; then these four come off the list.
+                  {"feature.hole", "KNOWN GAP: no iPad button, and no parameter flow to configure it."},
+                  {"feature.revolve", "KNOWN GAP: no iPad button, and no parameter flow."},
+                  {"feature.translate", "KNOWN GAP: no iPad button, and no parameter flow."},
+                  {"feature.measure", "KNOWN GAP: no iPad button and no readout surface yet."},
+                  {"sketch.edit", "KNOWN GAP: no browser context menu on the iPad to reach it from."},
+              }},
     };
-    return kExempt;
+    return kShells;
 }
 
-std::string qtShellSource() {
-    const auto path = std::filesystem::path(CAD_REPO_ROOT) / "shell_qt/src/MainWindow.cpp";
-    std::ifstream in(path);
-    REQUIRE(in.good());
+std::string sourceOf(const Shell& shell) {
     std::ostringstream text;
-    text << in.rdbuf();
+    for (const auto& relative : shell.sources) {
+        const auto path = std::filesystem::path(CAD_REPO_ROOT) / relative;
+        std::ifstream in(path);
+        INFO("missing shell source: " << relative);
+        REQUIRE(in.good());
+        text << in.rdbuf() << "\n";
+    }
     return text.str();
 }
 
 }   // namespace
 
-TEST_CASE("every command reaches a button", "[reachability][commands]") {
-    Controller controller;
-    const auto source = qtShellSource();
+TEST_CASE("every command reaches a button in both shells", "[reachability][commands]") {
+    if (!cad::testing::hasRepoFixtures()) {
+        SKIP("the repository sources are not reachable from this build");
+    }
 
-    std::vector<std::string> unreachable;
-    for (const auto& command : controller.commands()) {
-        if (exemptCommands().count(command.id) != 0) continue;
-        // Quoted, so "feature.cut" does not match "feature.cut_something" and a partial name
-        // cannot make an absent command look present.
-        if (source.find('"' + command.id + '"') == std::string::npos) {
-            unreachable.push_back(command.id);
+    Controller controller;
+    REQUIRE(controller.commands().size() >= 15);   // the scan has something to check
+
+    for (const Shell& shell : shells()) {
+        const auto source = sourceOf(shell);
+        // A floor per shell, so a renamed file or a changed rail idiom cannot turn this into a test
+        // that finds nothing and passes. It is the same self-agreeing failure the file is about.
+        REQUIRE(source.size() > 1000);
+
+        std::vector<std::string> unreachable;
+        for (const auto& command : controller.commands()) {
+            if (shell.exemptCommands.count(command.id) != 0) continue;
+            // Quoted, so "feature.cut" does not match "feature.cut_something" and a partial name
+            // cannot make an absent command look present.
+            if (source.find('"' + command.id + '"') == std::string::npos) {
+                unreachable.push_back(command.id);
+            }
+        }
+
+        for (const auto& id : unreachable) {
+            UNSCOPED_INFO("no button in the " << shell.name << " shell for command: " << id);
+        }
+        CHECK(unreachable.empty());
+    }
+}
+
+TEST_CASE("an exemption names a command that exists", "[reachability][commands]") {
+    // The list's own rot. An exemption for a renamed or deleted command silently excuses nothing,
+    // and worse, it keeps excusing the NEW command if the id is ever reused. Since the gaps above
+    // are meant to leave the list, this is what notices when one of them already has.
+    Controller controller;
+
+    for (const Shell& shell : shells()) {
+        for (const auto& [id, why] : shell.exemptCommands) {
+            INFO(shell.name << " exempts '" << id << "', which is not a command any more");
+            CHECK(catalogueHas(controller, id));
+            INFO(shell.name << " exempts '" << id << "' with no reason given");
+            CHECK_FALSE(why.empty());
         }
     }
-
-    for (const auto& id : unreachable) {
-        UNSCOPED_INFO("no button for command: " << id);
-    }
-    CHECK(unreachable.empty());
 }
 
 TEST_CASE("nothing is still marked planned once it exists", "[reachability][commands]") {
     // The other half. A capability can be reachable AND still be advertised as unbuilt, which is
     // how a button ends up next to a placeholder for the same thing. Measure was `planned(...)` in
     // the ribbon while the Controller could already answer.
-    const auto source = qtShellSource();
+    if (!cad::testing::hasRepoFixtures()) {
+        SKIP("the repository sources are not reachable from this build");
+    }
+    const auto source = sourceOf(shells().front());   // the Qt ribbon is what has placeholders
     Controller controller;
 
     for (const auto& command : controller.commands()) {
