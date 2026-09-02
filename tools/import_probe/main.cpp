@@ -22,6 +22,8 @@
 /// Question 3 is where measurement-based naming gets tested for the first time, and it is the
 /// difference between "vCAD imports STEP" and "an engineer can work with a supplier's part".
 
+#include "assetlib/ddc.h"
+
 #include "cad/io/Format.h"
 #include "cad/kernel/Fillet.h"
 #include "cad/kernel/Shape.h"
@@ -57,9 +59,26 @@ struct Result {
     std::string name;
     std::uintmax_t bytes = 0;
 
+    std::string checksum;   ///< BLAKE3 of the bytes: the fixture's identity, not its filename
+    std::string format;
+
     bool read = false;
     double readMs = 0.0;
     std::string readError;
+
+    // RAW versus HEALED, kept apart on purpose.
+    //
+    // importFile reads and then heals, so what the application sees is always post-healing. That
+    // hides the question that matters for interoperability: was the file we were GIVEN valid, or
+    // did our healing quietly launder a defect in someone else's exporter? Measuring only the
+    // healed shape means a translator can degrade for years without anyone noticing.
+    bool rawRead = false;
+    bool rawValid = false;      ///< BRepCheck_Analyzer on the shape as it arrived
+    bool healedValid = false;   ///< …and after healing
+    bool healingChanged = false;
+    int invalidFaces = 0, invalidEdges = 0;
+    bool structuralDefect = false;
+    std::vector<std::string> healingActions;
 
     std::size_t solids = 0, faces = 0, edges = 0, vertices = 0;
 
@@ -104,6 +123,14 @@ bool readAndName(const FormatRegistry& registry, const std::filesystem::path& pa
         return false;
     }
     out.read = true;
+    out.format = imported.value().report.format;
+    const auto& healing = imported.value().report.healing;
+    out.healedValid = healing.isValidNow;
+    out.healingChanged = healing.changed;
+    out.invalidFaces = healing.invalidFaces;
+    out.invalidEdges = healing.invalidEdges;
+    out.structuralDefect = healing.structuralDefect;
+    out.healingActions = healing.actions;
     shape = imported.value().shape;
 
     out.solids = shape.subShapes(cad::kernel::ShapeType::Solid).size();
@@ -149,16 +176,31 @@ bool readAndName(const FormatRegistry& registry, const std::filesystem::path& pa
     return true;
 }
 
+/// Reads WITHOUT healing and asks OCCT whether the file's own geometry is sound.
+///
+/// A separate read rather than a flag on the first one, because the healed shape is what the
+/// application actually uses and must be measured as it will be used. This is the control.
+void probeRaw(const FormatRegistry& registry, const std::filesystem::path& path, Result& out) {
+    cad::io::ImportOptions options;
+    options.heal = false;
+    auto raw = cad::io::importFile(registry, path.string(), options);
+    if (!raw) return;
+    out.rawRead = true;
+    out.rawValid = raw.value().shape.validate().ok();
+}
+
 Result probe(const FormatRegistry& registry, const std::filesystem::path& path,
              const Options& options) {
     Result out;
     out.name = path.filename().string();
     std::error_code ignored;
     out.bytes = std::filesystem::file_size(path, ignored);
+    out.checksum = assetlib::blake3File(path);
 
     cad::kernel::Shape shape;
     cad::naming::ElementMap map;
     if (!readAndName(registry, path, options, shape, map, out)) return out;
+    probeRaw(registry, path, out);
 
     // 2a. STABILITY. Read the same bytes again and check the names agree. If they do not, every
     // reference a user stores into this part is void the next time the document opens -- which is
@@ -221,6 +263,73 @@ Result probe(const FormatRegistry& registry, const std::filesystem::path& path,
     return out;
 }
 
+/// JSON string escaping. Enough for filenames, formats and OCCT's own messages -- which do
+/// contain quotes and backslashes, so this is not optional.
+std::string escaped(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (const char c : text) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) continue;   // control bytes: dropped
+                out += c;
+        }
+    }
+    return out;
+}
+
+/// One fixture as a JSON object.
+///
+/// # Why structured output rather than only a table
+///
+/// The table is for a person reading one run. This is for comparing two RELEASES: a snapshot per
+/// fixture, archived and diffed, so that a regression is visible even when the application still
+/// opens the file successfully. "It still opens" is the weakest possible claim and the easiest to
+/// keep making while the answer quietly degrades.
+///
+/// Keyed by CHECKSUM as well as name, because a corpus outside the repository can be re-downloaded,
+/// re-exported, or replaced. A snapshot compared against a different file with the same name is
+/// worse than no snapshot.
+void writeJson(std::FILE* out, const Result& r, bool first) {
+    std::fprintf(out, "%s\n    {\n", first ? "" : ",");
+    std::fprintf(out, "      \"file\": \"%s\",\n", escaped(r.name).c_str());
+    std::fprintf(out, "      \"checksum\": \"%s\",\n", escaped(r.checksum).c_str());
+    std::fprintf(out, "      \"bytes\": %ju,\n", static_cast<std::uintmax_t>(r.bytes));
+    std::fprintf(out, "      \"format\": \"%s\",\n", escaped(r.format).c_str());
+    std::fprintf(out, "      \"read\": %s,\n", r.read ? "true" : "false");
+    if (!r.readError.empty()) {
+        std::fprintf(out, "      \"readError\": \"%s\",\n", escaped(r.readError).c_str());
+    }
+    std::fprintf(out,
+                 "      \"validity\": { \"rawRead\": %s, \"rawValid\": %s, "
+                 "\"healedValid\": %s, \"healingChanged\": %s, \"invalidFaces\": %d, "
+                 "\"invalidEdges\": %d, \"structuralDefect\": %s },\n",
+                 r.rawRead ? "true" : "false", r.rawValid ? "true" : "false",
+                 r.healedValid ? "true" : "false", r.healingChanged ? "true" : "false",
+                 r.invalidFaces, r.invalidEdges, r.structuralDefect ? "true" : "false");
+    std::fprintf(out,
+                 "      \"counts\": { \"solids\": %zu, \"faces\": %zu, \"edges\": %zu, "
+                 "\"vertices\": %zu },\n",
+                 r.solids, r.faces, r.edges, r.vertices);
+    std::fprintf(out,
+                 "      \"naming\": { \"named\": %s, \"mesh\": %s, \"elements\": %zu, "
+                 "\"unnamedFaces\": %zu, \"unnamedEdges\": %zu, \"unnamedVertices\": %zu, "
+                 "\"collisions\": %zu, \"stable\": %s, \"modelable\": %s },\n",
+                 r.named ? "true" : "false", r.meshSkipped ? "true" : "false", r.namedElements,
+                 r.unnamedFaces, r.unnamedEdges, r.unnamedVertices, r.collisions,
+                 r.stableChecked ? (r.stable ? "true" : "false") : "null",
+                 r.modelableChecked ? (r.modelable ? "true" : "false") : "null");
+    // Timings last, and named as such: they are the one part of a snapshot that legitimately
+    // differs between machines, so a diff tool can be told to ignore them.
+    std::fprintf(out, "      \"timingMs\": { \"read\": %.0f, \"name\": %.0f }\n    }",
+                 r.readMs, r.nameMs);
+}
+
 const char* mark(bool ok, bool checked = true) {
     if (!checked) return " - ";
     return ok ? " ok" : "  X";
@@ -234,16 +343,19 @@ int main(int argc, char** argv) {
         std::printf("usage: vcad_import_probe [options] <directory-or-file> [more...]\n"
                     "  --read-only        read and measure; do not name\n"
                     "  --no-stability     skip the second read (halves the cost)\n"
-                    "  --max-faces N      decline to name shapes with more than N faces\n");
+                    "  --max-faces N      decline to name shapes with more than N faces\n"
+                    "  --json PATH        write a structured snapshot, for diffing releases\n");
         return 2;
     }
 
     Options options;
+    std::string jsonPath;
     std::vector<std::string> inputs;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--read-only") options.readOnly = true;
         else if (arg == "--no-stability") options.stability = false;
+        else if (arg == "--json" && i + 1 < argc) jsonPath = argv[++i];
         else if (arg == "--max-faces" && i + 1 < argc) {
             options.maxFaces = static_cast<std::size_t>(std::strtoull(argv[++i], nullptr, 10));
         } else {
@@ -287,6 +399,11 @@ int main(int argc, char** argv) {
     std::size_t readOk = 0, namedOk = 0, fullyNamed = 0, stable = 0, modelable = 0,
                 modelChecked = 0, withCollisions = 0;
     std::size_t totalFaces = 0, totalUnnamedFaces = 0, meshes = 0;
+    std::size_t rawValid = 0, healedValid = 0, rescued = 0, rawChecked = 0;
+    std::FILE* json = jsonPath.empty() ? nullptr : std::fopen(jsonPath.c_str(), "w");
+    if (json != nullptr) std::fprintf(json, "{\n  \"fixtures\": [");
+    bool firstRecord = true;
+
     for (const auto& path : files) {
         std::printf("%-40.40s ", path.filename().string().c_str());
         const Result r = probe(registry, path, options);
@@ -298,6 +415,22 @@ int main(int argc, char** argv) {
                     r.meshSkipped ? "mesh" : mark(r.stable, r.stableChecked),
                     r.meshSkipped ? "mesh" : mark(r.modelable, r.modelableChecked),
                     r.readMs + r.nameMs);
+        // The file's OWN validity, versus ours after healing. Printed only when they differ or
+        // when something is wrong, because "arrived valid, stayed valid" is the whole corpus most
+        // days and a column of "ok ok" teaches nothing.
+        if (r.rawRead && (!r.rawValid || !r.healedValid)) {
+            std::printf("      valid: as-read %s, after healing %s%s%s\n",
+                        r.rawValid ? "yes" : "NO", r.healedValid ? "yes" : "NO",
+                        r.structuralDefect ? "  (structural defect)" : "",
+                        r.healingChanged ? "  (healing changed the shape)" : "");
+            if (r.invalidFaces > 0 || r.invalidEdges > 0) {
+                std::printf("             %d invalid face(s), %d invalid edge(s)\n",
+                            r.invalidFaces, r.invalidEdges);
+            }
+            for (const auto& action : r.healingActions) {
+                std::printf("             healed: %s\n", action.c_str());
+            }
+        }
         if (r.readMs > 200.0 || r.nameMs > 200.0) {
             std::printf("      time: read %.0f ms, name %.0f ms%s\n", r.readMs, r.nameMs,
                         r.nameSkipped ? "  (naming skipped)" : "");
@@ -313,6 +446,10 @@ int main(int argc, char** argv) {
             std::printf("      model: %s\n", r.modelError.c_str());
         }
 
+        if (json != nullptr) {
+            writeJson(json, r, firstRecord);
+            firstRecord = false;
+        }
         readOk += r.read ? 1 : 0;
         meshes += r.meshSkipped ? 1 : 0;
         namedOk += r.named ? 1 : 0;
@@ -328,6 +465,17 @@ int main(int argc, char** argv) {
             totalFaces += r.faces;
             totalUnnamedFaces += r.unnamedFaces;
         }
+        if (r.rawRead) {
+            ++rawChecked;
+            rawValid += r.rawValid ? 1 : 0;
+            healedValid += r.healedValid ? 1 : 0;
+            rescued += (!r.rawValid && r.healedValid) ? 1 : 0;
+        }
+    }
+
+    if (json != nullptr) {
+        std::fprintf(json, "\n  ]\n}\n");
+        std::fclose(json);
     }
 
     const auto pct = [&](std::size_t n) {
@@ -343,6 +491,10 @@ int main(int argc, char** argv) {
                 pct(stable));
     std::printf("  modelable       %4zu  of %zu tried   a reference survives a feature\n",
                 modelable, modelChecked);
+    std::printf("  valid as read   %4zu of %zu   the file's own geometry, before we touched it\n",
+                rawValid, rawChecked);
+    std::printf("  valid healed    %4zu of %zu   of which %zu were rescued by healing\n",
+                healedValid, rawChecked, rescued);
     std::printf("  with collisions %4zu           MUST be zero: a name meaning two elements\n",
                 withCollisions);
     std::printf("  faces           %4zu identified of %zu in named files  (%.1f%%)\n",
