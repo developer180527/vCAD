@@ -443,6 +443,19 @@ template <class Make>
         // Kind is part of the key: a mesh's vertex and index buffers share one content hash,
         // and without the tag the second would dedupe onto the first and return the wrong
         // buffer entirely.
+        // An unhashable shape is never deduped. Its hex is the same as every other unhashable
+        // shape's, so a shared key here would hand the second one the FIRST one's buffer -- the
+        // wrong mesh drawn, with nothing anywhere reporting it. A fresh buffer costs memory; the
+        // alternative costs correctness, and looks like a rendering bug rather than a cache one.
+        if (!hash.ok()) {
+            const Entry entry = make();
+            if (entry.idx == bgfx::kInvalidHandle) return BufferId::None;
+            const BufferId id{next_++};
+            entries_.emplace(static_cast<std::uint64_t>(id), entry);
+            resident_ += bytes;
+            return id;
+        }
+
         std::string key = hash.hex();
         key.push_back(static_cast<char>('0' + kind));
         if (const auto it = byContent_.find(key); it != byContent_.end()) return it->second;

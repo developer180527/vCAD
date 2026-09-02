@@ -621,7 +621,16 @@ kernel::Result<void> SceneBuilder::rebuild(const document::Document& doc,
         }
 
         // fold64: see the note on ShapeHash. lanes[0] alone is a name-only hash.
-        const std::uint64_t key = resolved->contentHash.fold64();
+        //
+        // A mesh whose shape could not be hashed still DRAWS -- the tessellation succeeded, only
+        // its identity is unknown -- but it must not be interned under a shared key. Every
+        // unhashable mesh carries the same lanes, so they would all collide on one entry and the
+        // first one uploaded would be drawn for all of them. Keyed by object instead: unique by
+        // construction, so the worst case is losing dedupe between two placements of one part,
+        // which is the right thing to lose.
+        const std::uint64_t key = resolved->contentHash.ok()
+                                      ? resolved->contentHash.fold64()
+                                      : (0x9E3779B97F4A7C15ULL ^ p.object.value);
         auto& group = groups[key];
         if (group.resources == nullptr) {
             auto& res = uploaded_[key];

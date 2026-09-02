@@ -1,5 +1,6 @@
 #include "cad/render/Tessellate.h"
 #include <vector>
+#include <optional>
 #include <unordered_set>
 #include <thread>
 #include <atomic>
@@ -146,10 +147,20 @@ std::shared_ptr<RenderMesh> decode(const std::string& in) {
     return m;
 }
 
-std::uint64_t cacheKey(const document::Output& output, const TessellationSettings& s) {
+/// The cache key for one output, or nothing when the shape could not be hashed.
+///
+/// Nothing, rather than some sentinel key. A shape `contentHash` could not measure has no identity
+/// we can vouch for, and every constant we might substitute is a real key that a SECOND unhashable
+/// shape would also land on -- at which point the cache serves one part's mesh for the other, on
+/// disk and across machines via the shared tier. Refusing to cache costs a re-tessellation. Getting
+/// it wrong draws the wrong part.
+std::optional<std::uint64_t> cacheKey(const document::Output& output,
+                                      const TessellationSettings& s) {
     // fold64, not lanes[0]. contentHash puts names in lane 0 and geometry in lanes 1-3, so
     // keying on lane 0 would make two same-named parts of different sizes share a mesh.
-    const std::uint64_t shape = naming::contentHash(output.shape, output.map).fold64();
+    const auto hash = naming::contentHash(output.shape, output.map);
+    if (!hash.ok()) return std::nullopt;
+    const std::uint64_t shape = hash.fold64();
     // Distinct namespace from cooked feature output, and the blob version participates so a
     // format change cannot resurrect an unreadable blob.
     return shape ^ s.digest() ^ (0x6d657368ULL * (kMeshBlobVersion + 1));
@@ -171,7 +182,9 @@ std::size_t MeshCache::warm(std::span<const document::Output* const> outputs,
     std::unordered_set<std::uint64_t> queued;
     for (const document::Output* output : outputs) {
         if (output == nullptr) continue;
-        const std::uint64_t key = cacheKey(*output, settings);
+        const auto keyed = cacheKey(*output, settings);
+        if (!keyed) continue;   // unhashable: `get` will tessellate it fresh and cache nothing
+        const std::uint64_t key = *keyed;
         if (live_.find(key) != live_.end()) continue;
         if (!queued.insert(key).second) continue;
         jobs.push_back(Job{key, output});
@@ -214,7 +227,14 @@ std::size_t MeshCache::warm(std::span<const document::Output* const> outputs,
 
 kernel::Result<RenderMeshPtr> MeshCache::get(const document::Output& output,
                                              const TessellationSettings& settings) {
-    const std::uint64_t key = cacheKey(output, settings);
+    const auto keyed = cacheKey(output, settings);
+    if (!keyed) {
+        // No identity, so no cache -- neither read nor write. Tessellating every time is the
+        // honest cost of not knowing what this shape is.
+        ++misses_;
+        return tessellate(output, settings);
+    }
+    const std::uint64_t key = *keyed;
 
     // L0: live meshes, no decode at all. Panning and orbiting must never deserialise, and at
     // assembly scale this is also what makes dedupe free — the 50,000th identical bolt is a

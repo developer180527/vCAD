@@ -25,6 +25,23 @@ const char* toString(ShapeType) noexcept;
 struct ShapeHash {
     std::uint64_t lanes[4]{};
 
+    /// False when the hash could not be computed — see `naming::contentHash`, which reaches OCCT
+    /// and can be thrown out of by a shape it cannot measure.
+    ///
+    /// It has to be represented, and it cannot be represented as a VALUE. Every 256-bit pattern is
+    /// a legitimate hash, so any sentinel lanes we picked would be a real key that two different
+    /// unhashable shapes would share — and the two caches that key on this would then serve one
+    /// shape's data for the other. The DDC would hand back the wrong geometry; the render backend
+    /// interns GPU buffers by this same hash, so it would draw the wrong mesh, which is the version
+    /// of this bug that looks like a rendering fault rather than a cache fault.
+    ///
+    /// So it is a flag, and the comparison below makes an invalid hash match nothing at all — the
+    /// same shape `Shape::measure` takes with NaN, for the same reason: a failure must not be
+    /// mistakable for an answer.
+    bool valid = true;
+
+    [[nodiscard]] bool ok() const noexcept { return valid; }
+
     [[nodiscard]] std::string hex() const;
 
     /// A 64-bit key over ALL FOUR lanes.
@@ -45,7 +62,16 @@ struct ShapeHash {
         return h;
     }
 
-    friend bool operator==(const ShapeHash&, const ShapeHash&) = default;
+    /// An invalid hash equals NOTHING, including another invalid hash and including itself.
+    ///
+    /// Deliberately not the defaulted comparison, which would make two failures compare EQUAL and
+    /// so turn "we could not identify either of these" into "these are the same shape" — the exact
+    /// wrong answer, arriving through the operator most likely to be used without thinking.
+    friend bool operator==(const ShapeHash& a, const ShapeHash& b) {
+        if (!a.valid || !b.valid) return false;
+        return a.lanes[0] == b.lanes[0] && a.lanes[1] == b.lanes[1] && a.lanes[2] == b.lanes[2]
+               && a.lanes[3] == b.lanes[3];
+    }
 };
 
 /// Value wrapper over TopoDS_Shape. Copies are cheap (OCCT shapes are handle-based) and

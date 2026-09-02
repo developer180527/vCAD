@@ -62,22 +62,14 @@ const std::vector<Exemption> kExempt = {
      "internal:: only, and every caller reaches it through NamingContext's three guarded entry "
      "points (nameprimitive, propagate, nameCopy)."},
 
-    // NOT a clean exemption. This one is a known hole, recorded here rather than in a message
-    // nobody will read again.
-    //
-    // `contentHash`, `unnamed` and `resolve` are public, reach OCCT, and return plain values with
-    // no way to express failure. Guarding them means inventing what a failure RETURNS, and every
-    // available answer is a lie that reads as health: an all-zero ShapeHash is a real key that two
-    // different unhashable shapes would share, so the DDC would serve one's geometry for the other;
-    // an empty vector from `unnamed` means "everything is named", which is precisely the healthy
-    // answer that lets a naming loss through.
-    //
-    // Converting a crash into silent corruption is the wrong trade -- ADR 0005 is explicit that a
-    // wrong reference is worse than a failed one -- so this needs `ShapeHash` to carry validity and
-    // the cache to refuse to store an invalid key. That is a change to the cache contract, and it
-    // is deliberately not being made in a commit about exception safety.
+    // This was a KNOWN HOLE for one commit, and is no longer one: `contentHash` is guarded and
+    // reports failure through `ShapeHash::valid`, which both caches now refuse to key on. It stays
+    // exempt only because `unnamed` and `resolve` still reach OCCT without their own guard, and
+    // they do not need one -- `unnamed` is called from nothing but NamingContext's three guarded
+    // entry points, and `resolve` is a lookup in our own table plus an IsSame.
     {"core/naming/src/ElementMap.cpp",
-     "KNOWN HOLE: signatures cannot express failure; needs ShapeHash validity first."},
+     "contentHash guards itself; unnamed is reached only through NamingContext's guarded entry "
+     "points. See shape_hash_validity.cpp for what a failed hash does."},
 };
 
 std::string contentsOf(const fs::path& file) {

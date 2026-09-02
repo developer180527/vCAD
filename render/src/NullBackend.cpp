@@ -15,6 +15,16 @@ std::string internKey(const kernel::ShapeHash& h, int kind) {
 }  // namespace
 
 BufferId NullGpuResources::intern(const kernel::ShapeHash& hash, int kind, std::uint64_t bytes) {
+    // Never dedupe an unhashable shape: every one of them has the same hex, so sharing a key would
+    // return the first one's buffer for all of them. Mirrors BgfxBackend, and the test backend has
+    // to agree with the real one or a scene test cannot see this.
+    if (!hash.ok()) {
+        const BufferId id{next_++};
+        sizes_.emplace(static_cast<std::uint64_t>(id), bytes);
+        residentBytes_ += bytes;
+        ++uploads_;
+        return id;
+    }
     const std::string key = internKey(hash, kind);
     if (const auto it = byContent_.find(key); it != byContent_.end()) {
         ++deduped_;

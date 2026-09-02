@@ -2,6 +2,8 @@
 
 #include "cad/kernel/internal/Occt.h"
 
+#include "cad/kernel/Guard.h"
+
 #include <BRep_Tool.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
@@ -199,7 +201,24 @@ std::vector<kernel::Shape> ElementMap::unnamed(const kernel::Shape& owner) const
     return out;
 }
 
+kernel::ShapeHash contentHashUnguarded(const kernel::Shape&, const ElementMap&);
+
 kernel::ShapeHash contentHash(const kernel::Shape& shape, const ElementMap& map) {
+    // Guarded, because everything below reaches OCCT -- subShapes walks explorers, and the per
+    // element record takes mass properties -- and this is called from the render path and the
+    // plugin ABI, neither of which has a Result to carry a failure and neither of which sits under
+    // a handler. An unhashable shape used to end the process here.
+    auto hashed = kernel::guard("hash a shape's content",
+                                [&] { return contentHashUnguarded(shape, map); });
+    if (!hashed) {
+        kernel::ShapeHash failed;
+        failed.valid = false;
+        return failed;
+    }
+    return hashed.value();
+}
+
+kernel::ShapeHash contentHashUnguarded(const kernel::Shape& shape, const ElementMap& map) {
     kernel::ShapeHash out;
     if (shape.isNull()) return out;
 
