@@ -9,6 +9,29 @@ namespace cad::kernel {
 /// BRepBuilderAPI_Transform reports Modified(), which is how names survive the move.
 Result<Operation> translate(const Shape&, double dx, double dy, double dz);
 
+/// Rigid rotation about an axis, by the right-hand rule.
+///
+/// `axis` need not be normalised; it is only a direction, and requiring unit length at the call
+/// site would push a square root into every caller for no gain.
+///
+/// A zero angle is allowed, unlike a zero-distance extrude. The difference is that this one
+/// produces a perfectly good shape — the input, unmoved — whereas a zero extrude produces a
+/// degenerate solid that reports success and then fails everything downstream. Whether a no-op is
+/// worth recording as a feature is a question for the layer that has a user to answer to.
+Result<Operation> rotate(const Shape&, const double origin[3], const double axis[3],
+                         double angleRadians);
+
+/// Reflection in the PLANE through `origin` with the given `normal`.
+///
+/// A plane, not a point or a line: mirroring a part about the plane it was designed against is the
+/// case every CAD system means by "mirror", and the other two symmetries are rotations in disguise.
+///
+/// This is the one transform that REVERSES orientation, which is why it is worth having as its own
+/// operation rather than a `gp_Trsf` a caller assembles. A reflected solid whose faces still point
+/// the way they used to is inside-out: it validates, it draws, and every boolean against it does
+/// the opposite of what was asked. The output is checked before it is returned.
+Result<Operation> mirror(const Shape&, const double origin[3], const double normal[3]);
+
 /// Sweeps a profile linearly into a solid — the extrude every sketch-based feature is built on.
 ///
 /// Returns an `Operation` rather than a bare `Shape` because the naming layer has to walk it: the
