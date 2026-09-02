@@ -834,7 +834,7 @@ void MainWindow::rebuildRibbon() {
     // ── Inspect ─────────────────────────────────────────────────────────────────────────
     auto* inspect = ribbon()->addTab(tr("Inspect"));
     auto* measure = inspect->addPanel(tr("Measure"));
-    measure->addLarge(planned(tr("Measure"), QStringLiteral("measure")));
+    measure->addLarge(commandOr("feature.measure", tr("Measure"), QStringLiteral("measure")));
     auto* analysis = inspect->addPanel(tr("Analysis"));
     analysis->addLarge(planned(tr("Section\nView"), QStringLiteral("section")));
     analysis->addSmall(planned(tr("Mass Properties"), QStringLiteral("mass")));

@@ -166,6 +166,28 @@ public:
     /// expression, so that changing what it refers to moves this too.
     bool setProperty(document::ObjectId, const std::string& name, const std::string& text);
 
+    // ── measure ───────────────────────────────────────────────────────────────────────────
+    //
+    // Modelling is a loop -- make a change, check it, adjust -- and vCAD could do the first and the
+    // third and not the second. The kernel could measure since M1 and nothing above it ever asked,
+    // so a user had no way to learn how long an edge was.
+
+    /// One line of a measurement readout: a label and an already-formatted value.
+    struct MeasureRow {
+        std::string label;
+        std::string value;   ///< in the user's display units, units included
+    };
+
+    /// What the current selection measures.
+    ///
+    /// Empty when nothing useful is selected, so a shell can show the readout whenever this is
+    /// non-empty rather than deciding for itself what is measurable -- the same reason enablement
+    /// moved into the feature declaration.
+    ///
+    /// Two selected elements add the distance between them, which is the question that needs two
+    /// and the one a fit check is made of.
+    [[nodiscard]] std::vector<MeasureRow> measureSelection() const;
+
     /// Whether the current selection satisfies a feature's declared inputs.
     ///
     /// One question, asked in one place, by everything that needs the answer: whether the button

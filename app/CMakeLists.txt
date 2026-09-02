@@ -18,6 +18,7 @@ cad_core_library(cad_app
   src/controller/Files.cpp
   src/controller/Commands.cpp
   src/controller/Parameters.cpp
+  src/controller/Measure.cpp
   src/Session.cpp
 )
 target_include_directories(cad_app PUBLIC include)

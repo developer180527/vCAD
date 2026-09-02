@@ -281,6 +281,22 @@ void Controller::cancelCommand() {
 void Controller::registerCommands() {
     const auto always = [](const CommandContext&) { return true; };
 
+    // A declared default, in base units. The direct-invoke path used to repeat every number the
+    // declaration already held -- Box 100/60/40, Hole 8/10, Fillet 5, Chamfer 3, Extrude 10 -- so
+    // the two agreed only as long as nobody edited one of them.
+    //
+    // Translate is the deliberate exception and stays a literal at its call site: its declared
+    // default is zero, because a move must not move anything the moment its panel opens, while its
+    // direct invoke nudges by 10mm so that pressing the button does something visible.
+    const auto declared = [this](const char* type, const char* value) {
+        const recompute::FeatureType* feature = registry_.find(type);
+        if (feature == nullptr) return 0.0;
+        for (const auto& v : feature->inputs.values) {
+            if (v.name == value) return v.base;
+        }
+        return 0.0;
+    };
+
     // Enablement DERIVED from the feature's declared inputs. One rule, read from the feature,
     // instead of a predicate per command written beside it and drifting from it.
     const auto needs = [this](const char* commandId) {
@@ -289,16 +305,21 @@ void Controller::registerCommands() {
     };
 
     commands_.push_back({"feature.box", "Box", "Create a rectangular block", "box", always,
-                         [this] { addPrimitive("Box", {{"dx", 100}, {"dy", 60}, {"dz", 40}}); }});
+                         [this, declared] {
+                             addPrimitive("Box", {{"dx", declared("Box", "dx")},
+                                                  {"dy", declared("Box", "dy")},
+                                                  {"dz", declared("Box", "dz")}});
+                         }});
     commands_.push_back({"feature.cylinder", "Cylinder", "Create a cylinder", "cylinder", always,
-                         [this] {
-                             addPrimitive("Cylinder", {{"radius", 25}, {"height", 80}});
+                         [this, declared] {
+                             addPrimitive("Cylinder",
+                                          {{"radius", declared("Cylinder", "radius")},
+                                           {"height", declared("Cylinder", "height")}});
                          }});
 
     // Booleans. Inventor exposes all three as modes of one "Combine" command; we register them
     // separately so each is reachable now, and the mode selector can fold them together once the
     // non-modal command surface exists (DESKTOP_UX 3.2).
-    const auto twoSelected = [](const CommandContext& c) { return c.selectedObjects == 2; };
     commands_.push_back({"sketch.finish", "Finish Sketch",
                          "Apply the sketch and return to the model", "sketch-finish",
                          [this](const CommandContext&) {
@@ -340,14 +361,16 @@ void Controller::registerCommands() {
                          [this] { beginSketch(); }});
     commands_.push_back({"feature.extrude", "Extrude",
                          "Extrude the selected sketch into a solid", "extrude",
-                         needs("feature.extrude"), [this] { addExtrude(10.0); }});
+                         needs("feature.extrude"),
+                         [this, declared] { addExtrude(declared("Extrude", "distance")); }});
 
     commands_.push_back({"feature.cut", "Cut", "Subtract the second selection from the first",
-                         "cut", twoSelected, [this] { addBoolean("Cut", "Cut"); }});
+                         "cut", needs("feature.cut"), [this] { addBoolean("Cut", "Cut"); }});
     commands_.push_back({"feature.fuse", "Join", "Merge the selected bodies into one", "combine",
-                         twoSelected, [this] { addBoolean("Fuse", "Join"); }});
+                         needs("feature.fuse"), [this] { addBoolean("Fuse", "Join"); }});
     commands_.push_back({"feature.common", "Intersect",
-                         "Keep only the volume the selected bodies share", "combine", twoSelected,
+                         "Keep only the volume the selected bodies share", "combine",
+                         needs("feature.common"),
                          [this] { addBoolean("Common", "Intersect"); }});
 
     // Edge features. Enabled on a single selection that HAS edges — asking for a fillet on a
@@ -356,17 +379,30 @@ void Controller::registerCommands() {
     // or one body" is declared; "and that body must actually have edges" is a question about
     // geometry rather than about the selection, and inventing a way to declare it would be a
     // larger thing to get wrong than this exception is.
-    const auto oneWithEdges = [this, needs](const CommandContext& c) {
-        if (!needs("feature.fillet")(c)) return false;
-        if (c.selectedEdges > 0) return true;
-        return c.selectedObjects == 1 && !edgesOf(selection_.front()).empty();
+    //
+    // Takes the command id. Hardcoding "feature.fillet" here worked only because the two
+    // declarations are identical today -- the moment Chamfer's requirement diverges it would
+    // silently enforce Fillet's, and nothing would notice. That is the exact failure this whole
+    // change exists to remove, reintroduced in the helper that removes it.
+    const auto oneWithEdges = [this, needs](const char* commandId) {
+        return [this, needs, commandId](const CommandContext& c) {
+            if (!needs(commandId)(c)) return false;
+            if (c.selectedEdges > 0) return true;
+            return c.selectedObjects == 1 && !edgesOf(selection_.front()).empty();
+        };
     };
     commands_.push_back({"feature.fillet", "Fillet", "Round every edge of the selected body",
-                         "fillet", oneWithEdges,
-                         [this] { addEdgeFeature("Fillet", "Fillet", "radius", 5.0); }});
+                         "fillet", oneWithEdges("feature.fillet"),
+                         [this, declared] {
+                             addEdgeFeature("Fillet", "Fillet", "radius",
+                                            declared("Fillet", "radius"));
+                         }});
     commands_.push_back({"feature.chamfer", "Chamfer", "Bevel every edge of the selected body",
-                         "chamfer", oneWithEdges,
-                         [this] { addEdgeFeature("Chamfer", "Chamfer", "distance", 3.0); }});
+                         "chamfer", oneWithEdges("feature.chamfer"),
+                         [this, declared] {
+                             addEdgeFeature("Chamfer", "Chamfer", "distance",
+                                            declared("Chamfer", "distance"));
+                         }});
 
     // Hole. Enabled on a single FACE, which is its entire input -- the position and the direction
     // both come from the face, so there is nothing to pick afterwards and nothing to guess.
@@ -376,7 +412,9 @@ void Controller::registerCommands() {
     // cheapest kind of gap there is, and Hole is the most-used feature in mechanical CAD.
     commands_.push_back({"feature.hole", "Hole", "Drill a hole into the selected face", "hole",
                          needs("feature.hole"),
-                         [this] { addHole(8.0, 10.0); }});
+                         [this, declared] {
+                             addHole(declared("Hole", "diameter"), declared("Hole", "depth"));
+                         }});
 
     // Revolve. Enabled on one EDGE, which identifies the axis and the profile together: the axis is
     // resolved in the profile's own element map, so it must be an edge of the sketch being revolved.
@@ -389,6 +427,32 @@ void Controller::registerCommands() {
     commands_.push_back({"feature.translate", "Move", "Move the selected body", "move",
                          needs("feature.translate"),
                          [this] { addTranslate(10.0, 0.0, 0.0); }});
+
+    // Measure. A QUERY, not a feature: it changes nothing, so it has no FeatureType and the
+    // reachability guard that walks the feature registry cannot see it. It shipped complete, tested
+    // and invisible for exactly that reason -- the fifth capability to do so.
+    //
+    // Enabled whenever there is something to measure, which measureSelection already decides; the
+    // command must not have a second opinion about that.
+    commands_.push_back({"feature.measure", "Measure",
+                         "Measure what is selected: length, area, volume, distance", "measure",
+                         [this](const CommandContext&) { return !measureSelection().empty(); },
+                         [this] {
+                             const auto rows = measureSelection();
+                             if (rows.empty()) {
+                                 status("Select something to measure.");
+                                 return;
+                             }
+                             // Into the status line, which both shells already show. A dedicated
+                             // panel is better and is not a reason to leave the capability
+                             // unreachable in the meantime.
+                             std::string text;
+                             for (const auto& row : rows) {
+                                 if (!text.empty()) text += "   ";
+                                 text += row.label + " " + row.value;
+                             }
+                             status(text);
+                         }});
 
     commands_.push_back({"edit.delete", "Delete", "Delete the selected features", "delete",
                          [](const CommandContext& c) { return c.selectedObjects > 0; },

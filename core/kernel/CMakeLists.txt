@@ -1,5 +1,6 @@
 cad_core_library(cad_kernel
   src/Shape.cpp
+  src/Measurement.cpp
   src/Primitives.cpp
   src/Booleans.cpp
   src/Fillet.cpp

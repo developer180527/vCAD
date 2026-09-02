@@ -180,3 +180,50 @@ TEST_CASE("an unbounded requirement accepts many", "[features][inputs]") {
     CHECK(c.selectionShortfall("Fillet").empty());
     CHECK(enabled(c, "feature.fillet"));
 }
+
+TEST_CASE("every feature command maps to a registered feature type", "[features][inputs]") {
+    // featureTypeOf became a new single source of truth with nothing guarding it. A command absent
+    // from that map gets an empty type, selectionShortfall reports "not installed", and `needs()`
+    // then returns false FOREVER -- the button goes permanently dark with no error raised anywhere
+    // and nothing failing. That is the same silent-unreachability failure the declaration was built
+    // to end, arriving through the lookup that implements it.
+    app::Controller controller;
+    const auto registry = features::builtins();
+
+    for (const auto& command : controller.commands()) {
+        if (command.id.rfind("feature.", 0) != 0) continue;
+        // Commands that open an environment or a query rather than creating a feature.
+        if (command.id == "feature.sketch" || command.id == "feature.measure") continue;
+
+        const auto type = app::Controller::featureTypeOf(command.id);
+        INFO(command.id);
+        REQUIRE_FALSE(type.empty());
+        CHECK(registry.find(type) != nullptr);
+    }
+}
+
+TEST_CASE("a command's declared default is the one it invokes with", "[features][inputs]") {
+    // The direct-invoke path used to repeat every number the declaration already held, so the two
+    // agreed only until somebody edited one of them. Box is the check: creating one without opening
+    // a panel must produce the size the declaration states.
+    app::Controller c;
+    const auto registry = features::builtins();
+    const auto* box = registry.find("Box");
+    REQUIRE(box != nullptr);
+
+    for (const auto& command : c.commands()) {
+        if (command.id != "feature.box") continue;
+        command.invoke();
+        break;
+    }
+    REQUIRE_FALSE(c.selection().empty());
+    const auto object = c.document().find(c.selection().front());
+    REQUIRE(object);
+
+    for (const auto& value : box->inputs.values) {
+        const auto* stored = object->find(value.name);
+        INFO(value.name);
+        REQUIRE(stored != nullptr);
+        CHECK(std::get<units::Length>(*stored).base() == value.base);
+    }
+}

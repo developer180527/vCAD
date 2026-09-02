@@ -85,13 +85,16 @@ ObjectId Controller::addSketch() {
 }
 
 void Controller::addExtrude(double millimetres) {
-    if (selection_.size() != 1) return;
-    const ObjectId profile = selection_.front();
-    const auto object = history_.current().find(profile);
-    if (!object || object->type() != "Sketch") {
-        status("Extrude needs a sketch selected.");
+    // Asked of the FEATURE'S declaration, so the guard, the button and the panel give one answer
+    // and one wording. This used to say "Extrude needs a sketch selected." while the declaration
+    // said "Select a sketch to extrude." -- two refusals for one situation, and the user sees
+    // whichever path they happened to take.
+    if (const auto shortfall = selectionShortfall("Extrude"); !shortfall.empty()) {
+        status(shortfall);
         return;
     }
+    const ObjectId profile = selection_.front();
+    const auto object = history_.current().find(profile);
 
     // Carried across ONLY when the sketch actually has one. A sketch placed on a face has no global
     // plane, and defaulting to XY here used to hand the extrude a direction lying in the profile's
@@ -123,7 +126,12 @@ void Controller::addExtrude(double millimetres) {
 }
 
 void Controller::addBoolean(const std::string& type, const std::string& label) {
-    if (selection_.size() != 2) return;
+    // Silent before: two bodies not selected simply did nothing, with no message anywhere. The
+    // declaration has a wording for this, so use it.
+    if (const auto shortfall = selectionShortfall(type); !shortfall.empty()) {
+        status(shortfall);
+        return;
+    }
     auto [next, id] = history_.current().add(type);
     const auto object = next.find(id);
     // Property names order the inputs: "a_base" sorts before "b_tool", and the engine passes
@@ -202,8 +210,8 @@ void Controller::addRevolve(double degrees) {
 }
 
 void Controller::addTranslate(double dxMm, double dyMm, double dzMm) {
-    if (selection_.size() != 1) {
-        status("Select one body to move.");
+    if (const auto shortfall = selectionShortfall("Translate"); !shortfall.empty()) {
+        status(shortfall);
         return;
     }
     const ObjectId target = selection_.front();

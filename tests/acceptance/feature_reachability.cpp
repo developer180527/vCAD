@@ -120,3 +120,81 @@ TEST_CASE("a command that offers itself can be invoked", "[reachability]") {
     }
     CHECK(sawEnabled);
 }
+
+// ── the blind spot this guard had ──────────────────────────────────────────────────────
+//
+// Everything above walks the FEATURE REGISTRY, so it can only see capabilities that are features.
+// Measure is a Controller query -- it changes nothing, so it has no FeatureType -- and it shipped
+// complete, tested and invisible while this file reported green. That was the fifth capability to
+// do so, and the guard built to stop it structurally could not.
+//
+// So the question widens from "does every feature have a command" to "does every command reach a
+// button". That covers queries, edits, view commands and anything else added later, without
+// needing a list of what kinds exist.
+//
+// Read from the Qt shell's source rather than from a running window: the ribbon is built across
+// several tabs and environments, and a test that instantiated one would be testing Qt. What makes
+// this sound is that both shells build their tools from the same catalogue, so a command missing
+// from the source is missing from the UI.
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace {
+
+/// Commands with no button, and the reason each is allowed not to have one.
+const std::map<std::string, std::string>& exemptCommands() {
+    static const std::map<std::string, std::string> kExempt{
+        {"sketch.edit",
+         "Reached from the browser's context menu on a sketch, which is where a user looks for it "
+         "-- not from the ribbon."},
+    };
+    return kExempt;
+}
+
+std::string qtShellSource() {
+    const auto path = std::filesystem::path(CAD_REPO_ROOT) / "shell_qt/src/MainWindow.cpp";
+    std::ifstream in(path);
+    REQUIRE(in.good());
+    std::ostringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+
+}   // namespace
+
+TEST_CASE("every command reaches a button", "[reachability][commands]") {
+    Controller controller;
+    const auto source = qtShellSource();
+
+    std::vector<std::string> unreachable;
+    for (const auto& command : controller.commands()) {
+        if (exemptCommands().count(command.id) != 0) continue;
+        // Quoted, so "feature.cut" does not match "feature.cut_something" and a partial name
+        // cannot make an absent command look present.
+        if (source.find('"' + command.id + '"') == std::string::npos) {
+            unreachable.push_back(command.id);
+        }
+    }
+
+    for (const auto& id : unreachable) {
+        UNSCOPED_INFO("no button for command: " << id);
+    }
+    CHECK(unreachable.empty());
+}
+
+TEST_CASE("nothing is still marked planned once it exists", "[reachability][commands]") {
+    // The other half. A capability can be reachable AND still be advertised as unbuilt, which is
+    // how a button ends up next to a placeholder for the same thing. Measure was `planned(...)` in
+    // the ribbon while the Controller could already answer.
+    const auto source = qtShellSource();
+    Controller controller;
+
+    for (const auto& command : controller.commands()) {
+        // The ribbon labels a placeholder with the same words as the command it stands in for.
+        const std::string placeholder = "planned(tr(\"" + command.label + "\")";
+        INFO(command.id << " is implemented but the shell still calls it planned");
+        CHECK(source.find(placeholder) == std::string::npos);
+    }
+}
