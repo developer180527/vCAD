@@ -312,6 +312,82 @@ void Controller::addHole(double diameterMm, double depthMm) {
     }
 }
 
+void Controller::addMirror() {
+    if (const auto shortfall = selectionShortfall("Mirror"); !shortfall.empty()) {
+        status(shortfall);
+        return;
+    }
+    const auto selected = selectionByKind();
+    const ElementSelection picked = selected.faces.front();
+
+    // Refused here rather than by the compute, for the same reason Hole is: computeMirror would
+    // reject a curved face too, but only after the feature was in the document, leaving a failed
+    // row for the user to find and delete.
+    const auto object = history_.current().find(picked.object);
+    if (!object || object->output() == nullptr) {
+        status("That body has not been computed yet.");
+        return;
+    }
+    const auto shape = object->output()->map.resolve(picked.element);
+    if (!shape) {
+        status("That face no longer exists in the model.");
+        return;
+    }
+    if (const auto plane = kernel::planeOf(*shape); !plane) {
+        status(plane.error().message);   // the kernel measured it and knows why
+        return;
+    }
+
+    auto [next, id] = history_.current().add("Mirror");
+    const auto created = next.find(id);
+    auto updated = created->withProperty("a_base", picked.object)
+                       .withProperty("face", picked.element);
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Mirror");
+
+    selection_.clear();
+    // The face belonged to the body the mirror consumed, so it marks geometry that is gone.
+    elementSelection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    const auto result = history_.current().find(id);
+    status(result && result->output() == nullptr
+               ? "Mirror failed — see the feature's error in the browser."
+               : "Mirrored about the selected face");
+}
+
+void Controller::addPattern(std::int64_t count, double dxMm, double dyMm, double dzMm) {
+    if (const auto shortfall = selectionShortfall("Pattern"); !shortfall.empty()) {
+        status(shortfall);
+        return;
+    }
+    const ObjectId target = selection_.front();
+
+    auto [next, id] = history_.current().add("Pattern");
+    const auto created = next.find(id);
+    auto updated = created->withProperty("a_base", target)
+                       .withProperty("count", count)
+                       .withProperty("dx", units::millimetres(dxMm))
+                       .withProperty("dy", units::millimetres(dyMm))
+                       .withProperty("dz", units::millimetres(dzMm));
+    next = next.replace(std::make_shared<const document::ObjectData>(std::move(updated)));
+    history_.commit(std::move(next), "Pattern");
+
+    selection_.clear();
+    elementSelection_.clear();
+    selection_.push_back(id);
+    refresh();
+
+    const auto result = history_.current().find(id);
+    if (result && result->output() == nullptr) {
+        status("Pattern failed — see the feature's error in the browser.");
+    } else {
+        status(std::to_string(count) + " copies, "
+               + units::format(units::millimetres(dxMm), preferences_.displayUnits) + " apart");
+    }
+}
+
 void Controller::addEdgeFeature(const std::string& type, const std::string& label,
                                 const std::string& sizeProperty, double millimetres) {
     // Picked edges first. This is what edge selection was for: before it existed the only honest

@@ -44,6 +44,7 @@ std::string Controller::featureTypeOf(const std::string& commandId) {
         {"feature.fillet", "Fillet"},   {"feature.chamfer", "Chamfer"},
         {"feature.cut", "Cut"},         {"feature.fuse", "Fuse"},
         {"feature.common", "Common"},
+        {"feature.mirror", "Mirror"},   {"feature.pattern", "Pattern"},
     };
     const auto found = kTypes.find(commandId);
     return found == kTypes.end() ? std::string{} : found->second;
@@ -224,6 +225,20 @@ bool Controller::commitCommand() {
             }
         }
         addRevolve(degrees);
+        ok = true;
+    } else if (id == "feature.pattern") {
+        // The count is an INTEGER, not a length: "3" is three copies, and running it through
+        // lengthOf would parse it as 3 mm and then round it back to 3 by accident.
+        std::int64_t copies = 1;
+        for (const auto& p : commandParameters_) {
+            if (p.name != "count") continue;
+            try {
+                copies = std::stoll(p.value);
+            } catch (const std::exception&) {
+                copies = 1;   // unparseable: the compute refuses a count below one and says so
+            }
+        }
+        addPattern(copies, lengthOf("dx"), lengthOf("dy"), lengthOf("dz"));
         ok = true;
     } else if (id == "feature.translate") {
         addTranslate(lengthOf("dx"), lengthOf("dy"), lengthOf("dz"));
@@ -424,6 +439,19 @@ void Controller::registerCommands() {
                          [this] { addRevolve(360.0); }});
 
     // Move. One body, and a vector the user types.
+    // Mirror takes a FACE and Pattern takes a BODY, so their enablement differs even though both
+    // copy — which the declaration says once and `needs` reads, rather than two predicates here.
+    commands_.push_back({"feature.mirror", "Mirror",
+                         "Reflect the body about the selected face", "mirror",
+                         needs("feature.mirror"), [this] { addMirror(); }});
+    commands_.push_back({"feature.pattern", "Pattern",
+                         "Repeat the selected body along a direction", "pattern",
+                         needs("feature.pattern"),
+                         [this, declared] {
+                             addPattern(3, declared("Pattern", "dx"), declared("Pattern", "dy"),
+                                        declared("Pattern", "dz"));
+                         }});
+
     commands_.push_back({"feature.translate", "Move", "Move the selected body", "move",
                          needs("feature.translate"),
                          [this] { addTranslate(10.0, 0.0, 0.0); }});

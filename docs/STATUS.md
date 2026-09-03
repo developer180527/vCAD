@@ -63,19 +63,20 @@ than one transform.
 
 ### 2. Not enough operations
 
-Missing as FEATURES a user can reach: sweep, loft, shell, draft, rib, pattern, mirror. This is the
+Missing as FEATURES a user can reach: sweep, loft, shell, draft, rib. This is the
 honest distance to a usable modeller, and it is mostly ordinary work now that sketches and extrude
 exist.
 
-`rotate` and `mirror` exist in the kernel but have no feature wired to them, which is the
-distinction this section is careful about: an operation the kernel can perform and a user cannot
-reach is not a capability.
+Pattern and Mirror have both landed, which is what `rotate` and `mirror` in the kernel were built
+for. The distinction this section is careful about still holds: an operation the kernel can perform
+and a user cannot reach is not a capability, and `rotate` is still one of those — nothing turns a
+body about an axis yet, and a circular pattern will be the thing that needs it.
 
 The list below is checked by `tests/acceptance/docs_claims.cpp` against the command catalogue, so
 it cannot quietly go stale the way "no revolve, no hole" did once both had shipped. Edit the marker
 and the prose together.
 
-<!-- guarded:missing-features sweep loft shell draft rib pattern mirror -->
+<!-- guarded:missing-features sweep loft shell draft rib -->
 
 ### 3. No assemblies, drawings, or simulation
 

@@ -805,9 +805,11 @@ void MainWindow::rebuildRibbon() {
     modify->addSmall(planned(tr("Finish"), QStringLiteral("finish")));
 
     auto* pattern = model->addPanel(tr("Pattern"));
-    pattern->addSmall(planned(tr("Rectangular"), QStringLiteral("pattern-rect")));
+    // Rectangular IS the linear pattern; Circular is still unbuilt and stays a placeholder.
+    pattern->addSmall(
+        commandOr("feature.pattern", tr("Rectangular"), QStringLiteral("pattern-rect")));
     pattern->addSmall(planned(tr("Circular"), QStringLiteral("pattern-circular")));
-    pattern->addSmall(planned(tr("Mirror"), QStringLiteral("mirror")));
+    pattern->addSmall(commandOr("feature.mirror", tr("Mirror"), QStringLiteral("mirror")));
 
     auto* editPanel = model->addPanel(tr("Edit"));
     editPanel->addSmall(commandOr("edit.undo", tr("Undo"), QStringLiteral("undo")));

@@ -520,6 +520,157 @@ kernel::Result<Output> computeTranslate(const ComputeContext& ctx) {
     return nameResult(op.value(), ctx.inputs, ctx.namingSerial);
 }
 
+/// Mirrors a body about the plane of one of its own faces, and joins the reflection to it.
+///
+/// # Why a face rather than three numbers
+///
+/// A mirror needs a plane, and the input vocabulary describes selections and typed values -- there
+/// is no way to declare "a plane" and no honest way to spell one as three lengths a user would have
+/// to work out. A face IS a plane, the user already has one under the pointer, and "reflect this
+/// part about that face" is how the operation is asked for out loud.
+///
+/// It also makes the common case the default one. Mirroring a part about its own mating face is the
+/// symmetric-bracket case -- the mirrored half welded to its original -- and the copy lands exactly
+/// against the face it was reflected in, so joining them is what the user meant rather than a
+/// second body sharing a surface.
+///
+/// # Why the copy is NAMED rather than propagated
+///
+/// A rigid transform reports its elements as `Modified` -- the same element, moved -- which is
+/// right for a move and wrong for a copy. Propagating would give the reflection the source's own
+/// names, and the fuse that follows would then find two elements answering to one name and refuse.
+/// `nameCopy` stamps the reflection as a Generated copy of what it came from, which is both true
+/// and distinct. See ADR 0005 and tests/acceptance/mirror_copy.cpp.
+kernel::Result<Output> computeMirror(const ComputeContext& ctx) {
+    if (ctx.inputs.size() != 1) {
+        return Error{ErrorCode::InvalidInput, "A mirror needs exactly one body."};
+    }
+
+    const auto* named = ctx.object.find("face");
+    const auto* faceName = named != nullptr ? std::get_if<naming::ElementName>(named) : nullptr;
+    if (faceName == nullptr) {
+        return Error{ErrorCode::InvalidInput, "A mirror needs a flat face to reflect about."};
+    }
+    const auto face = ctx.inputs[0]->map.resolve(*faceName);
+    if (!face) {
+        return Error{ErrorCode::NamingLost, "The face this mirror reflects about no longer exists."};
+    }
+    const auto plane = kernel::planeOf(*face);
+    if (!plane) return plane.error();
+
+    auto reflected = kernel::mirror(ctx.inputs[0]->shape, plane.value().origin, plane.value().normal);
+    if (!reflected) return reflected.error();
+
+    // opTag 1 for the copy, 2 for the join. Distinct, because both steps name elements of the same
+    // feature and a shared tag would let the two produce identical names.
+    naming::NamingContext copyNaming(ctx.namingSerial, 1);
+    auto copyMap = copyNaming.nameCopy(reflected.value(), ctx.inputs[0]->shape, ctx.inputs[0]->map,
+                                       {1, 0});
+    if (!copyMap) return copyMap.error();
+    const kernel::Shape copyShape = reflected.value().shape();
+
+    auto joined = kernel::booleanFuse(ctx.inputs[0]->shape, copyShape);
+    if (!joined) return joined.error();
+
+    naming::NamingContext joinNaming(ctx.namingSerial, 2);
+    const kernel::Shape* shapes[] = {&ctx.inputs[0]->shape, &copyShape};
+    const naming::ElementMap* maps[] = {&ctx.inputs[0]->map, &copyMap.value()};
+    auto map = joinNaming.propagate(joined.value(), {shapes[0], shapes[1]}, {maps[0], maps[1]});
+    if (!map) return map.error();
+    return Output{joined.value().shape(), std::move(map).value()};
+}
+
+/// Repeats a body along a direction, and joins the copies to it.
+///
+/// # What a count means here
+///
+/// `count` is the TOTAL number of bodies including the original, which is what every CAD system
+/// means by it and what a user counts when they look at the result. A count of 1 is therefore a
+/// legal no-op rather than an error: it is what the panel shows before anyone has typed, and
+/// refusing it would make the field impossible to clear.
+///
+/// # Why the instance coordinate, and not a running index
+///
+/// Each copy is named with its STEP ALONG THE DIRECTION, so instance 3 means "three spacings from
+/// the seed" whatever the spacing is and whichever way it points. Naming them 1, 2, 3 in creation
+/// order would reassign every reference the moment the direction flipped -- a fillet placed on the
+/// third instance would silently move to a different copy, which is the exact failure the naming
+/// layer exists to prevent. `NamingContext::Instance` carries that coordinate.
+kernel::Result<Output> computePattern(const ComputeContext& ctx) {
+    if (ctx.inputs.size() != 1) {
+        return Error{ErrorCode::InvalidInput, "A pattern needs exactly one body to repeat."};
+    }
+    auto count = require<std::int64_t>(ctx.object, "count");
+    if (!count) return count.error();
+    if (count.value() < 1) {
+        return Error{ErrorCode::InvalidInput, "A pattern needs a count of at least one."};
+    }
+    // An upper bound, and not a decorative one.
+    //
+    // Each instance costs a boolean fuse on the CALLING thread, and recompute is synchronous with
+    // no cancellation, so a four-figure count is not a slow pattern -- it is an application that
+    // has stopped answering, with no way back. The naming has a harder limit underneath: the op tag
+    // is 16 bits and each instance uses two, so a count past 32768 wraps and two instances mint
+    // identical names. Refusing here means that arithmetic can never be reached, rather than
+    // relying on nobody being patient enough to get there.
+    constexpr std::int64_t kMostInstances = 1000;
+    if (count.value() > kMostInstances) {
+        return Error{ErrorCode::InvalidInput,
+                     "A pattern of more than " + std::to_string(kMostInstances)
+                         + " is more than this can build.",
+                     "each instance is a boolean on the calling thread; see computePattern"};
+    }
+    auto dx = require<Length>(ctx.object, "dx");
+    if (!dx) return dx.error();
+    auto dy = require<Length>(ctx.object, "dy");
+    if (!dy) return dy.error();
+    auto dz = require<Length>(ctx.object, "dz");
+    if (!dz) return dz.error();
+
+    // The original, unchanged, is instance 0. Its names are the ones every existing reference
+    // already uses, so the seed keeps them and only the copies are stamped.
+    kernel::Shape shape = ctx.inputs[0]->shape;
+    naming::ElementMap map = ctx.inputs[0]->map;
+
+    const double step[3] = {dx.value().base(), dy.value().base(), dz.value().base()};
+    if (count.value() > 1 && step[0] == 0.0 && step[1] == 0.0 && step[2] == 0.0) {
+        // Refused rather than built. Every copy would land on the original, the fuse would return
+        // one body, and the feature would report success having done nothing visible -- which reads
+        // as the pattern being broken rather than as the spacing being unset.
+        return Error{ErrorCode::InvalidInput,
+                     "A pattern needs a spacing, or every copy lands on the original."};
+    }
+
+    for (std::int64_t i = 1; i < count.value(); ++i) {
+        const auto offset = static_cast<double>(i);
+        auto moved = kernel::translate(ctx.inputs[0]->shape, step[0] * offset, step[1] * offset,
+                                       step[2] * offset);
+        if (!moved) return moved.error();
+
+        // Two op tags per instance, and they must not collide across instances: the copy of
+        // instance i and the join that follows it are separate naming operations.
+        const auto tag = static_cast<std::uint16_t>(i * 2);
+        naming::NamingContext copyNaming(ctx.namingSerial, tag);
+        auto copyMap = copyNaming.nameCopy(moved.value(), ctx.inputs[0]->shape, ctx.inputs[0]->map,
+                                           {static_cast<std::uint16_t>(i), 0});
+        if (!copyMap) return copyMap.error();
+        const kernel::Shape copyShape = moved.value().shape();
+
+        auto joined = kernel::booleanFuse(shape, copyShape);
+        if (!joined) return joined.error();
+
+        naming::NamingContext joinNaming(ctx.namingSerial,
+                                         static_cast<std::uint16_t>(tag + 1));
+        auto next = joinNaming.propagate(joined.value(), {&shape, &copyShape},
+                                         {&map, &copyMap.value()});
+        if (!next) return next.error();
+        shape = joined.value().shape();
+        map = std::move(next).value();
+    }
+
+    return Output{shape, std::move(map)};
+}
+
 kernel::Result<Output> computeImport(const ComputeContext& ctx) {
     auto path = require<std::string>(ctx.object, "path");
     if (!path) return path.error();
@@ -676,6 +827,21 @@ recompute::FeatureRegistry builtins() {
            // which is worse than a dim one.
            {{{Of::Object, 1, 1, "Sketch"}}, "Select a sketch to extrude.",
             lengths({{"distance", "Distance", 10.0}})}});
+    r.add({"Mirror", 1, computeMirror, nullptr,
+           // A FACE, and the body it belongs to is the one reflected. The face is the whole
+           // geometric input -- it supplies the plane and identifies the body at once -- so there
+           // is nothing left to type and nothing to guess.
+           {{{Of::Face, 1, 1, ""}}, "Select a flat face to mirror the body about.", {}}});
+    r.add({"Pattern", 1, computePattern, nullptr,
+           // Count INCLUDES the original, which is what a user counts when looking at the result.
+           // Three at 50 mm is the shape of the answer rather than a round number that fits
+           // nothing: a count of 1 is a no-op and a spacing of 0 is refused, so neither is a
+           // useful default.
+           {{{Of::Object, 1, 1, ""}}, "Select one body to repeat.",
+            {{"count", "Count", Kind::Count, 3.0},
+             {"dx", "X spacing", Kind::Length, 50.0},
+             {"dy", "Y spacing", Kind::Length, 0.0},
+             {"dz", "Z spacing", Kind::Length, 0.0}}}});
     r.add({"Translate", 1, computeTranslate, nullptr,
            // Zero, not a guess. A move is a vector the user has in mind; a non-zero default would
            // move the part the moment the panel opened.

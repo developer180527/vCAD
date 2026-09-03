@@ -65,6 +65,7 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/sketch_overlay_upload.cpp
                                  acceptance/hole_command.cpp
                                  acceptance/cache_key_identity.cpp
+                                 acceptance/pattern_mirror.cpp
                                  acceptance/feature_reachability.cpp
                                  acceptance/revolve_move_commands.cpp
                                  acceptance/sketch_trim.cpp

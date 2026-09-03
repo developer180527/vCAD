@@ -806,6 +806,11 @@ struct ProjectView: View {
                     // than with the tools that create one.
                     command("Hole", "circle.dashed", "feature.hole"),
                     command("Move", "move.3d", "feature.translate"),
+                    // The two that make one body into many. Mirror reflects about a picked face,
+                    // Pattern repeats along a direction — both copy, so they belong together and
+                    // apart from the modifiers above.
+                    command("Mirror", "flip.horizontal", "feature.mirror"),
+                    command("Pattern", "square.grid.3x3", "feature.pattern"),
                 ], showLabels: labels, edge: .leading)
 
             RailGroup(

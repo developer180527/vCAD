@@ -1209,6 +1209,15 @@ private:
     /// and the position both come from the face, which is why picking one is the whole input.
     void addHole(double diameterMm, double depthMm);
 
+    /// Reflects the selected face's body about that face's plane, and joins the two.
+    ///
+    /// The face is the whole input: it carries the plane AND says which body to reflect, so there
+    /// is nothing to type. See computeMirror for why a face rather than three numbers.
+    void addMirror();
+
+    /// Repeats the selected body along a direction. `count` includes the original.
+    void addPattern(std::int64_t count, double dxMm, double dyMm, double dzMm);
+
     /// Adds an edge-based feature (Fillet, Chamfer) over the selected body.
     ///
     /// Applies to EVERY edge of the body, because edge picking is not wired to the viewport yet.
