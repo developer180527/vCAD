@@ -44,6 +44,7 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/camera_align.cpp
                                  acceptance/selection.cpp
                                  acceptance/edge_highlight.cpp
+                                 acceptance/selection_highlight.cpp
                                  acceptance/tip_bodies.cpp
                                  acceptance/plugin_ribbon.cpp
                                  acceptance/plugin_load_entry.cpp

@@ -248,18 +248,31 @@ std::vector<std::uint32_t> Controller::slotsOf(ObjectId id) const {
 void Controller::refreshHighlights() {
     scene_->clearHighlights();
 
-    // Selection first, hover second, so hovering something already selected reads as hovered. The
-    // opposite order makes the pointer appear to do nothing over a selected face.
-    if (selectionLevel_ == SelectionLevel::Body) {
-        for (const ObjectId id : selection_) {
-            for (const std::uint32_t slot : slotsOf(id)) {
-                scene_->setHighlight(slot, render::Highlight::Selected);
-            }
+    // Painted from WHAT IS SELECTED, never from the selection level.
+    //
+    // The same rule the command predicates learned twice, arriving here a third time. The level
+    // says what the NEXT click resolves to; it says nothing about what is already selected, and
+    // the two disagree constantly -- most obviously after a double click, which selects a body by
+    // swapping the level to Body for the duration of one call and then putting it back.
+    //
+    // What that cost: double clicking a box turned the whole body blue, because the highlight ran
+    // while the level was still temporarily Body. Moving the pointer afterwards ran this function
+    // again at Auto, which took the element branch, found no elements selected, and painted
+    // nothing -- so the body looked deselected while the Controller still had it selected, and
+    // every command that needed a body stayed enabled with nothing visibly chosen.
+    //
+    // It also explains why the iPad was fine and the desktop was not, on identical shared code:
+    // `selectionLevel_` defaults to Body and the iPad leaves it there, while the desktop sets Auto.
+    //
+    // Both lists are drawn because both can be non-empty -- selecting a body does not clear a face
+    // selection on every path -- and a selection that exists must be visible.
+    for (const ObjectId id : selection_) {
+        for (const std::uint32_t slot : slotsOf(id)) {
+            scene_->setHighlight(slot, render::Highlight::Selected);
         }
-    } else {
-        for (const ElementSelection& picked : elementSelection_) {
-            scene_->setHighlight(picked.slot, render::Highlight::Selected);
-        }
+    }
+    for (const ElementSelection& picked : elementSelection_) {
+        scene_->setHighlight(picked.slot, render::Highlight::Selected);
     }
 
     if (hoveredSlot_) scene_->setHighlight(*hoveredSlot_, render::Highlight::Hovered);

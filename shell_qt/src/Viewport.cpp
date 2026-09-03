@@ -15,6 +15,8 @@
 namespace cadqt {
 namespace {
 
+
+
 /// Column-major 4x4 times a 4-vector. Full w, no shortcuts: the placeholder projects with the
 /// SAME matrices the GPU will, so if a box lands in the wrong place here it would land in the
 /// wrong place there. Getting this approximately right would defeat the purpose.
@@ -296,6 +298,17 @@ void Viewport::resizeEvent(QResizeEvent*) {
 }
 
 void Viewport::mousePressEvent(QMouseEvent* event) {
+    // FIRST, and before every early return below, so the flag can only ever affect the release of
+    // the gesture that set it.
+    //
+    // Qt delivers the second half of a double click as MouseButtonDblClick rather than a press, so
+    // this never runs between the double click and the release it suppresses. What it does prevent
+    // is the flag outliving its gesture: it is set in one handler and cleared only if a later event
+    // reaches one specific line, and anything that returns above that line would strand it -- after
+    // which the NEXT ordinary click is silently ignored, which is a miserable thing to diagnose.
+    // No such path exists today; this is what keeps that true.
+    swallowRelease_ = false;
+
     // A drawing click, handled before the gesture mapping: while a tool is active the left button
     // draws rather than selects, which is how every CAD sketcher behaves. Navigation still works,
     // because orbit and pan are on the middle button and on Alt.
@@ -365,6 +378,10 @@ void Viewport::mouseDoubleClickEvent(QMouseEvent* event) {
         controller_.endSketchChain();
         syncDimensionField();
         markDirty();
+        // This branch has the same trailing release as the one below, and `mouseReleaseEvent` does
+        // not check `leftPressDraws` -- so without this, ending a chain by double clicking also ran
+        // an ordinary selection at the point the chain ended.
+        swallowRelease_ = true;
         return;
     }
 
@@ -379,11 +396,28 @@ void Viewport::mouseDoubleClickEvent(QMouseEvent* event) {
         const auto x = static_cast<std::uint32_t>(std::max(0.0, event->position().x() * dpr));
         const auto y = static_cast<std::uint32_t>(std::max(0.0, event->position().y() * dpr));
         const auto radius = static_cast<std::uint32_t>(std::lround(4.0 * dpr));
+        // REPLACES what the first half of this gesture just selected, exactly as the iPad's double
+        // tap does (CadViewport.mm, -doubleTapAtX:y:).
+        //
+        // Without it, Shift held: the release before this one added the FACE under the pointer, and
+        // this then added the body beside it -- so double clicking one spot with Shift selected two
+        // different things, one of which the user never asked for. Unmodified clicks were fine only
+        // because `additive` was false and the clear happened inside `select`.
+        //
+        // The consequence is deliberate and worth naming: Shift + double click now REPLACES rather
+        // than accumulating bodies. Accumulating properly needs a way to drop one element from the
+        // selection, which the Controller does not expose -- `selectElement` always pushes -- and
+        // adding one belongs in that file rather than here.
+        controller_.clearSelection();
         const auto result =
             controller_.tapAt(x, y, radius, event->modifiers().testFlag(Qt::ShiftModifier),
                               cad::app::Controller::SelectionLevel::Body);
         if (!result.message.empty()) emit pickMessage(QString::fromStdString(result.message));
         if (result.changed) markDirty();
+        // Qt sends one more release after this one. Without swallowing it, that release re-selects
+        // at the current level and the body we just chose is replaced by the face under the
+        // pointer -- see Viewport::swallowRelease_.
+        swallowRelease_ = true;
         return;
     }
     QWidget::mouseDoubleClickEvent(event);
@@ -602,6 +636,14 @@ void Viewport::mouseReleaseEvent(QMouseEvent* event) {
         return;   // it was a gesture, not a click
     }
     if (event->button() != Qt::LeftButton) return;
+
+    // The trailing half of a double click. Cleared here rather than in the double click handler,
+    // because this is the event it exists to skip and consuming it in one place keeps the two from
+    // getting out of step.
+    if (swallowRelease_) {
+        swallowRelease_ = false;
+        return;
+    }
 
     // DEVICE pixels. The id buffer is indexed in them, and forwarding logical coordinates picks at
     // half the intended position on a Retina display — a bug that looks like an inaccurate picker

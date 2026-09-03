@@ -55,6 +55,28 @@ void click(QWidget* target, QPointF at, Qt::KeyboardModifiers mods = Qt::NoModif
     QApplication::sendEvent(target, &release);
 }
 
+/// A double click, as Qt actually delivers one: press, release, DOUBLE CLICK, release.
+///
+/// The trailing release is the whole point. A test that sent only press/release/doubleClick would
+/// pass over the bug this exists for -- the body was selected by the double click and then replaced
+/// by the face under the pointer when that last release ran the ordinary selection again.
+void doubleClick(QWidget* target, QPointF at, cad::app::Controller* controller,
+                 Qt::KeyboardModifiers mods = Qt::NoModifier) {
+    const QPointF global = target->mapToGlobal(at);
+    QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::LeftButton, Qt::LeftButton, mods);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, global, Qt::LeftButton, Qt::NoButton, mods);
+    QMouseEvent second(QEvent::MouseButtonDblClick, at, global, Qt::LeftButton, Qt::LeftButton,
+                       mods);
+    // TWO release objects, not one sent twice. An event carries its accept/ignore state across
+    // sends, so re-sending the first one would hand the second dispatch whatever the first left
+    // behind -- which is not what Qt delivers, and this helper exists to deliver what Qt does.
+    QMouseEvent trailing(QEvent::MouseButtonRelease, at, global, Qt::LeftButton, Qt::NoButton, mods);
+    QApplication::sendEvent(target, &press);
+    QApplication::sendEvent(target, &release);
+    QApplication::sendEvent(target, &second);
+    QApplication::sendEvent(target, &trailing);
+}
+
 void move(QWidget* target, QPointF at) {
     const QPointF global = target->mapToGlobal(at);
     QMouseEvent moved(QEvent::MouseMove, at, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
@@ -344,6 +366,103 @@ int main(int argc, char** argv) {
             controller->setParameter("b", "a + 1mm");
             check(controller->setParameter("a", "b + 1mm") == false,
                   "a parameter that would close a cycle is refused");
+        }
+    }
+
+    // ── a double click selects the whole body ────────────────────────────────────────────
+    //
+    // Reported from the UI: "I CANNOT completely select the whole box by double clicking it."
+    // Everything below the shell was right -- Controller::tapAt at Body level selects the body and
+    // says "Selected Box" -- so the bug lived entirely in the four events Qt sends for a double
+    // click: press, release, DOUBLE CLICK, release. The double click selected the body and the
+    // release after it ran the ordinary selection again, putting the face back.
+    //
+    // Driven through real QMouseEvents against the real Viewport, because that trailing release is
+    // the entire bug and nothing below the shell can see it.
+    //
+    // A FRAME IS PRESENTED FIRST and a picking point is hunted for, because the id buffer is filled
+    // by rendering: without both, every click lands on nothing, and a gesture test aimed at nothing
+    // passes whatever the gesture does. That is not hypothetical -- the first version of this check
+    // passed with the fix removed, which is the only reason the point below is chosen rather than
+    // assumed.
+    {
+        // BACK TO THE MODEL ENVIRONMENT FIRST. An earlier section of this probe opens a sketch and
+        // leaves it open, and in a sketch a double click ends the current chain rather than
+        // selecting a body -- so without this the block below exercised a different gesture
+        // entirely and reported it as this one failing. Found by tracing the handler, not by
+        // reading it.
+        // TWO pieces of state, and cancelling the sketch clears only one of them. An earlier
+        // section also leaves the app AWAITING A SKETCH PLANE, and in that state the next click is
+        // the answer to "which plane?" -- so the first click below silently re-entered the sketch
+        // environment and the double click ended a chain instead of selecting a body. The check
+        // that we were in Model passed, because the click that broke it came afterwards.
+        controller->cancelSketchPlanePick();
+        if (controller->environment() == cad::app::Environment::Sketch) controller->cancelSketch();
+        check(controller->environment() == cad::app::Environment::Model
+                  && !controller->awaitingSketchPlane(),
+              "the double click checks run in the model environment, with no sketch pending");
+
+        controller->clearSelection();
+        controller->setSelectionLevel(Level::Auto);
+        controller->presentFrame();
+
+        const auto dpr = viewport->devicePixelRatioF();
+        QPointF target;
+        bool found = false;
+        for (int gy = 1; gy < 8 && !found; ++gy) {
+            for (int gx = 1; gx < 8 && !found; ++gx) {
+                const QPointF p(viewport->width() * gx / 8.0, viewport->height() * gy / 8.0);
+                const auto px = static_cast<std::uint32_t>(p.x() * dpr);
+                const auto py = static_cast<std::uint32_t>(p.y() * dpr);
+                if (controller->candidatesAt(px, py, 8).empty()) continue;
+                // A point where one click resolves to an ELEMENT, not straight to a body. The
+                // Shift check below is about a face and a body ending up selected together, and at
+                // a point that already picks a body there is no face for it to go wrong with --
+                // the assertion would pass whatever the code did.
+                controller->clearSelection();
+                click(viewport, p);
+                if (!controller->elementSelection().empty()) {
+                    target = p;
+                    found = true;
+                }
+                controller->presentFrame();
+            }
+        }
+
+        if (!found) {
+            // Said out loud rather than passed. This machine cannot fill an id buffer, so the
+            // gesture cannot be exercised here at all -- and a green line claiming otherwise is
+            // exactly the lying-pass this file exists to avoid.
+            std::printf("SKIP nothing pickable in the viewport, so the double click gesture "
+                        "cannot be exercised on this machine\n");
+        } else {
+            controller->clearSelection();
+            click(viewport, target);
+            const bool oneClickPicks =
+                !controller->elementSelection().empty() || !controller->selection().empty();
+
+            controller->clearSelection();
+            doubleClick(viewport, target, controller);
+            const bool bodySelected = controller->selection().size() == 1;
+            const bool noStrayElement = controller->elementSelection().empty();
+
+            check(oneClickPicks, "one click at Auto selects what is under the pointer");
+            check(bodySelected,
+                  "a double click selects the whole body, and the release after it does not "
+                  "undo that");
+            check(noStrayElement, "and the body selection is not left mixed with a face selection");
+
+            // Shift held, on ONE point. This says the modifier does not leave a face selected
+            // beside the body, and that is all it says.
+            //
+            // It does NOT cover the accumulation the clearSelection above guards against: that is
+            // two shift double clicks on two DIFFERENT bodies, and it needs a fixture with two of
+            // them placed where both can be picked. Removing that clearSelection leaves this line
+            // green, which is stated here rather than left for someone to assume otherwise.
+            controller->clearSelection();
+            doubleClick(viewport, target, controller, Qt::ShiftModifier);
+            check(controller->selection().size() == 1 && controller->elementSelection().empty(),
+                  "shift double click leaves a body selected and no stray face");
         }
     }
 

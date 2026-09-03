@@ -141,6 +141,15 @@ private:
     QPoint pressAt_;
     bool dragged_ = false;
 
+    /// Set by a double click so the release that FOLLOWS it does not undo its work.
+    ///
+    /// Qt delivers a double click as press, release, doubleClick, release. The first release
+    /// selects at the current level and the double click then selects the whole body -- and the
+    /// SECOND release ran the same selection again, putting the face back. The body was being
+    /// selected correctly and destroyed a moment later, which looks exactly like double click not
+    /// working at all.
+    bool swallowRelease_ = false;
+
     bool attached_ = false;
     /// Presenting straight to a native surface, rather than blitting a read-back image.
     bool native_ = false;
