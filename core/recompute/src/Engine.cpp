@@ -168,6 +168,24 @@ kernel::Result<std::uint64_t> Engine::cacheKeyOf(const Document& doc,
     // implementation, keep serving results computed by the old one.
     mix(h, type->version);
 
+    // The object's own id, because it is `ComputeContext::namingSerial` and therefore an INPUT to
+    // the output -- it is stamped into every element name the compute produces. A key that omits an
+    // input is the same bug as the version above, arriving through a quieter door.
+    //
+    // What it cost while it was missing: two Box features with the same dx/dy/dz hashed alike, so
+    // the second was served the FIRST one's Output -- its shape and its ElementMap. Measured: all
+    // 26 element names identical, both carrying serial 4 while the object ids were 4 and 5. Every
+    // boolean between two identical bodies then failed with "Two pieces of this shape ended up
+    // with the same identity", which reads as a naming limitation and is not one. Worse than the
+    // refusal is what the refusal was hiding: a reference to one body's face genuinely resolved in
+    // the other, and only ElementMap::collisions made that visible instead of wrong.
+    //
+    // This does give up sharing one cache entry between two identical parts, which the note below
+    // rightly prizes for DEPENDENCIES. The difference is that a dependency is consumed by content
+    // -- what it looks like is all that matters -- while the serial is consumed by identity, and
+    // two objects that must be distinguishable cannot be allowed to produce the same names.
+    mix(h, object.id().value);
+
     for (const auto& p : object.properties()) {
         if (p.cosmetic) continue;   // colour and labels must not invalidate geometry
         for (char c : p.name) mix(h, static_cast<std::uint64_t>(c));
