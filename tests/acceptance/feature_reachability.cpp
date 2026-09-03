@@ -190,19 +190,10 @@ const std::vector<Shell>& shells() {
                   {"sketch.cancel", "Bridge method cancelSketch."},
                   {"view.fit", "Bridge method fitCamera, wired to the Fit item in the view rail."},
 
-                  // KNOWN GAPS. Not decisions -- debts, recorded here so they are visible and
-                  // countable rather than discoverable only by someone diffing two shells by hand.
-                  //
-                  // Wiring the buttons alone would not finish these. The iPad bridge exposes
-                  // runCommand: and nothing else -- no beginCommand, no commandParameters, no
-                  // commitCommand -- so every command there takes its hard-coded direct-invoke
-                  // default. A Hole would always be 8 x 10 mm with no way to change it, which is
-                  // exactly the bug a5501d6 fixed on the desktop. The parameter flow has to cross
-                  // the bridge first; then these four come off the list.
-                  {"feature.hole", "KNOWN GAP: no iPad button, and no parameter flow to configure it."},
-                  {"feature.revolve", "KNOWN GAP: no iPad button, and no parameter flow."},
-                  {"feature.translate", "KNOWN GAP: no iPad button, and no parameter flow."},
-                  {"feature.measure", "KNOWN GAP: no iPad button and no readout surface yet."},
+                  // Hole, Revolve, Move and Measure were KNOWN GAPs here and have come off the
+                  // list, which is what the list is for. They needed the parameter flow across the
+                  // bridge before a button was worth adding: until then every command took its
+                  // hard-coded direct-invoke default and a Hole was always 8 x 10 mm.
                   {"sketch.edit", "KNOWN GAP: no browser context menu on the iPad to reach it from."},
               }},
     };

@@ -69,6 +69,9 @@ struct ProjectView: View {
     @State private var commandFields: [[String: String]] = []
     /// Field name to the text currently in its box, before it has been accepted.
     @State private var commandEdits: [String: String] = [:]
+    /// Whether the measurement readout is open, and what it currently reads.
+    @State private var measuring = false
+    @State private var measurementRows: [[String: String]] = []
     /// Which constraints the current sketch selection can take, from the model.
     @State private var constraints: [String] = []
     /// Dimension labels, placed by the model in view points.
@@ -162,6 +165,17 @@ struct ProjectView: View {
                     commandPanel()
                     Spacer()
                 }
+            }
+
+            if measuring {
+                VStack {
+                    HStack {
+                        Spacer()
+                        measurementPanel()
+                    }
+                    Spacer()
+                }
+                .padding(12)
             }
 
             if showDiagnostics {
@@ -533,6 +547,54 @@ struct ProjectView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.hairline, lineWidth: 1))
     }
 
+    /// What the selection measures, as a panel rather than a line of status text.
+    ///
+    /// The desktop command writes its rows into the status line and says in its own comment that a
+    /// panel would be better -- it was written that way so the capability was not left unreachable
+    /// while one was built. This is that panel, and it is the iPad's because a tablet has the room
+    /// and no keyboard to hurry back to.
+    ///
+    /// Every row is already formatted: the label, the units, the precision and the decision that a
+    /// vertex shows a position while a face shows an area all come from `measureSelection` below
+    /// the bridge. A shell that re-derived any of it would eventually disagree with the desktop
+    /// about what a face's area is.
+    private func measurementPanel() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Measure").font(.headline).foregroundStyle(Palette.text)
+                Spacer(minLength: 16)
+                Button {
+                    measuring = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Palette.secondaryText)
+                }
+            }
+
+            if measurementRows.isEmpty {
+                // Said plainly rather than shown as an empty box. "Nothing is selected" is the
+                // answer to the question, not the absence of one.
+                Text("Select a face, an edge or a body.")
+                    .font(.callout)
+                    .foregroundStyle(Palette.secondaryText)
+            } else {
+                ForEach(measurementRows, id: \.self) { row in
+                    HStack(spacing: 12) {
+                        Text(row["label"] ?? "")
+                            .foregroundStyle(Palette.secondaryText)
+                        Spacer(minLength: 12)
+                        Text(row["value"] ?? "")
+                            .foregroundStyle(Palette.text)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(minWidth: 240, alignment: .leading)
+        .background(Palette.chrome, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Palette.hairline, lineWidth: 1))
+    }
+
     private func commitCommandPanel() {
         // Every field pushed down BEFORE committing, and a refusal stops the commit.
         //
@@ -618,6 +680,10 @@ struct ProjectView: View {
         enabled = next
         treeRows = viewport.tree()
         diagnostics = viewport.diagnostics()
+        // Re-read while the readout is open, because a measurement is a question about the
+        // SELECTION and the selection changes under it. A panel showing what the last selection
+        // measured is worse than no panel: it is a plausible number for the wrong thing.
+        if measuring { measurementRows = viewport.measurement() }
     }
 
     // MARK: - Document
@@ -662,9 +728,9 @@ struct ProjectView: View {
     /// available; it asks. That is the difference between two shells over one application and two
     /// applications that resemble each other.
     ///
-    /// So the rail can only offer what the catalogue has. Revolve and Hole compute correctly in
-    /// `core/features` but have no command yet, and are therefore absent rather than present and
-    /// dead — adding them is a change to `app/`, where both shells get them at once.
+    /// So the rail can only offer what the catalogue has, and it must offer everything the
+    /// catalogue has: this rail and the Qt ribbon are checked against the same catalogue by
+    /// `feature_reachability.cpp`, because for a while they had drifted and both were green.
     private var leftRail: some View {
         // Aligned to its own edge and NOT given a fixed width: the label column grows into the
         // canvas when labels are shown, and a fixed width would clip it — which is what put
@@ -724,6 +790,9 @@ struct ProjectView: View {
                                 }
                             }),
                     command("Extrude", "arrow.up.square", "feature.extrude"),
+                    // Beside Extrude, because they are the same move: a sketch becomes a solid.
+                    // Extrude sweeps it along a line, Revolve sweeps it about one of its own edges.
+                    command("Revolve", "arrow.trianglehead.clockwise", "feature.revolve"),
                 ], showLabels: labels, edge: .leading)
 
             RailGroup(
@@ -733,6 +802,10 @@ struct ProjectView: View {
                     command("Intersect", "square.on.square.intersection.dashed", "feature.common"),
                     command("Fillet", "circle.bottomrighthalf.checkered", "feature.fillet"),
                     command("Chamfer", "triangle", "feature.chamfer"),
+                    // Modifiers of an existing body, so they belong with Fillet and Chamfer rather
+                    // than with the tools that create one.
+                    command("Hole", "circle.dashed", "feature.hole"),
+                    command("Move", "move.3d", "feature.translate"),
                 ], showLabels: labels, edge: .leading)
 
             RailGroup(
@@ -763,6 +836,18 @@ struct ProjectView: View {
                         action: { withAnimation(.easeOut(duration: 0.18)) { showTree.toggle() } }),
                     command("Roll Back", "clock.arrow.circlepath", "edit.rollback"),
                     command("Roll Forward", "clock.arrow.2.circlepath", "edit.rollforward"),
+                    // Measure names its catalogue id like every other item, so enablement is the
+                    // catalogue's answer and `feature_reachability.cpp` can see the capability is
+                    // reached. It opens the readout instead of INVOKING the command, because the
+                    // command's own action writes the rows into the status line -- the desktop's
+                    // fallback until a panel existed. This is the panel.
+                    RailItem(
+                        "Measure", "ruler", selected: measuring,
+                        action: (enabled["feature.measure"] ?? false) || measuring
+                            ? {
+                                measuring.toggle()
+                                measurementRows = measuring ? (viewport?.measurement() ?? []) : []
+                            } : nil),
                     RailItem(
                         "Renderer", "waveform.path.ecg", selected: showDiagnostics,
                         action: {
