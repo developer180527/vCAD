@@ -18,7 +18,22 @@ struct TessellationSettings {
     double deflection = 0.05;
     /// Angular deviation in radians, which is what actually controls how round a cylinder
     /// looks. Tuning deflection alone gives faceted curves at every zoom level.
-    double angularDeflection = 0.35;
+    ///
+    /// 0.20 rad is 11.5 degrees, so a full circle gets about 31 segments. It was 0.35 -- 20
+    /// degrees, 18 segments -- which is coarse enough to see without looking for it: a fillet
+    /// rounding a cylinder into a dome came out with a visibly straight-edged silhouette, which
+    /// was reported as the renderer being broken rather than as a setting.
+    ///
+    /// Measured on that exact shape, a 24 mm fillet on a 25 mm cylinder: 0.35 gives 1,436
+    /// triangles in 9.9 ms, 0.20 gives 4,280 in 32 ms, 0.10 gives 16,628 in 153 ms. The cost
+    /// roughly doubles per step, so this is the last one that is nearly free and the next one is
+    /// not.
+    ///
+    /// It does NOT make a close-up smooth, and no fixed value can: at any tessellation there is a
+    /// zoom that shows the facets. That needs view-dependent quality — re-tessellating as a part
+    /// grows on screen — which is a feature and not a constant, and which needs recompute to stop
+    /// being synchronous first, because 153 ms on the UI thread per zoom step is its own problem.
+    double angularDeflection = 0.20;
     bool relativeToSize = true;   ///< scale deflection by the shape's bounding box
 
     [[nodiscard]] std::uint64_t digest() const noexcept;

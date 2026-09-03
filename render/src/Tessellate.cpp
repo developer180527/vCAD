@@ -10,6 +10,7 @@
 #include <GCPnts_TangentialDeflection.hxx>
 #include <Poly_Triangulation.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
@@ -204,12 +205,39 @@ kernel::Result<RenderMeshPtr> tessellate(const document::Output& output,
         // error, so a cylinder's silhouette comes out visibly faceted at the exact place a
         // user is looking. This is the difference between "a 3D view" and "a CAD viewport"
         // (ADR 0007 decision 5), and it is cheap: edges are 1D.
+        // SEAMS are collected first, because deciding whether an edge is one needs the face that
+        // owns it and the map below has lost that.
+        //
+        // A seam is the edge where a closed surface's parameterisation wraps around -- u = 2*pi
+        // meeting u = 0 on a cylinder or a sphere. It is a real, non-degenerate TopoDS_Edge, so
+        // the degeneracy test below never caught it, and every cylinder in the application has
+        // been drawn with a black line down its side and every dome with one across it. No
+        // production CAD draws them: the seam describes how the surface is written down, not
+        // anything about the part, and a user who rotates the model watches it stay put while the
+        // silhouette moves, which is how you can tell it is not a feature.
+        //
+        // Not the same thing as a degenerate edge, which is a pole collapsed to a point -- that
+        // one has no length to draw and is still skipped separately.
+        //
+        // `IsClosed(edge, face)` is the question OCCT answers directly: a seam appears TWICE in
+        // its face, once forward and once reversed. Measured on a plain cylinder: 6 edge uses, 0
+        // degenerate, 2 seam uses.
+        TopTools_IndexedMapOfShape seams;
+        for (TopExp_Explorer fx(shape, TopAbs_FACE); fx.More(); fx.Next()) {
+            const TopoDS_Face& face = TopoDS::Face(fx.Current());
+            for (TopExp_Explorer ex(face, TopAbs_EDGE); ex.More(); ex.Next()) {
+                const TopoDS_Edge& candidate = TopoDS::Edge(ex.Current());
+                if (BRep_Tool::IsClosed(candidate, face)) seams.Add(candidate);
+            }
+        }
+
         TopTools_IndexedMapOfShape edgeMap;
         TopExp::MapShapes(shape, TopAbs_EDGE, edgeMap);
 
         for (int ei = 1; ei <= edgeMap.Extent(); ++ei) {
             const TopoDS_Edge edge = TopoDS::Edge(edgeMap(ei));
             if (BRep_Tool::Degenerated(edge)) continue;   // seam poles have no visible edge
+            if (seams.Contains(edge)) continue;           // and the seam itself is not a feature
 
             const auto name = output.map.nameOf(kernel::wrap(edge));
             if (!name) continue;

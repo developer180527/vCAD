@@ -58,6 +58,7 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/sketch_drawing.cpp
                                  acceptance/revolve_hole.cpp
                                  acceptance/tessellation_parallel.cpp
+                                 acceptance/seam_edges.cpp
                                  acceptance/ios_shell_commands.cpp
                                  acceptance/selection_aperture.cpp
                                  acceptance/stroke_sketching.cpp
