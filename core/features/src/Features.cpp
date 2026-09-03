@@ -520,6 +520,36 @@ kernel::Result<Output> computeTranslate(const ComputeContext& ctx) {
     return nameResult(op.value(), ctx.inputs, ctx.namingSerial);
 }
 
+/// Merges the coplanar faces a join leaves behind, and carries the names across.
+///
+/// # Why a join needs this at all
+///
+/// Fusing two boxes that meet leaves the walls they share as SEPARATE faces lying on one plane.
+/// The solid is correct and its volume is right, but it is drawn with a line across every place two
+/// copies met -- so a pattern of three overlapping boxes came out looking like four bands welded
+/// together rather than one slab. Measured on exactly that: 18 faces before, 6 after, identical
+/// volume.
+///
+/// # Why the names have to be propagated through it
+///
+/// `unifySameDomain` changes topology, so every name bound to a face it merges is a name for
+/// something that no longer exists. Naming the unified result is not optional and not cosmetic --
+/// it is the same ordering rule the importer follows for healing, for the same reason: name AFTER
+/// the topology stops changing, or the map describes a shape nobody has.
+///
+/// The operation reports its merges as `Modified`, which is exactly what `propagate` reads, so the
+/// two faces that became one arrive as a merge and both references stay alive.
+kernel::Result<Output> mergedFaces(const kernel::Shape& shape, naming::ElementMap map,
+                                   std::uint32_t serial, std::uint16_t opTag) {
+    auto unified = kernel::unifySameDomain(shape);
+    if (!unified) return unified.error();
+
+    naming::NamingContext naming(serial, opTag);
+    auto merged = naming.propagate(unified.value(), {&shape}, {&map});
+    if (!merged) return merged.error();
+    return Output{unified.value().shape(), std::move(merged).value()};
+}
+
 /// Mirrors a body about the plane of one of its own faces, and joins the reflection to it.
 ///
 /// # Why a face rather than three numbers
@@ -577,7 +607,7 @@ kernel::Result<Output> computeMirror(const ComputeContext& ctx) {
     const naming::ElementMap* maps[] = {&ctx.inputs[0]->map, &copyMap.value()};
     auto map = joinNaming.propagate(joined.value(), {shapes[0], shapes[1]}, {maps[0], maps[1]});
     if (!map) return map.error();
-    return Output{joined.value().shape(), std::move(map).value()};
+    return mergedFaces(joined.value().shape(), std::move(map).value(), ctx.namingSerial, 3);
 }
 
 /// Repeats a body along a direction, and joins the copies to it.
@@ -668,7 +698,9 @@ kernel::Result<Output> computePattern(const ComputeContext& ctx) {
         map = std::move(next).value();
     }
 
-    return Output{shape, std::move(map)};
+    if (count.value() == 1) return Output{shape, std::move(map)};   // nothing was joined
+    return mergedFaces(shape, std::move(map), ctx.namingSerial,
+                       static_cast<std::uint16_t>(count.value() * 2));
 }
 
 kernel::Result<Output> computeImport(const ComputeContext& ctx) {
@@ -834,12 +866,20 @@ recompute::FeatureRegistry builtins() {
            {{{Of::Face, 1, 1, ""}}, "Select a flat face to mirror the body about.", {}}});
     r.add({"Pattern", 1, computePattern, nullptr,
            // Count INCLUDES the original, which is what a user counts when looking at the result.
-           // Three at 50 mm is the shape of the answer rather than a round number that fits
-           // nothing: a count of 1 is a no-op and a spacing of 0 is refused, so neither is a
-           // useful default.
+           // A count of 1 is a no-op and a spacing of 0 is refused, so neither is a useful default.
+           //
+           // 150 mm because the default Box is 100 mm long, so the default gesture produces three
+           // SEPARATE copies with a gap between them -- which is what a pattern looks like. The
+           // previous 50 made every copy overlap its neighbour and fuse into one slab: correct
+           // arithmetic, and it read as the feature being broken. Arbitrary in the same way the
+           // box's own 100 x 60 x 40 is arbitrary, and for the same reason -- a default is a
+           // demonstration of what the tool does.
+           //
+           // A spacing derived from the body's own size would be better and is not expressible:
+           // the declaration is read before anything is selected.
            {{{Of::Object, 1, 1, ""}}, "Select one body to repeat.",
             {{"count", "Count", Kind::Count, 3.0},
-             {"dx", "X spacing", Kind::Length, 50.0},
+             {"dx", "X spacing", Kind::Length, 150.0},
              {"dy", "Y spacing", Kind::Length, 0.0},
              {"dz", "Z spacing", Kind::Length, 0.0}}}});
     r.add({"Translate", 1, computeTranslate, nullptr,

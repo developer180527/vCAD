@@ -465,3 +465,110 @@ TEST_CASE("Pattern and Mirror are each one undo step", "[pattern][mirror][comman
     app.refresh();
     CHECK(app.tree().size() == afterBox);
 }
+
+// ── the faces a join leaves behind ────────────────────────────────────────────────────────
+//
+// Reported from the UI: a pattern of a cuboid "adds it 4 times each adjacent to each other". The
+// arithmetic was right -- three copies 50 mm apart on a 100 mm box overlap into one 200 mm slab --
+// but the slab was DRAWN with a line at every place two copies met, because fusing solids that
+// share a wall leaves those walls as separate faces lying on one plane.
+
+TEST_CASE("overlapping copies merge into one clean body", "[pattern][faces]") {
+    // Measured as a FACE COUNT at unchanged volume, which is the only way to tell "merged" from
+    // "deleted something". 18 faces before the merge, 6 after; a box is 6 faces however many copies
+    // went into it.
+    Controller app;
+    const auto box = aBox(app);
+    const double one = volumeOf(app, box);
+
+    REQUIRE(app.beginCommand("feature.pattern"));
+    REQUIRE(app.setCommandParameter("count", "3"));
+    REQUIRE(app.setCommandParameter("dx", "50"));   // shorter than the 100 mm box, so they overlap
+    REQUIRE(app.commitCommand());
+    app.refresh();
+
+    const auto id = app.selection().front();
+    const auto object = app.document().find(id);
+    REQUIRE(object);
+    INFO("pattern reports: " << errorOf(app, id));
+    REQUIRE(object->output() != nullptr);
+
+    const auto faces = object->output()->shape.subShapes(cad::kernel::ShapeType::Face).size();
+    INFO("faces: " << faces);
+    CHECK(faces == 6);
+
+    // The volume is what says the merge removed no material: 0..200 x 60 x 40 against the original
+    // 100 x 60 x 40. A "merge" that lost a copy would also reduce the face count.
+    CHECK(volumeOf(app, id) == Approx(one * 2.0).epsilon(0.001));
+}
+
+TEST_CASE("copies that do not touch are not merged", "[pattern][faces]") {
+    // The control. unifySameDomain merges faces on the SAME surface, so bodies standing apart must
+    // keep all of theirs -- and a fix that merged unconditionally would quietly weld a pattern of
+    // separate parts into one.
+    Controller app;
+    const auto box = aBox(app);
+    const double one = volumeOf(app, box);
+
+    REQUIRE(app.beginCommand("feature.pattern"));
+    REQUIRE(app.setCommandParameter("count", "3"));
+    REQUIRE(app.setCommandParameter("dx", "200"));   // clear of the 100 mm box
+    REQUIRE(app.commitCommand());
+    app.refresh();
+
+    const auto object = app.document().find(app.selection().front());
+    REQUIRE(object->output() != nullptr);
+    CHECK(object->output()->shape.subShapes(cad::kernel::ShapeType::Face).size() == 18);
+    CHECK(volumeOf(app, app.selection().front()) == Approx(one * 3.0).epsilon(0.001));
+}
+
+TEST_CASE("names survive the merge", "[pattern][faces][naming]") {
+    // The half that is easy to lose. unifySameDomain changes topology, so a name bound to a face it
+    // merges is a name for something that no longer exists -- which is why the merge is followed by
+    // a propagate rather than done quietly after naming. Getting the order wrong produces a map
+    // describing a shape nobody has, and nothing about the geometry would say so.
+    Controller app;
+    (void)aBox(app);
+    REQUIRE(app.beginCommand("feature.pattern"));
+    REQUIRE(app.setCommandParameter("count", "3"));
+    REQUIRE(app.setCommandParameter("dx", "50"));
+    REQUIRE(app.commitCommand());
+    app.refresh();
+
+    const auto object = app.document().find(app.selection().front());
+    REQUIRE(object->output() != nullptr);
+    CHECK(object->output()->map.unnamed(object->output()->shape).empty());
+    CHECK(object->output()->map.collisions().empty());
+}
+
+TEST_CASE("a mirrored body is one clean solid too", "[mirror][faces]") {
+    // A mirror joins a body to its reflection across a shared face, so it leaves exactly the same
+    // coplanar walls a pattern does.
+    Controller app;
+    const auto box = aBox(app);
+    REQUIRE(selectAFlatFace(app, box));
+    commandNamed(app, "feature.mirror")->invoke();
+    app.refresh();
+
+    const auto object = app.document().find(app.selection().front());
+    REQUIRE(object->output() != nullptr);
+    const auto faces = object->output()->shape.subShapes(cad::kernel::ShapeType::Face).size();
+    INFO("faces: " << faces);
+    CHECK(faces == 6);
+    CHECK(object->output()->map.unnamed(object->output()->shape).empty());
+}
+
+TEST_CASE("the default spacing does not overlap the default box", "[pattern][command]") {
+    // A default is a demonstration of what the tool does. 50 mm on a 100 mm box made every copy
+    // overlap its neighbour and fuse into one slab -- correct arithmetic that read as the feature
+    // being broken, which is how it was reported.
+    Controller app;
+    const auto box = aBox(app);
+    const double one = volumeOf(app, box);
+
+    REQUIRE(app.beginCommand("feature.pattern"));
+    REQUIRE(app.commitCommand());   // the declared defaults, untouched
+    app.refresh();
+
+    CHECK(volumeOf(app, app.selection().front()) == Approx(one * 3.0).epsilon(0.001));
+}
