@@ -27,6 +27,7 @@
 
 #include <QAbstractButton>
 #include <QApplication>
+#include <QMenu>
 
 #include <filesystem>
 #include <system_error>
@@ -500,10 +501,66 @@ int main(int argc, char** argv) {
             check(tab->collapsedCount() > 0,
                   "a narrow window collapses panels rather than squeezing them illegible");
 
+            // What a collapsed panel OFFERS, which is the whole justification for collapsing it
+            // rather than dropping it. Its menu was built once, at the moment the stand-in was
+            // created -- and a panel is added to its tab before its buttons are, at which point the
+            // tab is 100 px wide and everything collapses. So every menu was built from an empty
+            // panel and stayed empty: pressing Modify popped up nothing at all. That is a command
+            // genuinely unreachable, not merely moved, and it is exactly what "some UI components
+            // just disappear" meant.
+            //
+            // `popup` rather than `showMenu`, because showMenu spins its own event loop and a probe
+            // that opens a menu it cannot close does not finish.
+            int offered = 0;
+            for (auto* stand : tab->findChildren<QToolButton*>(QStringLiteral("ribbonCollapsed"))) {
+                if (!stand->isVisible() || stand->menu() == nullptr) continue;
+                stand->menu()->popup(QPoint(0, 0));
+                QApplication::processEvents();
+                const int listed = static_cast<int>(stand->menu()->actions().size());
+                stand->menu()->hide();
+                QApplication::processEvents();
+                check(listed > 0,
+                      qPrintable(QStringLiteral("the collapsed %1 panel still offers its commands")
+                                     .arg(stand->text())));
+                offered += listed;
+            }
+            std::printf("  [probe] commands reachable through collapsed panels: %d\n", offered);
+
             window.resize(wide, 800);
             QApplication::processEvents();
             std::printf("  [probe] collapsed after widening again: %d\n", tab->collapsedCount());
             check(tab->collapsedCount() == 0, "widening it again brings every panel back");
+
+// A panel that gains a button gets WIDER, measured at once.
+            //
+            // This is the squeeze itself, and it is asserted here rather than looked at on a
+            // screenshot. A layout asks each child for its size hint once and caches it per item,
+            // dropping that cache only when the child calls updateGeometry() -- and a panel is
+            // added to its tab, and therefore first measured, BEFORE any button goes into it. So
+            // every panel went on reporting the width it had when it was empty: the width of its
+            // caption, about 42 px.
+            //
+            // The ribbon then concluded that seven panels fitted in 1024 px, collapsed none of
+            // them, and laid each out at its claimed 42: overlapping icons reading "Sta...",
+            // "BoxCyl" and "ExtrudeRevolve", with two thirds of the band left empty beside them.
+            // Nothing above this could see it, because the stale numbers drove the DECISION and the
+            // LAYOUT alike -- collapsedCount() was 0 and looked right. They agreed with each other
+            // and disagreed only with the screen.
+            //
+            // Measured on a tab of its own, unshown, because that is the state the bug lives in: a
+            // window that has been shown and resized has had its caches refreshed by Qt along the
+            // way, and asking there passes whether the fix is present or not.
+            {
+                proshell::RibbonTab fresh;
+                proshell::RibbonPanel* panel = fresh.addPanel(QStringLiteral("Zz"));
+                const int empty = fresh.expandedWidth();
+                QAction command(QStringLiteral("A Long Command"), nullptr);
+                panel->addLarge(&command);
+                const int filled = fresh.expandedWidth();
+                std::printf("  [probe] panel width empty %d, with one button %d\n", empty, filled);
+                check(filled >= empty + 40,
+                      "a panel measures wider once a button is added to it");
+            }
         }
     }
 

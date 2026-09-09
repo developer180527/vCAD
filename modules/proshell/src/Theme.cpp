@@ -223,6 +223,16 @@ void applyTheme(QApplication& app, Theme theme) {
         #ribbonLarge:disabled, #ribbonSmall:disabled { color: #a8abaf; }
         #ribbonCollapse { color: #6c7075; border: none; padding: 4px 8px; }
 
+        /* A panel that collapsed for want of room. Given the same border and hover as the buttons
+           beside it, because unstyled it was a word floating in the band with a stray arrow under
+           it -- read, correctly, as the panel having disappeared rather than moved into a menu. */
+        #ribbonCollapsed {
+            border: 1px solid #d9d7d3; border-radius: 3px; padding: 3px;
+            background: #e9e8e5; color: #3c4045;
+        }
+        #ribbonCollapsed:hover { background: #d7e5f3; border-color: #a8c7e6; }
+        #ribbonCollapsed:pressed, #ribbonCollapsed:on { background: #b9d4ee; }
+
         /* ── document tabs along the bottom, as Inventor does ─────────────────── */
         #docTabs { background: #e9e8e5; border-top: 1px solid #cfcdc9; }
         #docTabs::tab {

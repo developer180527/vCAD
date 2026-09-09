@@ -48,6 +48,10 @@ public:
     [[nodiscard]] const std::vector<QAction*>& actions() const noexcept { return actions_; }
 
 private:
+    /// Drops the cached size hint after a button is added. See the definition: the cache is dropped
+    /// by an event otherwise, and the ribbon reads the hint before that event arrives.
+    void invalidateHint();
+
     QHBoxLayout* row_;
     QWidget* currentSmallColumn_ = nullptr;
     int smallInColumn_ = 0;

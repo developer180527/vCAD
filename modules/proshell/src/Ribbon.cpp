@@ -1,6 +1,7 @@
 #include "proshell/Ribbon.h"
 
 #include <QFrame>
+#include <QIcon>
 #include <QMenu>
 #include <QResizeEvent>
 #include <QWidgetAction>
@@ -29,6 +30,23 @@ constexpr int kPanelContentHeight = 72;
 /// A collapsed panel's stand-in button. Wide enough for a caption like "Primitives" and no wider:
 /// the point of collapsing is to give the space back.
 constexpr int kCollapsedWidth = 84;
+
+/// The icon a collapsed panel shows. Larger than a small button's and smaller than a large one's,
+/// because it stands for a whole panel rather than for one command.
+constexpr int kCollapsedIcon = 24;
+
+/// The icon that stands for a panel: the first one its own buttons show.
+///
+/// Without it a collapsed panel is a bare word in the middle of the band with a stray arrow under
+/// it, which is how this came back -- "some UI components just disappear". Nothing had disappeared;
+/// the stand-in did not read as a button. Taking the panel's first icon is what Inventor does: a
+/// panel is recognised by its primary command.
+QIcon panelIcon(const RibbonPanel& panel) {
+    for (const QAction* action : panel.actions()) {
+        if (action != nullptr && !action->icon().isNull()) return action->icon();
+    }
+    return {};
+}
 
 }  // namespace
 
@@ -69,6 +87,7 @@ QToolButton* RibbonPanel::addLarge(QAction* action) {
     row_->addWidget(button, 0, Qt::AlignTop);
     currentSmallColumn_ = nullptr;   // a large button ends the current small column
     smallInColumn_ = 0;
+    invalidateHint();
     return button;
 }
 
@@ -92,6 +111,7 @@ QToolButton* RibbonPanel::addSmall(QAction* action) {
     button->setObjectName("ribbonSmall");
     qobject_cast<QVBoxLayout*>(currentSmallColumn_->layout())->addWidget(button);
     ++smallInColumn_;
+    invalidateHint();
     return button;
 }
 
@@ -102,6 +122,41 @@ void RibbonPanel::addSeparator() {
     row_->addWidget(line);
     currentSmallColumn_ = nullptr;
     smallInColumn_ = 0;
+    invalidateHint();
+}
+
+/// Drops this panel's cached size hint, at the moment its contents change.
+///
+/// A layout caches its size hint and drops the cache when a LayoutRequest EVENT reaches it, which
+/// the event loop delivers later. Buttons go into a grandchild layout, so until then the panel's
+/// own layout still reports what it measured while it was empty: the width of its caption alone. A
+/// Sketch panel holding a 32 px "Start Sketch" button reported 42 px -- the width of the word
+/// "Sketch" -- while the button row underneath it reported a live and correct 87.
+///
+/// That number is what decides whether the ribbon has room, so the ribbon concluded that seven
+/// panels needing 900 px fitted in 1024, collapsed nothing, and then laid each panel out at its
+/// claimed 42 px: "Sta...", "ExtrudeRevolve" and "BoxCyl" printed over each other in a band with
+/// two thirds of it empty. The decision and the layout were wrong from one reading, so they agreed
+/// with each other and neither looked like the odd one out.
+void RibbonPanel::invalidateHint() {
+    // `updateGeometry`, on the content widget AND on the panel, is the part that matters.
+    //
+    // A layout does not ask a child widget for its size hint every time it lays out: it keeps a
+    // QWidgetItem per child that CACHES the hint, and that cache is dropped by the child's own
+    // updateGeometry() -- nothing else. Adding a button here invalidates the layout it goes into
+    // and no more, so both caches above it kept the value they were given when the panel was
+    // empty. Measured, with the panel's own sizeHint reading a live and correct 208: the item
+    // standing for it reported 0.
+    //
+    // Everything downstream then agreed with that zero. The collapse loop concluded seven panels
+    // needing 900 px fitted in 1024 and collapsed none; the row laid each panel out at the width
+    // of its caption; and the ribbon came out as overlapping icons reading "Sta...", "BoxCyl" and
+    // "ExtrudeRevolve" with two thirds of the band empty beside them. One stale number, and the
+    // decision and the layout were wrong together -- which is why neither looked like the odd one
+    // out and why this was reported as components disappearing.
+    if (QWidget* content = row_->parentWidget()) content->updateGeometry();
+    updateGeometry();
+    if (QLayout* outer = layout()) outer->invalidate();
 }
 
 // ── tab ─────────────────────────────────────────────────────────────────────────────────
@@ -206,11 +261,19 @@ void RibbonTab::relayout() {
     while (expandedUpTo > 0 && total > available) {
         --expandedUpTo;
         total -= widths[expandedUpTo];
-        total += kCollapsedWidth + row_->spacing();   // the stand-in still costs something
+        // The stand-in still costs something, and so does the divider that stays beside it.
+        total += kCollapsedWidth + entries_[expandedUpTo].divider->sizeHint().width()
+                 + row_->spacing() * 2;
     }
 
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         Entry& e = entries_[i];
+        // Before the early return below, because a panel that stays collapsed still gains buttons:
+        // the stand-in is built at 100 px during construction, which is before the panel it stands
+        // for has any. Refreshed only when the state CHANGED, three panels in four kept the blank
+        // square they were built with.
+        if (e.collapsed != nullptr) e.collapsed->setIcon(panelIcon(*e.panel));
+
         const bool expand = i < expandedUpTo;
         if (expand != e.collapsedNow) continue;   // already in the state we want: touch nothing
 
@@ -223,8 +286,13 @@ void RibbonTab::relayout() {
         if (!expand && e.collapsed == nullptr) {
             auto* button = new QToolButton(this);
             button->setText(e.title);
-            button->setToolTip(e.title);
-            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            button->setToolTip(tr("%1 — the commands in this panel").arg(e.title));
+            // Icon above the title, drawn exactly as the panel's own large buttons are, so the
+            // stand-in reads as part of the band rather than as a label that wandered into it. The
+            // popup arrow underneath is then the one thing that tells them apart, which is the one
+            // difference that matters.
+            button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+            button->setIconSize(QSize(kCollapsedIcon, kCollapsedIcon));
             button->setPopupMode(QToolButton::InstantPopup);
             button->setAutoRaise(true);
             // Fixed to the panel's own content height and top-aligned, exactly as a panel is.
@@ -233,21 +301,40 @@ void RibbonTab::relayout() {
             button->setFixedSize(kCollapsedWidth, kPanelContentHeight);
             button->setObjectName("ribbonCollapsed");
 
+            // Filled when it OPENS, not when it is built.
+            //
+            // A panel is added to the tab before its buttons are, and adding it lays the tab out --
+            // so at 100 px, which is what a tab is wide before the window has been sized, a panel
+            // collapses the moment it exists and its stand-in is built from an empty panel. Built
+            // once at that moment, the menu is empty for the life of the window: pressing Modify
+            // popped up nothing at all, which is a command genuinely unreachable rather than merely
+            // moved. Reading the panel at open time cannot go stale.
             auto* menu = new QMenu(button);
-            for (QAction* action : e.panel->actions()) menu->addAction(action);
+            connect(menu, &QMenu::aboutToShow, menu, [menu, panel = e.panel] {
+                menu->clear();   // the actions belong to the window, so this unlists rather than deletes
+                for (QAction* action : panel->actions()) menu->addAction(action);
+            });
             button->setMenu(menu);
 
             row_->insertWidget(row_->indexOf(e.divider), button, 0, Qt::AlignTop);
             e.collapsed = button;
         }
 
+        // The divider stays. It separates one PANEL from the next, and a collapsed panel is still
+        // a panel -- hiding it ran the stand-ins together into "Modify Pattern Edit History", one
+        // undifferentiated row of words where the band had been a row of groups.
         e.panel->setVisible(expand);
-        e.divider->setVisible(expand);
         if (e.collapsed != nullptr) e.collapsed->setVisible(!expand);
         e.collapsedNow = !expand;
     }
     } while (pending_);
 
+    // Lay out NOW, from the hints just measured. Showing and hiding panels marks the row dirty and
+    // Qt would re-lay it when the event loop next gets a turn -- which is one turn too late for
+    // anything that grabs the window, and `--shot` is exactly that. It rendered a ribbon laid out
+    // for the panels' pre-collapse widths.
+    row_->invalidate();
+    row_->activate();
     laying_ = false;
 }
 

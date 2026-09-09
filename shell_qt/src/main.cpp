@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QPixmap>
+#include <QSize>
 #include <QTimer>
 
 #include <cstdio>
@@ -129,7 +130,13 @@ std::string startLogging(const char* argv0) {
 /// mid-layout, with panels at their pre-layout sizes.
 int screenshot(QApplication& app, cadqt::MainWindow& window, const QString& path, int tab,
                bool home, bool plugins, int select, const QString& settingsPage,
-               bool settings, int sketch) {
+               bool settings, int sketch, QSize size) {
+    // A SIZE, because the layout is part of what a screenshot is checking.
+    //
+    // A ribbon that is fine at 1600 px and unreadable at 900 is a ribbon nobody has checked at 900,
+    // and that is exactly how the panels came to overlap: every screenshot ever taken was of a
+    // window wide enough to hide it. Narrow is a state a window spends real time in.
+    if (size.isValid()) window.resize(size);
     window.show();
 
     // Inside the event loop, NOT before it. Creating a document brings up the GPU renderer, and
@@ -194,6 +201,7 @@ int main(int argc, char** argv) {
     app.setOrganizationName(QStringLiteral("vCAD"));
 
     QString shotPath;
+    QSize shotSize;
     int shotTheme = -1;
     int shotTab = -1;
     bool shotHome = false;
@@ -204,7 +212,11 @@ int main(int argc, char** argv) {
     int shotSelect = -1;
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
-        if (arg == QStringLiteral("--shot") && i + 1 < argc) {
+        if (arg == QStringLiteral("--size") && i + 1 < argc) {
+            // WxH, e.g. --size 900x700.
+            const auto spec = QString::fromUtf8(argv[++i]).split(QLatin1Char('x'));
+            if (spec.size() == 2) shotSize = QSize(spec[0].toInt(), spec[1].toInt());
+        } else if (arg == QStringLiteral("--shot") && i + 1 < argc) {
             shotPath = QString::fromUtf8(argv[++i]);
         } else if (arg == QStringLiteral("--tab") && i + 1 < argc) {
             shotTab = QString::fromUtf8(argv[++i]).toInt();
@@ -253,7 +265,7 @@ int main(int argc, char** argv) {
     }
     if (!shotPath.isEmpty()) {
         return screenshot(app, window, shotPath, shotTab, shotHome, shotPlugins, shotSelect,
-                          shotSettingsPage, shotSettings, shotSketch);
+                          shotSettingsPage, shotSettings, shotSketch, shotSize);
     }
 
     window.show();
