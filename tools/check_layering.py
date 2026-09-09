@@ -3,10 +3,12 @@
 
 The rule this protects:
 
-    core    -> OCCT / planegcs / assetlib / Eigen / stdlib only
-    render  -> core + RHI
-    app     -> core + render
-    shell_* -> app + its own toolkit
+    core     -> OCCT / planegcs / assetlib / Eigen / stdlib only
+    render   -> core + RHI
+    app      -> core + render
+    shell_*  -> app + its own toolkit
+    proshell -> its own toolkit ONLY: it is a professional-application shell that must not
+                learn what a solid is
 
 Violating it is not a style problem. `core` is what compiles for iPadOS, what the plugin
 C ABI is carved out of, and what the headless test suite exercises. A single Qt include in
@@ -49,6 +51,15 @@ FORBIDDEN: dict[str, list[str]] = {
         "bgfx/", "bx/", "Diligent",
         "cad/shell",
     ],
+    # modules/proshell -- the ribbon, theme, marking menu and icons, meant to be reused by an
+    # application that has nothing to do with solids. Its own header says "None of them knows what
+    # a solid is", and until now nothing checked: `modules/` was skipped wholesale, so one
+    # `#include "cad/app/Controller.h"` would have passed CI and quietly ended its reusability.
+    #
+    # Domain-free means EVERY cad/ header, not a list of the ones that would hurt most.
+    "proshell": [
+        "cad/",
+    ],
 }
 
 # Narrow, deliberate exemptions. Each needs a comment justifying it.
@@ -72,6 +83,8 @@ def layer_of(path: Path, root: Path) -> str | None:
         return "app"
     if top == "abi":
         return "abi"
+    if parts[:2] == ("modules", "proshell"):
+        return "proshell"
     return None
 
 
@@ -82,7 +95,12 @@ def main(root_arg: str) -> int:
     for path in root.rglob("*"):
         if path.suffix not in SOURCE_SUFFIXES or not path.is_file():
             continue
-        if any(part in {"build", "third_party", ".git", "modules"} for part in path.parts):
+        # VENDORED code only, not everything under modules/. planegcs and assetlib are third-party
+        # trees we do not write; proshell is ours, and skipping the whole directory to exclude the
+        # first two left the third unchecked as a side effect.
+        if any(part in {"build", "third_party", ".git"} for part in path.parts):
+            continue
+        if any(part in {"planegcs", "assetlib"} for part in path.parts):
             continue
         layer = layer_of(path, root)
         if layer is None:

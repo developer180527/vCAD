@@ -1,6 +1,9 @@
 #include "proshell/Ribbon.h"
 
 #include <QFrame>
+#include <QMenu>
+#include <QResizeEvent>
+#include <QWidgetAction>
 #include <QLabel>
 #include <QVBoxLayout>
 
@@ -22,6 +25,10 @@ constexpr int kSmallPerColumn = 3;
 /// a 32 px icon over a TWO-line label ("Start Sketch", "Section View"). Sizing it for one line
 /// clips the second, which is how it read at 62.
 constexpr int kPanelContentHeight = 72;
+
+/// A collapsed panel's stand-in button. Wide enough for a caption like "Primitives" and no wider:
+/// the point of collapsing is to give the space back.
+constexpr int kCollapsedWidth = 84;
 
 }  // namespace
 
@@ -50,6 +57,7 @@ RibbonPanel::RibbonPanel(const QString& title, QWidget* parent) : QWidget(parent
 
 QToolButton* RibbonPanel::addLarge(QAction* action) {
     if (action == nullptr) return nullptr;   // a command the app does not expose: show nothing
+    actions_.push_back(action);
     auto* button = new QToolButton(this);
     button->setDefaultAction(action);
     button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
@@ -66,6 +74,7 @@ QToolButton* RibbonPanel::addLarge(QAction* action) {
 
 QToolButton* RibbonPanel::addSmall(QAction* action) {
     if (action == nullptr) return nullptr;
+    actions_.push_back(action);
     if (currentSmallColumn_ == nullptr || smallInColumn_ >= kSmallPerColumn) {
         currentSmallColumn_ = new QWidget(this);
         auto* column = new QVBoxLayout(currentSmallColumn_);
@@ -113,7 +122,133 @@ RibbonPanel* RibbonTab::addPanel(const QString& title) {
     divider->setFrameShape(QFrame::VLine);
     divider->setObjectName("ribbonPanelDivider");
     row_->addWidget(divider);
+
+    entries_.push_back(Entry{panel, divider, nullptr, title});
+    // A panel added to a tab that is ALREADY at its final size gets no resize to react to, so
+    // without this the ribbon stays expanded and overflows until something else resizes it.
+    relayout();
     return panel;
+}
+
+int RibbonTab::expandedWidth() const {
+    int total = row_->contentsMargins().left() + row_->contentsMargins().right();
+    for (const Entry& e : entries_) {
+        total += e.panel->sizeHint().width() + e.divider->sizeHint().width() + row_->spacing() * 2;
+    }
+    return total;
+}
+
+int RibbonTab::collapsedCount() const {
+    int n = 0;
+    // `collapsedNow`, NOT isVisible(). Entry::collapsedNow says why at length: an explicitly shown
+    // child of a hidden QStackedWidget page misreports, and every tab but the current one IS such a
+    // page. Asked about a background tab, isVisible() answered zero however many panels were
+    // collapsed -- and this exists to be asked by a test, which is exactly where that would lie.
+    for (const Entry& e : entries_) {
+        if (e.collapsedNow) ++n;
+    }
+    return n;
+}
+
+void RibbonTab::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    relayout();
+}
+
+void RibbonTab::relayout() {
+    if (entries_.empty()) return;
+    if (laying_) {
+        // RECORDED, not dropped. Showing and hiding panels re-lays out this widget, which can
+        // deliver another resize before this pass finishes -- and simply returning threw that width
+        // away, leaving the ribbon laid out for the previous one until something resized it again.
+        pending_ = true;
+        return;
+    }
+    laying_ = true;
+
+    // Until no further resize arrived while we were working. Terminates because each pass reads the
+    // current width and the layout it produces cannot change that width.
+    do {
+        pending_ = false;
+
+    const int available = width();
+
+    // Widths measured from the EXPANDED panel, always -- never from whatever it is showing now.
+    // Measuring the current state makes each decision depend on the last, and a panel that
+    // collapsed because it was four pixels short then reports the button's width instead and never
+    // expands again.
+    std::vector<int> widths;
+    widths.reserve(entries_.size());
+    int total = row_->contentsMargins().left() + row_->contentsMargins().right();
+    for (const Entry& e : entries_) {
+        const int w = e.panel->sizeHint().width() + e.divider->sizeHint().width()
+                      + row_->spacing() * 2;
+        widths.push_back(w);
+        total += w;
+    }
+
+    // Collapse from the RIGHT until it fits. A ribbon's leftmost panels are its primary ones, so
+    // the right is where the least is lost -- Office's rule, and Inventor's.
+    //
+    // NO HYSTERESIS, and that is a conclusion rather than an omission.
+    //
+    // There was a guard here against the band flickering: collapsing frees space, which lets the
+    // panel fit, which expands it, which takes the space back. It could not fire. The loop stops at
+    // the FEWEST collapses that fit, so taking one back always needs more room than the width that
+    // forced the collapse -- the test reduced to `total_before + stand-in + margin <= available`
+    // while the loop had just established `total_before > available`.
+    //
+    // It could not fire because the flicker it guarded cannot happen either. This decision reads
+    // only `width()` -- the tab's own width, which hiding and showing its children does not change
+    // -- and starts from every panel expanded each time. Same width in, same layout out, with no
+    // memory of the last answer to disagree with. Re-entrancy is what `laying_` handles.
+    std::size_t expandedUpTo = entries_.size();
+    while (expandedUpTo > 0 && total > available) {
+        --expandedUpTo;
+        total -= widths[expandedUpTo];
+        total += kCollapsedWidth + row_->spacing();   // the stand-in still costs something
+    }
+
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        Entry& e = entries_[i];
+        const bool expand = i < expandedUpTo;
+        if (expand != e.collapsedNow) continue;   // already in the state we want: touch nothing
+
+        // Built on first use, so a ribbon that is never narrowed pays nothing.
+        //
+        // The menu lists the panel's own QActions rather than holding the panel widget. Moving the
+        // widget into a QWidgetAction reparents it to the menu, and it then never comes back when
+        // there is room again -- which is exactly the hang this replaced. Same actions means one
+        // enabled state and one place each command lives.
+        if (!expand && e.collapsed == nullptr) {
+            auto* button = new QToolButton(this);
+            button->setText(e.title);
+            button->setToolTip(e.title);
+            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            button->setPopupMode(QToolButton::InstantPopup);
+            button->setAutoRaise(true);
+            // Fixed to the panel's own content height and top-aligned, exactly as a panel is.
+            // Left to stretch, the button grows to fill the row, the row grows past the height the
+            // ribbon reserved for it, and the band paints over the tab bar above it.
+            button->setFixedSize(kCollapsedWidth, kPanelContentHeight);
+            button->setObjectName("ribbonCollapsed");
+
+            auto* menu = new QMenu(button);
+            for (QAction* action : e.panel->actions()) menu->addAction(action);
+            button->setMenu(menu);
+
+            row_->insertWidget(row_->indexOf(e.divider), button, 0, Qt::AlignTop);
+            e.collapsed = button;
+        }
+
+        e.panel->setVisible(expand);
+        e.divider->setVisible(expand);
+        if (e.collapsed != nullptr) e.collapsed->setVisible(!expand);
+        e.collapsedNow = !expand;
+    }
+    } while (pending_);
+
+    laying_ = false;
 }
 
 // ── ribbon ──────────────────────────────────────────────────────────────────────────────

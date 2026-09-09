@@ -40,20 +40,79 @@ public:
     QToolButton* addSmall(QAction*);
     void addSeparator();
 
+    /// Every action this panel shows, in the order it shows them.
+    ///
+    /// Kept so a collapsed panel can offer the SAME QActions in a menu rather than a second set of
+    /// buttons. One action means one enabled state and one place the command lives: a duplicate
+    /// would drift, and the copy in the popup would stop greying out with the original.
+    [[nodiscard]] const std::vector<QAction*>& actions() const noexcept { return actions_; }
+
 private:
     QHBoxLayout* row_;
     QWidget* currentSmallColumn_ = nullptr;
     int smallInColumn_ = 0;
+    std::vector<QAction*> actions_;
 };
 
+/// A tab's row of panels, which COLLAPSES rather than squeezes when the window is too narrow.
+///
+/// # Why this is not just a layout
+///
+/// A QHBoxLayout given less room than its children need shrinks them below their size hint, and a
+/// QToolButton that is too narrow elides its label. At 900 px the ribbon read "Sta...tch",
+/// "ExtrudeRevolve" run together, and small buttons showing a bare "..." -- every command still
+/// present and none of them legible. A window spends real time at that width.
+///
+/// Inventor and Office both answer this the same way: when the panels no longer fit, the ones on
+/// the RIGHT collapse into a single button that opens the panel as a popup. Nothing is removed and
+/// nothing is squeezed; the panel simply stops being spread out. That is what this does, and it is
+/// copied deliberately rather than invented -- a user who knows either application already knows
+/// what the button means.
+///
+/// Right-to-left because a ribbon puts its primary commands on the left, so collapsing from the
+/// right takes the least-used panels first. Same rule as Office.
 class RibbonTab : public QWidget {
     Q_OBJECT
 public:
     explicit RibbonTab(QWidget* parent = nullptr);
     RibbonPanel* addPanel(const QString& title);
 
+    /// How wide this tab would like to be with every panel expanded. Public so a test can ask,
+    /// because "does it collapse" is otherwise a question only a screenshot can answer.
+    [[nodiscard]] int expandedWidth() const;
+    /// How many panels are currently collapsed into popup buttons.
+    [[nodiscard]] int collapsedCount() const;
+
+protected:
+    void resizeEvent(QResizeEvent*) override;
+
 private:
+    /// One panel, and the button that stands in for it when there is no room.
+    struct Entry {
+        RibbonPanel* panel = nullptr;
+        QWidget* divider = nullptr;
+        QToolButton* collapsed = nullptr;   ///< created lazily, hidden while the panel is shown
+        QString title;
+        /// What we last asked for, so visibility is only ever CHANGED, never re-asserted.
+        ///
+        /// Qt marks a widget explicitly shown the moment show() is called on it, and an explicitly
+        /// shown child of a QStackedWidget page ignores the page being hidden -- so every tab's
+        /// panels paint at once, over the tab bar. Re-asserting "visible" on an already visible
+        /// panel is exactly that call, which is why this is tracked here rather than read back from
+        /// isVisible().
+        bool collapsedNow = false;
+    };
+
+    void relayout();
+
     QHBoxLayout* row_;
+    std::vector<Entry> entries_;
+    /// Guards against the relayout that a relayout causes. Showing or hiding a child changes this
+    /// widget's layout, which can deliver another resize before the first has finished.
+    bool laying_ = false;
+    /// Set when a resize arrives during a relayout, so the pass repeats at the newer width instead
+    /// of the layout settling on the older one.
+    bool pending_ = false;
 };
 
 class Ribbon : public QWidget {

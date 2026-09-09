@@ -18,6 +18,7 @@
 /// Runs offscreen, so it works in CI and over ssh.
 
 #include "MainWindow.h"
+#include "proshell/Ribbon.h"
 #include "ParametersDialog.h"
 #include "Viewport.h"
 
@@ -463,6 +464,46 @@ int main(int argc, char** argv) {
             doubleClick(viewport, target, controller, Qt::ShiftModifier);
             check(controller->selection().size() == 1 && controller->elementSelection().empty(),
                   "shift double click leaves a body selected and no stray face");
+        }
+    }
+
+    // ── the ribbon collapses instead of squeezing ────────────────────────────────────────
+    //
+    // The bug: at 900 px the panels overlapped the tab bar and the buttons elided to "Sta...tch".
+    // Nothing automated could have seen it -- the acceptance suite stops at `app/`, and a ribbon is
+    // pure shell. `expandedWidth()` and `collapsedCount()` were added so a test could ask; this is
+    // the test, and without it they were two accessors nobody called.
+    //
+    // The WIDENING check is the one that matters most. An earlier attempt moved the panel widget
+    // into a QWidgetAction, which reparented it to the menu, and it never came back when there was
+    // room again -- a bug that only shows up on the way back out.
+    {
+        proshell::RibbonTab* tab = nullptr;
+        for (auto* candidate : window.findChildren<proshell::RibbonTab*>()) {
+            if (candidate->isVisible()) {
+                tab = candidate;
+                break;
+            }
+        }
+        check(tab != nullptr, "the ribbon has a visible tab");
+        if (tab != nullptr) {
+            const int wide = tab->expandedWidth() + 400;
+            window.resize(wide, 800);
+            QApplication::processEvents();
+            std::printf("  [probe] expanded width %d, collapsed at %d px: %d\n",
+                        tab->expandedWidth(), wide, tab->collapsedCount());
+            check(tab->collapsedCount() == 0, "a window with room shows every ribbon panel");
+
+            window.resize(900, 700);
+            QApplication::processEvents();
+            std::printf("  [probe] collapsed at 900 px: %d\n", tab->collapsedCount());
+            check(tab->collapsedCount() > 0,
+                  "a narrow window collapses panels rather than squeezing them illegible");
+
+            window.resize(wide, 800);
+            QApplication::processEvents();
+            std::printf("  [probe] collapsed after widening again: %d\n", tab->collapsedCount());
+            check(tab->collapsedCount() == 0, "widening it again brings every panel back");
         }
     }
 
