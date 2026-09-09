@@ -1,5 +1,5 @@
 define CAD_ABI_VERSION_MAJOR	0288695b698e5310
-define CAD_ABI_VERSION_MINOR	ab92121cba3700df
+define CAD_ABI_VERSION_MINOR	ab92321cba370445
 define CAD_CAP_FILESYSTEM	434d3d3abfc808cf
 define CAD_CAP_NETWORK	8abedaf5b56d3cb5
 define CAD_CAP_SUBPROCESS	4bac296961c20be1
@@ -14,6 +14,7 @@ define CAD_CON_PARALLEL	855daf2e08df82c3
 define CAD_CON_PERPENDICULAR	157fbe913639777b
 define CAD_CON_POINT_ON_LINE	4e1cbd755386a653
 define CAD_CON_RADIUS	907666dbaf4d5659
+define CAD_CON_TANGENT	05907c42893e4b80
 define CAD_CON_VERTICAL	a12bac32abc6099d
 define CAD_ERR_BAD_HANDLE	502fe79e0ecb91fd
 define CAD_ERR_BOOLEAN_FAILED	41eb4624525fa64c
@@ -110,6 +111,7 @@ fn cad_object_volume	5644b4e40977d8c9
 fn cad_parse_length	eddba0793e1e5d5a
 fn cad_plugin_host	be932c6fda678400
 fn cad_plugin_main	7a6c7dd21f091a8f
+fn cad_plugins_load	911e6377def25428
 fn cad_readable_extensions	f471eb8617957203
 fn cad_recompute	e2fffda8f2ba4929
 fn cad_redo	efcdbc3fc59a9b35
