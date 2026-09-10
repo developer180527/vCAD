@@ -19,6 +19,7 @@
 
 #include "MainWindow.h"
 #include "proshell/Ribbon.h"
+#include "proshell/WindowChrome.h"
 #include "ParametersDialog.h"
 #include "Viewport.h"
 
@@ -562,6 +563,37 @@ int main(int argc, char** argv) {
                       "a panel measures wider once a button is added to it");
             }
         }
+    }
+
+    // ── the system's window buttons sit IN the strip ─────────────────────────────────────
+    //
+    // The whole question the merged title bar has to get right, and one no screenshot can answer:
+    // the traffic lights are not widgets, so QWidget::grab renders a window that looks finished
+    // whether they landed on the strip or in a band of their own above it. systemButtonBand() was
+    // written to be asked from outside and nothing asked it.
+    //
+    // Needs a real native window, so it runs only where there is one. Offscreen -- the CI mode --
+    // says so instead of passing, because a check that cannot run is not a check that passed.
+    if (QGuiApplication::platformName() == QStringLiteral("cocoa")) {
+        QApplication::processEvents();
+        const auto band = proshell::systemButtonBand(&window);
+        const auto* strip = window.findChild<QWidget*>(QStringLiteral("qat"));
+        const auto* fileTab = window.findChild<QToolButton*>(QStringLiteral("fileTab"));
+        check(strip != nullptr && fileTab != nullptr, "the strip and its File tab exist");
+        if (strip != nullptr && fileTab != nullptr) {
+            const int stripTop = strip->mapTo(&window, QPoint(0, 0)).y();
+            const int stripBottom = strip->mapTo(&window, QPoint(0, strip->height())).y();
+            std::printf("  [probe] window buttons at y %d..%d, strip at y %d..%d\n", band.top,
+                        band.top + band.height, stripTop, stripBottom);
+            check(band.height > 0, "the system reports where its window buttons are");
+            check(band.top >= stripTop && band.top + band.height <= stripBottom,
+                  "the window buttons sit inside the strip, not in a band above it");
+            check(fileTab->mapTo(&window, QPoint(0, 0)).x() >= proshell::systemButtonInset(&window),
+                  "File starts clear of the window buttons");
+        }
+    } else {
+        std::printf("  [probe] SKIP window-button band: the %s platform has no native window\n",
+                    qPrintable(QGuiApplication::platformName()));
     }
 
     std::printf("\n%s\n", failures == 0 ? "all shell wiring checks passed"

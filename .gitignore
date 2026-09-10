@@ -150,3 +150,7 @@ CMakeUserPresets.json    # per-developer; CMakePresets.json is shared
 
 # Real-world CAD files: large, and mostly not ours to redistribute.
 tests/data/real/
+
+# Commit-message scratch file. Kept out because it has been committed by accident twice
+# (8bc6b42, 63f671e) and then had to be deleted in a later commit (eaf9d93).
+c.txt

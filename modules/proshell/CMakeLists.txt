@@ -27,6 +27,7 @@ qt_add_library(proshell STATIC
   src/Icons.cpp
   src/MarkingMenu.cpp
   src/ShellWindow.cpp
+  include/proshell/WindowChrome.h
   src/HomePage.cpp
   src/Settings.cpp
   src/SettingsWindow.cpp
@@ -41,6 +42,17 @@ qt_add_library(proshell STATIC
   include/proshell/SettingsModel.h
   include/proshell/SettingsWindow.h
 )
+
+# The window chrome is the one part of this library that cannot be written once. macOS keeps its
+# own title bar, made transparent with the content extending under it, so the traffic lights stay
+# system buttons with every behaviour they have; everywhere else the window is genuinely frameless
+# and the strip draws its own three. See WindowChrome.h.
+if(APPLE)
+  target_sources(proshell PRIVATE src/WindowChrome_mac.mm)
+  target_link_libraries(proshell PRIVATE "-framework AppKit")
+else()
+  target_sources(proshell PRIVATE src/WindowChrome_generic.cpp)
+endif()
 
 target_include_directories(proshell PUBLIC include)
 target_link_libraries(proshell PUBLIC Qt6::Widgets)

@@ -45,6 +45,8 @@ target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugi
                                  acceptance/selection.cpp
                                  acceptance/edge_highlight.cpp
                                  acceptance/selection_highlight.cpp
+                                 acceptance/boolean_commands.cpp
+                                 acceptance/hole_panel.cpp
                                  acceptance/tip_bodies.cpp
                                  acceptance/plugin_ribbon.cpp
                                  acceptance/plugin_load_entry.cpp

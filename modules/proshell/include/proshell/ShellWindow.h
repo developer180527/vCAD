@@ -48,6 +48,7 @@
 
 #include <functional>
 
+class QHBoxLayout;
 class QLabel;
 class QMenu;
 class QSplitter;
@@ -142,8 +143,21 @@ protected:
     [[nodiscard]] virtual bool confirmClose() { return true; }
     void closeEvent(QCloseEvent*) final;
 
+    /// The first show is when the system's window buttons first exist, so it is where the room left
+    /// for them is measured. The title bar itself is merged earlier, in buildChrome.
+    void showEvent(QShowEvent*) override;
+    /// Keeps the maximise button's tooltip true however the state changed -- the button, a snap, a
+    /// shortcut, the system menu -- and re-colours the title-bar band when the theme changes.
+    void changeEvent(QEvent*) override;
+    /// Dragging and double-clicking the empty part of the strip, which is what a title bar did.
+    bool eventFilter(QObject*, QEvent*) override;
+
 private:
     void buildTopStrip();
+    /// The three buttons this library draws where the system has none of its own.
+    void buildWindowButtons(QHBoxLayout* row);
+    /// Maximise or restore. The tooltip follows in changeEvent, which sees every route to a new state.
+    void toggleMaximised();
     void buildWorkspaceArea();
     void buildDocks();
     void buildStatus();
@@ -158,6 +172,12 @@ private:
     /// right-hand widgets and the product label.
     int quickAccessInsertAt_ = 0;
     QLabel* productLabel_ = nullptr;
+    /// Room left at the leading edge for window buttons this application does not draw. Zero where
+    /// there are none; a spacer widget rather than a layout spacing so it can be re-measured once
+    /// the window exists and the real size can be asked for.
+    QWidget* systemButtonGap_ = nullptr;
+    QToolButton* maximiseButton_ = nullptr;
+    bool firstShowHandled_ = false;
 
     QSplitter* splitter_ = nullptr;
     QWidget* sidebar_ = nullptr;
