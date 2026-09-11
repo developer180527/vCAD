@@ -1,16 +1,48 @@
 include(Catch)
 
-add_executable(cad_tests
-  acceptance/main.cpp
-  acceptance/Model.cpp
-  acceptance/m1_naming_stability.cpp
-  acceptance/m1_determinism_subprocess.cpp
-  acceptance/debug_dump.cpp
-  acceptance/m1_units.cpp
-  acceptance/m1_chamfer_healing.cpp
-  acceptance/m2_external_input_cache.cpp
-  acceptance/m2_abi_layout.cpp
-)
+# ── the suite is the DIRECTORY ───────────────────────────────────────────────────────────
+#
+# Every .cpp under acceptance/ is compiled into the suite, discovered rather than listed.
+#
+# # Why not a list
+#
+# A list of 71 filenames is a file every contributor and every concurrent session has to edit to
+# add one test, and they all edit the same few lines of it. In this repo that is not theoretical:
+# concurrent sessions collide here constantly, and the tree routinely carries this file modified
+# with another session's source line in it while that source file is still untracked -- so anyone
+# staging this file has to pick their own line out of someone else's first.
+#
+# No commit has actually shipped a line without its file; the history was checked rather than
+# assumed. The cost so far is the collisions, not a broken build.
+#
+# The worse failure is quieter. A test file present in the directory but missing from the list
+# compiles nowhere, runs never, and reports nothing: the suite is green and one file's worth of
+# assertions is simply absent. Nothing in a list can detect its own omissions. A directory can.
+#
+# CONFIGURE_DEPENDS makes the build re-glob when the directory changes, so a new file is picked up
+# by `cmake --build` without anyone remembering to re-run cmake. That costs a directory stat per
+# build, which is the whole price.
+file(GLOB CAD_ACCEPTANCE_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/acceptance/*.cpp")
+list(SORT CAD_ACCEPTANCE_SOURCES)   # deterministic link order, so a build is reproducible
+
+# Compiled only where the Rust library exists, so it is removed from the discovered set and added
+# back below under its own condition.
+list(REMOVE_ITEM CAD_ACCEPTANCE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/acceptance/rust_boundary.cpp")
+
+# An empty glob would produce a test binary with no tests in it, which passes. That is the exact
+# failure this whole arrangement exists to prevent, so it is an error rather than a warning: a
+# renamed or moved directory has to break the build, not the reporting.
+if(NOT CAD_ACCEPTANCE_SOURCES)
+  message(FATAL_ERROR "tests: no sources found in acceptance/ -- has the directory moved?")
+endif()
+# main.cpp owns main() for the cross-process determinism test. Without it the suite still links,
+# against Catch2's own main, and that test silently stops being able to re-execute the binary.
+if(NOT "${CMAKE_CURRENT_SOURCE_DIR}/acceptance/main.cpp" IN_LIST CAD_ACCEPTANCE_SOURCES)
+  message(FATAL_ERROR "tests: acceptance/main.cpp is missing -- it owns main() for the suite")
+endif()
+
+add_executable(cad_tests ${CAD_ACCEPTANCE_SOURCES})
 
 target_include_directories(cad_tests PRIVATE acceptance
   ${CMAKE_SOURCE_DIR}/abi/include
@@ -29,73 +61,15 @@ if(TARGET cad::parse)
   target_link_libraries(cad_tests PRIVATE cad::parse)
 endif()
 
-# The DXF differential compiles unconditionally -- it SKIPS at runtime when the build has no Rust
-# reader, rather than vanishing from the suite. A test that disappears when a dependency is absent
-# reports the same green as one that ran.
-target_sources(cad_tests PRIVATE acceptance/dxf_differential.cpp)
+# `dxf_differential.cpp` is in the discovered set unconditionally and SKIPS at runtime when the
+# build has no Rust reader, rather than vanishing from the suite. A test that disappears when a
+# dependency is absent reports the same green as one that ran.
+#
+# `plugin_manifest.cpp` reaches into abi/src by relative path rather than through a public header.
+# Deliberate: the manifest parser is an internal detail of the loader, not part of the C ABI, and
+# giving it a public header would invite a plugin to depend on the host's own parsing of its
+# manifest.
 
-# The manifest parser, reached by relative path into abi/src rather than through a public header.
-# Deliberate: this is an internal detail of the loader, not part of the C ABI, and giving it a
-# public header would invite a plugin to depend on the host's own parsing of its manifest.
-target_sources(cad_tests PRIVATE acceptance/plugin_manifest.cpp acceptance/plugin_loader.cpp
-                                 acceptance/plugin_museum.cpp
-                                 acceptance/sketch_plane.cpp
-                                 acceptance/face_pick.cpp
-                                 acceptance/camera_align.cpp
-                                 acceptance/selection.cpp
-                                 acceptance/edge_highlight.cpp
-                                 acceptance/selection_highlight.cpp
-                                 acceptance/boolean_commands.cpp
-                                 acceptance/hole_panel.cpp
-                                 acceptance/tip_bodies.cpp
-                                 acceptance/plugin_ribbon.cpp
-                                 acceptance/plugin_load_entry.cpp
-                                 acceptance/extrude_direction.cpp
-                                 acceptance/camera_ray.cpp
-                                 acceptance/sketch_point_at.cpp
-                                 acceptance/navigation_gestures.cpp
-                                 acceptance/open_sketch.cpp
-                                 acceptance/sketch_workflow.cpp
-                                 acceptance/sketch_dimensions.cpp
-                                 acceptance/export_document.cpp
-                                 acceptance/sketch_drawing.cpp
-                                 acceptance/revolve_hole.cpp
-                                 acceptance/tessellation_parallel.cpp
-                                 acceptance/seam_edges.cpp
-                                 acceptance/ios_shell_commands.cpp
-                                 acceptance/selection_aperture.cpp
-                                 acceptance/stroke_sketching.cpp
-                                 acceptance/sketch_dimension_tool.cpp
-                                 acceptance/sketch_overlay_upload.cpp
-                                 acceptance/hole_command.cpp
-                                 acceptance/cache_key_identity.cpp
-                                 acceptance/pattern_mirror.cpp
-                                 acceptance/feature_reachability.cpp
-                                 acceptance/revolve_move_commands.cpp
-                                 acceptance/sketch_trim.cpp
-                                 acceptance/sketch_entry.cpp
-                                 acceptance/sketch_constraints.cpp
-                                 acceptance/sketch_offset.cpp
-                                 acceptance/about.cpp
-                                 acceptance/sketch_undo.cpp
-                                 acceptance/selection_as_input.cpp
-                                 acceptance/expressions.cpp
-                                 acceptance/expression_storage.cpp
-                                 acceptance/parameters.cpp
-                                 acceptance/controller_parameters.cpp
-                                 acceptance/claim_resolver.cpp
-                                 acceptance/element_name_parse.cpp
-                                 acceptance/content_hash.cpp
-                                 acceptance/serial_ledger.cpp
-                                 acceptance/naming_scheme_version.cpp
-                                 acceptance/mesh_import.cpp
-                                 acceptance/feature_inputs.cpp
-                                 acceptance/measure.cpp
-                                 acceptance/transform_rotate_mirror.cpp
-                                 acceptance/mirror_copy.cpp
-                                 acceptance/docs_claims.cpp
-                                 acceptance/occt_guarded.cpp
-                                 acceptance/shape_hash_validity.cpp)
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)
