@@ -25,6 +25,7 @@
 #include "cad/sketch/Sketch.h"
 #include "cad/io/Format.h"
 #include "cad/recompute/DdcCache.h"
+#include "cad/runtime/DocumentRuntime.h"
 #include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
 #include "cad/render/Camera.h"
@@ -55,7 +56,16 @@ using cad::recompute::FeatureRegistry;
 using cad::recompute::MemoryCache;
 
 struct Session {
-    FeatureRegistry registry = cad::features::builtins();
+    /// The feature registry, the cache tiers, and the mesh cache over them.
+    ///
+    /// ONE object, in `cad::runtime`, shared with `app::Controller`. This struct and the Controller
+    /// each assembled the identical stack by hand, and they had drifted in BOTH directions: the
+    /// Controller had no disk tier at all, and the first draft of the shared class dropped the L0
+    /// memory tier this session already had. See runtime/include/cad/runtime/DocumentRuntime.h.
+    ///
+    /// A plugin's feature types register into `runtime.registry()` -- this session's copy, which is
+    /// why they do not appear in the shells. ADR 0011 says so under "Where we actually are".
+    cad::runtime::DocumentRuntime runtime;
 
     /// Shapes handed out across the C boundary, by handle.
     ///
@@ -210,18 +220,6 @@ struct Session {
     std::unique_ptr<CadHost> host;
     std::string hostError;
     cad::io::FormatRegistry formats = cad::io::FormatRegistry::builtins();
-    std::unique_ptr<cad::recompute::Cache> cache;
-
-    /// Mesh blobs go through a BlobStore, not the Output cache — a tessellated mesh is derived
-    /// data but it is not a shape (see the note on BlobStore). When a disk cache is configured
-    /// ONE DdcCache serves both roles, so meshes reach the shared tier exactly like cooked
-    /// features do.
-    ///
-    /// NON-OWNING. The TieredCache owns it. An earlier draft held it in a second unique_ptr
-    /// as well, which compiles perfectly and double-frees on session release.
-    cad::recompute::DdcCache* ddc = nullptr;
-    std::unique_ptr<cad::recompute::BlobStore> memoryBlobs;
-    std::unique_ptr<cad::render::MeshCache> meshes;
 
     /// A NullBackend, always. The session is the headless surface: shells create their own
     /// real backend and drive the same SceneBuilder. This one exists so the scene layer is
@@ -238,20 +236,10 @@ struct Session {
     std::map<std::uint64_t, cad::sketch::Sketch> sketches;
     std::uint64_t nextSketch = 1;
 
-    explicit Session(const std::string& cacheDir) {
-        auto l0 = std::make_unique<MemoryCache>();
-        if (cacheDir.empty()) {
-            cache = std::move(l0);
-            memoryBlobs = std::make_unique<cad::recompute::MemoryBlobStore>();
-            meshes = std::make_unique<cad::render::MeshCache>(*memoryBlobs);
-        } else {
-            auto owned = std::make_unique<cad::recompute::DdcCache>(cacheDir);
-            ddc = owned.get();
-            cache = std::make_unique<cad::recompute::TieredCache>(std::move(l0),
-                                                                 std::move(owned));
-            meshes = std::make_unique<cad::render::MeshCache>(*ddc);
-        }
-        scene = std::make_unique<cad::render::SceneBuilder>(*meshes, backend.resources);
+    /// An empty `cacheDir` means memory tiers only, which is what it has always meant here: the
+    /// tiering and the DDC's double role as cache L1 and blob store now live in DocumentRuntime.
+    explicit Session(const std::string& cacheDir) : runtime(cacheDir) {
+        scene = std::make_unique<cad::render::SceneBuilder>(runtime.meshes(), backend.resources);
         cad::render::Viewport vp;
         vp.width = 1280;
         vp.height = 800;
@@ -828,7 +816,7 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
         s->hostError = "A feature declaring parameters must supply them.";
         return CAD_ERR_INVALID_INPUT;
     }
-    if (s->registry.find(desc->type_name) != nullptr) {
+    if (s->runtime.registry().find(desc->type_name) != nullptr) {
         // Refused, not replaced. Two plugins claiming one type name would silently decide between
         // themselves by load order, and a document referencing that type would mean different
         // geometry depending on what happened to be installed.
@@ -988,7 +976,7 @@ CadStatus hostRegisterFeature(void* ctx, const CadFeatureDesc* desc, const CadPa
         return cad::recompute::Output{result->shape, result->names};
     };
 
-    s->registry.add(std::move(type));
+    s->runtime.registry().add(std::move(type));
     return CAD_OK;
 }
 
@@ -1809,7 +1797,7 @@ CadStatus cad_object_add(CadSession handle, const char* type, CadObject* out) {
         if (type == nullptr || out == nullptr) {
             return fail(s, CAD_ERR_INVALID_INPUT, "Missing type or output pointer.");
         }
-        if (s.registry.find(type) == nullptr) {
+        if (s.runtime.registry().find(type) == nullptr) {
             return fail(s, CAD_ERR_UNSUPPORTED,
                         std::string("Unknown feature type '") + type + "'.");
         }
@@ -2055,7 +2043,7 @@ const char* cad_box_edge_between(CadSession handle, CadObject id, int32_t a, int
 
 CadStatus cad_recompute(CadSession handle, CadRecomputeReport* out) {
     return withSession(handle, [&](Session& s) {
-        Engine engine(s.registry, *s.cache);
+        Engine engine(s.runtime.registry(), s.runtime.cache());
         auto result = engine.recompute(s.doc());
         if (!result) {
             s.lastError = result.error().message;
@@ -2079,15 +2067,15 @@ CadStatus cad_recompute(CadSession handle, CadRecomputeReport* out) {
 
 CadStatus cad_cache_stats(CadSession handle, uint64_t* hits, uint64_t* misses) {
     return withSession(handle, [&](Session& s) {
-        if (hits != nullptr) *hits = s.cache->hits();
-        if (misses != nullptr) *misses = s.cache->misses();
+        if (hits != nullptr) *hits = s.runtime.cache().hits();
+        if (misses != nullptr) *misses = s.runtime.cache().misses();
         return CAD_OK;
     });
 }
 
 CadStatus cad_cache_reset_stats(CadSession handle) {
     return withSession(handle, [&](Session& s) {
-        s.cache->resetStats();
+        s.runtime.cache().resetStats();
         return CAD_OK;
     });
 }
@@ -2440,7 +2428,7 @@ CadStatus cad_document_open(CadSession handle, const char* path) {
         // supports partial failure, so a part with one broken fillet opens with that fillet marked
         // and everything else intact, which is the behaviour a user needs when a file arrives
         // slightly wrong.
-        Engine engine(s.registry, *s.cache);
+        Engine engine(s.runtime.registry(), s.runtime.cache());
         auto computed = engine.recompute(loaded.value());
         if (!computed) {
             s.lastError = computed.error().message;
@@ -2536,7 +2524,7 @@ CadStatus cad_object_tessellate(CadSession handle, CadObject id, double deflecti
         if (deflection > 0.0) settings.deflection = deflection;
         if (angular > 0.0) settings.angularDeflection = angular;
 
-        auto mesh = s.meshes->get(*output, settings);
+        auto mesh = s.runtime.meshes().get(*output, settings);
         if (!mesh) {
             s.lastError = mesh.error().message;
             return toStatus(mesh.error().code);
@@ -2573,15 +2561,15 @@ const char* cad_mesh_element_name(CadSession handle, CadObject id, uint32_t slot
 
 CadStatus cad_mesh_cache_stats(CadSession handle, uint64_t* hits, uint64_t* misses) {
     return withSession(handle, [&](Session& s) {
-        if (hits != nullptr) *hits = s.meshes->hits();
-        if (misses != nullptr) *misses = s.meshes->misses();
+        if (hits != nullptr) *hits = s.runtime.meshes().hits();
+        if (misses != nullptr) *misses = s.runtime.meshes().misses();
         return CAD_OK;
     });
 }
 
 CadStatus cad_mesh_cache_reset_stats(CadSession handle) {
     return withSession(handle, [&](Session& s) {
-        s.meshes->resetStats();
+        s.runtime.meshes().resetStats();
         return CAD_OK;
     });
 }

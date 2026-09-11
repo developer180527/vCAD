@@ -27,7 +27,7 @@ add_library(cad_abi ${CAD_ABI_LINKAGE}
 add_library(cad::abi ALIAS cad_abi)
 
 target_include_directories(cad_abi PUBLIC include)
-target_link_libraries(cad_abi PRIVATE cad::core cad::render)
+target_link_libraries(cad_abi PRIVATE cad::core cad::render cad::runtime)
 target_compile_definitions(cad_abi PRIVATE CAD_ABI_BUILD)
 cad_set_warnings(cad_abi)
 

@@ -12,18 +12,24 @@
 /// against the second one, which makes them evidence about the product only for as long as the two
 /// agree. `tests/acceptance/two_paths_agree.cpp` checks that they still do.
 ///
-/// This is the other half of that fix: the stack stops being assembled twice.
+/// # The two had already drifted, in both directions
 ///
-/// # The pairing that made it worth extracting
+/// Extracting this found it. `Controller` hard-coded `MemoryCache` + `MemoryBlobStore`, so the
+/// SHELLS had no disk cache tier at all: nothing a user computed was ever served from disk, and the
+/// whole point of a content-addressed cache -- that CI or a colleague's machine can have done the
+/// work already -- was unavailable in the product. `abi::Session` had the better wiring and used a
+/// `TieredCache` over `MemoryCache` and `DdcCache`.
 ///
-/// `DdcCache` implements BOTH `recompute::Cache` and `recompute::BlobStore`, so one object serves
-/// both roles and a tessellated mesh reaches the shared disk tier exactly like a cooked shape. The
-/// memory configuration needs two objects instead, `MemoryCache` and `MemoryBlobStore`. Each caller
-/// that wires this by hand has to know that, and one of the two got a different answer: the shells
-/// never had a disk tier at all, because `Controller` hard-coded the memory pair.
+/// The first version of this class then made the opposite mistake: it used the `DdcCache` alone,
+/// which would have taken the L0 memory tier AWAY from the ABI session and sent every cache lookup
+/// to disk. The tiering below is the ABI's, kept deliberately: L0 answers the lookups that
+/// interaction depends on, L1 is what survives a restart and is shared.
 ///
-/// Choosing between them is now one constructor argument rather than a detail each application
-/// rediscovers.
+/// `DdcCache` implements both `recompute::Cache` and `recompute::BlobStore`, which is what lets a
+/// tessellated mesh reach the same shared tier as a cooked shape. So on the disk path it is the L1
+/// of the cache AND the blob store, while the `TieredCache` owns it. The memory path needs two
+/// separate objects instead. Each caller that wired this by hand had to know all of that; now one
+/// constructor argument decides it.
 ///
 /// # What it deliberately does not own
 ///
@@ -42,14 +48,13 @@ namespace cad::runtime {
 
 class DocumentRuntime {
 public:
-    /// In-memory tiers only: results live as long as this object. What a test wants, and what a
-    /// shell with no cache directory configured gets.
-    DocumentRuntime();
-
-    /// With the on-disk DDC tier at `cacheDir`, which also backs the mesh store. Pass an empty
-    /// path for assetlib's default location. The disk tier is what lets a result computed on one
-    /// machine, or by CI, be served to another without recomputing.
-    explicit DocumentRuntime(std::filesystem::path cacheDir);
+    /// An EMPTY path means memory tiers only: results live as long as this object. That is what a
+    /// test wants, and it is what both callers did before this class existed.
+    ///
+    /// Otherwise the on-disk DDC tier is created at `cacheDir` and becomes the cache's L1 and the
+    /// mesh blob store, so a result computed on another machine -- or by CI -- is served rather
+    /// than recomputed.
+    explicit DocumentRuntime(std::filesystem::path cacheDir = {});
 
     ~DocumentRuntime();
     DocumentRuntime(const DocumentRuntime&) = delete;
@@ -65,22 +70,26 @@ public:
     [[nodiscard]] recompute::BlobStore& blobs() noexcept { return *blobs_; }
     [[nodiscard]] render::MeshCache& meshes() noexcept { return *meshes_; }
 
-    /// Whether computed results and meshes also persist to disk. Reported rather than inferred
-    /// from the constructor used, so a caller can say so in a status line or a support bundle.
+    /// Whether computed results and meshes also persist to disk. Reported rather than inferred by
+    /// a caller, so it can be said out loud in a status line or a support bundle.
     [[nodiscard]] bool onDisk() const noexcept { return ddc_ != nullptr; }
 
 private:
     recompute::FeatureRegistry registry_;
 
-    /// Set when a disk tier was asked for, and then serves as BOTH cache and blob store.
-    std::unique_ptr<recompute::DdcCache> ddc_;
-    /// Set otherwise. Two objects, because the memory tiers are two types.
-    std::unique_ptr<recompute::MemoryCache> memoryCache_;
+    /// `MemoryCache` on the memory path; `TieredCache` over memory and the DDC on the disk one.
+    std::unique_ptr<recompute::Cache> cache_;
+
+    /// Memory path only: the blob store has no tiering to do.
     std::unique_ptr<recompute::MemoryBlobStore> memoryBlobs_;
 
-    /// Whichever of the above is live. Non-owning: the owners are above, and which one is holding
-    /// them is exactly the detail this class exists to stop spreading.
-    recompute::Cache* cache_ = nullptr;
+    /// NON-OWNING, and the comment matters: on the disk path the `TieredCache` above owns this.
+    /// An earlier version of the same wiring in abi/src/Session.cpp held it in a second unique_ptr
+    /// as well, which compiles perfectly and double-frees on release.
+    recompute::DdcCache* ddc_ = nullptr;
+
+    /// Whichever of the above serves blobs. Non-owning: which one is holding them is exactly the
+    /// detail this class exists to stop spreading.
     recompute::BlobStore* blobs_ = nullptr;
 
     /// After the blob store, because it holds a reference to it.
