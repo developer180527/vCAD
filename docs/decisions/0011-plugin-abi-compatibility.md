@@ -1,6 +1,7 @@
 # ADR 0011 — Plugin ABI compatibility, and how it is enforced
 
-**Status:** Proposed
+**Status:** Accepted (14 Aug 2026). Implemented in part — the loader and host vtable landed 16 Aug 2026, `e856e70`; see "Where we actually are".
+Consumers: desktop native plugins, through the host vtable; and the Rust suite, through the `cad_*` session exports. **Not** the iPad shell — that was this ABI's second stated consumer and it was built on `app::Controller` in ObjC++ instead (19 Aug 2026), which is the change nothing here recorded. **Not** an app-facing UI API: the shells use `app::Controller` directly.
 **Date:** 14 Aug 2026
 
 ## The goal, stated precisely
@@ -24,14 +25,27 @@ Rust suite drives the core exclusively through them. That is the single best dec
 made about its boundary: an ABI regression fails 95 tests rather than being discovered by a third
 party. It is exercised on every build.
 
-**The plugin API has never been used by anything.** `CadHost`, `CadPluginDesc` and
-`cad_plugin_main` appear in the header and nowhere else in the repository — no loader, no host
-vtable implementation, no `dlopen`, no test. `register_feature`, `register_command` and
-`register_format` are declared with no implementation.
+**The plugin API is implemented and exercised.** `abi/src/Loader.cpp` loads a shared library
+(`dlopen`/`LoadLibrary`), `Session.cpp` implements the host vtable across ten `hostRegister*`
+entry points, and a compiled demo plugin is loaded by `plugin_loader.cpp` and
+`plugin_load_entry.cpp`, with `plugin_manifest.cpp`, `plugin_ribbon.cpp` and `plugin_museum.cpp`
+covering the rest.
 
-So the honest position: **the plugin ABI is a design, not a contract.** Nothing has ever tested it,
-and an interface with no clients is always wrong in ways that only a client reveals. It is much
-cheaper to fix that now, before anyone depends on it, than after.
+**This paragraph said the opposite until 12 Sep 2026, and that is the failure this ADR now exists
+to prevent.** It was written on 14 Aug stating that the loader, the host vtable and the tests did
+not exist; the loader landed on 16 Aug in `e856e70`; nothing revisited the record for four weeks. A decision
+record that describes a state the code left behind is worse than no record, because it is trusted.
+The `Consumers` line at the top is the counter-measure: a reason with a named owner is one someone
+notices has expired.
+
+Two things are still true and worth stating plainly:
+
+- **Capabilities are advisory.** There is no sandbox, so a plugin runs with the host's full
+  privileges; PLUGIN_CONTRACT.md 4.4 says so and the plugin manager shows it to the user.
+- **A plugin's features do not reach the application.** They register into the `abi` session's own
+  registry, and `app::Controller`'s registry is only ever `features::builtins()` — so plugin
+  features and ribbon commands exist for the Rust suite and the tests, and not in the shipping
+  shells. That is a consequence of the two parallel applications over one core, not of this ABI.
 
 ---
 

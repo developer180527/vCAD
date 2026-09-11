@@ -1,6 +1,7 @@
 # 0006 — Acceptance tests are written in Rust, against the C ABI
 
 Status: accepted (Aug 2026)
+Consumers: `tests-rs` (the Rust suite over the C ABI), the Catch2 suite in `tests/`, and CI.
 
 ## Decision
 New tests go in Rust, driving the core through `cad_plugin_abi.h`. C++ (Catch2) is retained

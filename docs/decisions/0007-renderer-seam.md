@@ -1,6 +1,7 @@
 # 0007 — Renderer architecture and the swap seam
 
 Status: accepted (Aug 2026), amended twice — see the two "Amendment" sections at the end
+Consumers: `render`, `app::Controller`, both shells, and the `abi` session — which builds its own scene over the same seam.
 
 ## Context
 

@@ -1,6 +1,7 @@
 # 0010 — Logging, and crash reporting adapted from crashkit
 
-Status: proposed (Aug 2026)
+Status: accepted (Aug 2026) — shipped 13 Aug 2026, `cd5df9a`
+Consumers: `core/log`, every layer above it, plus the adopted Qt and OCCT message handlers.
 
 ## Context
 

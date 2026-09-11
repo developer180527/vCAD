@@ -1,6 +1,7 @@
 # 0003 — Native document format is SQLite
 
-Status: proposed — decide before M2 code
+Status: accepted (Aug 2026) — shipped 13 Aug 2026, `79881c7`
+Consumers: `core/io` (DocumentStore), `app` (Controller save/open), `abi` (`cad_document_save`/`cad_document_open`).
 
 ## Decision
 A single-file SQLite database, WAL mode, versioned schema.

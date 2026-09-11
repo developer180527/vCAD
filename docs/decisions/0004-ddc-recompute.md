@@ -1,6 +1,7 @@
 # 0004 — assetlib DDC is the recompute cache
 
 Status: accepted (Aug 2026)
+Consumers: `core/recompute`, `render` (the mesh cache's blob store), and the `abi` session's cache tiers.
 
 ## Mapping
 

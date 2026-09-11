@@ -1,6 +1,7 @@
 # 0009 — Document kinds, workspaces, and the home page
 
-Status: proposed (Aug 2026)
+Status: accepted (Aug 2026) — shipped 12 Aug 2026, `d5bca0e`
+Consumers: `app` (the Session/Controller split) and `shell_qt` (document tabs, Home).
 
 ## The question
 

@@ -1,6 +1,7 @@
 # 0001 — Qt is dynamically linked and bundled; desktop only
 
 Status: accepted (Aug 2026)
+Consumers: `shell_qt` and the desktop installers. Not `core`, `app` or `render` — the layering check forbids Qt there.
 
 ## Decision
 Qt **6.8 LTS**, dynamically linked, shipped inside our own installers. Used only in `shell_qt/`.

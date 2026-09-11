@@ -1,6 +1,7 @@
 # 0002 — Renderer is bgfx, not Diligent Engine
 
 Status: accepted (Aug 2026) — **reverses the initial plan**
+Consumers: `render` alone; everything above it sees `render::Backend`, never bgfx.
 
 ## Decision
 bgfx (BSD-2-Clause).

@@ -1,6 +1,7 @@
 # 0005 — Topological naming: derivation chains, fail loud
 
 Status: accepted (Aug 2026)
+Consumers: `core/naming`, `core/features`, the `abi` boundary (element names cross it as text), and both shells' element selection.
 
 ## Problem
 OCCT gives no stable identity for a face or edge across a rebuild. The user picks a face,

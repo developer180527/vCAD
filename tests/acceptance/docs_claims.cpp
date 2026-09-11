@@ -175,6 +175,80 @@ TEST_CASE("every body reaches the frame as a drawn instance", "[docs][guard][ren
     CHECK(stats.triangles > 0);               // with geometry in them
 }
 
+TEST_CASE("every decision record says what it is and who it is for", "[docs][guard][adr]") {
+    // The decision records were the ONE class of document with no guard, and they are where the
+    // rot that cost this project a parallel application actually happened: ADR 0011 named the iPad
+    // shell as a consumer of the C ABI, the iPad was built on app::Controller instead, and nothing
+    // in the record changed. Four weeks later the duplication was still growing.
+    //
+    // Two lines are required of every ADR, and they are the two that would have caught it.
+    //
+    // STATUS, because five ADRs sat at "proposed" for decisions that had shipped -- the native
+    // format, the Qt shell, the Session/Controller split and logging were all in the product while
+    // their records still asked to be decided.
+    //
+    // CONSUMERS, because a reason with no named owner is a reason nobody notices has expired. It is
+    // the line that makes "who was this for, and are they still using it?" a question with an
+    // answer, and it is the whole counter-measure to what happened here.
+    //
+    // Structural rather than semantic on purpose. A test cannot know whether a consumer list is
+    // TRUE; it can insist the question was asked of every decision, which is what stops the next
+    // one being written without it.
+    std::vector<std::string> missing;
+    std::size_t records = 0;
+    for (const auto& entry : fs::directory_iterator(repoFile("docs/decisions"))) {
+        if (entry.path().extension() != ".md") continue;
+        ++records;
+        const auto text = contentsOf(entry.path());
+        const std::string name = entry.path().filename().string();
+        // Matched loosely: the files are not consistent about bolding, and a test that failed on
+        // `**Status:**` versus `Status:` would be a test about markdown.
+        if (text.find("Status") == std::string::npos) missing.push_back(name + " (no Status)");
+        if (text.find("Consumers:") == std::string::npos) {
+            missing.push_back(name + " (no Consumers)");
+        }
+    }
+
+    INFO("decision records missing their header lines: " << [&] {
+        std::string joined;
+        for (const auto& m : missing) joined += m + " ";
+        return joined;
+    }());
+    CHECK(missing.empty());
+
+    // A floor, not a count: an emptied or moved directory must not read as "nothing to check",
+    // which is the failure mode every guard in this file is written against.
+    CHECK(records >= 11);
+}
+
+TEST_CASE("no decision record denies a loader that exists", "[docs][guard][adr]") {
+    // The specific false claim, asserted so it cannot come back: ADR 0011 said the plugin API had
+    // "no loader, no host vtable implementation, no dlopen, no test" and that nothing had ever used
+    // it. abi/src/Loader.cpp had existed for four weeks, with a compiled demo plugin loaded by two
+    // tests.
+    //
+    // One direction only, unlike the TKHLR check below. That one is an equivalence because three
+    // documents each make a positive claim about the link line; here the honest rule is narrower --
+    // an ADR is not obliged to mention the loader, only forbidden to deny one that exists.
+    //
+    // A blunt substring match, which forbids the phrase even inside a HISTORICAL retelling: the
+    // rewrite of 0011 tripped this by saying the record had once claimed "no loader". Kept blunt on
+    // purpose. A test that tried to tell a live denial from a quoted one would be reading intent,
+    // and the cost of the rule is one reworded sentence.
+    const bool loaderExists = fs::exists(repoFile("abi/src/Loader.cpp"));
+    if (!loaderExists) return;   // nothing to contradict
+
+    for (const auto& entry : fs::directory_iterator(repoFile("docs/decisions"))) {
+        if (entry.path().extension() != ".md") continue;
+        const auto text = contentsOf(entry.path());
+        for (const std::string denial : {"no loader", "never been used by anything"}) {
+            INFO(entry.path().filename().string() << " says \"" << denial
+                                                  << "\" while abi/src/Loader.cpp exists");
+            CHECK(text.find(denial) == std::string::npos);
+        }
+    }
+}
+
 TEST_CASE("no document claims TKHLR is linked while it is not", "[docs][guard]") {
     // Three documents said it was, and used that to argue drawings were nearly within reach. The
     // link line is the only authority on this, so it is what gets read.

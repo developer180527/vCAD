@@ -1,6 +1,7 @@
 # 0008 — Qt shell: Inventor-like, and what that actually means
 
-Status: proposed (Aug 2026)
+Status: accepted (Aug 2026) — shipped 12 Aug 2026, `a98602d`
+Consumers: `shell_qt` and `modules/proshell`.
 
 ## Context
 
