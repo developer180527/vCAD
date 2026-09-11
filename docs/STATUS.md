@@ -1,6 +1,6 @@
 # Where vCAD stands
 
-Last audited: 13 Aug 2026, commit `56e16e4`. Measured from the repository, not estimated.
+Last audited: 10 Sep 2026, commit `0bfb40a`. Measured from the repository, not estimated.
 
 Re-audit rather than trusting this. Every claim was checked against code on the date above, and the
 fastest way to make it lie is to read it six months from now. The previous revision went stale in
@@ -11,11 +11,12 @@ about a week.
 ## One paragraph
 
 vCAD is a **working parametric modeller**: draw a constrained sketch, extrude it into a solid,
-edit a dimension and watch the solid follow, save it, reopen it. The foundations underneath are
-genuinely strong — topological naming, deterministic recompute with a content-addressed cache, an
-immutable document, a tested C ABI. Two things stop it being usable by anyone else: the **3D
-viewport does not render** (instancing is broken, root cause unfound), and the **feature set is
-eleven operations** against the hundreds a real modeller needs.
+edit a dimension and watch the solid follow, see it shaded on the GPU, save it, reopen it. The
+foundations underneath are genuinely strong — topological naming, deterministic recompute with a
+content-addressed cache, an immutable document, a tested C ABI. What stops it being usable by
+anyone else is no longer the renderer, which works: it is the **feature set — sixteen
+operations** against the hundreds a real modeller needs, and the absence of the production
+infrastructure in §4 below, autosave first among it.
 
 ---
 
@@ -37,29 +38,47 @@ eleven operations** against the hundreds a real modeller needs.
 | C ABI + Python | Working. ABI 1.8, with a real version tripwire |
 | **Logging** | Working. Categories, file sink beside the binary, Qt and OCCT adopted |
 | Qt desktop shell | Working. Ribbon, browser with state badges, command property panel, Home, marking menu |
-| Test infrastructure | 5 tiers, 67 Rust + 21 Catch2 + 9 pytest, CI on macOS/Linux/Windows |
+| Renderer | Working. bgfx; Metal verified on macOS by `vcad_probe`, presenting directly |
+| Test infrastructure | 5 tiers, 488 registered `ctest` entries, CI on macOS/Linux/Windows |
 
-**Size:** 62 commits, ~18,800 lines of our own code, plus vendored planegcs (13.4k) and assetlib.
+**Size:** 202 commits, ~62,600 lines of our own code (excluding vendored planegcs and assetlib).
+Counted with `git rev-list --count HEAD` and a `wc -l` over first-party sources — recount rather
+than trusting either number, which is why the command is written here instead of the method.
 
-**Kernel operations — all of them:** `Box` `Cylinder` `Sketch` `Extrude` `Fillet` `Chamfer` `Cut`
-`Fuse` `Common` `Translate` `Import`. 25 commands registered in `Controller`.
+**Kernel operations — all of them:** `Box` `Chamfer` `Common` `Cut` `Cylinder` `Extrude` `Fillet`
+`Fuse` `Hole` `Import` `Mirror` `Pattern` `Plane` `Revolve` `Sketch` `Translate`.
+
+This list is checked against `features::builtins()` in both directions by
+`tests/acceptance/docs_claims.cpp` — adding an operation fails the suite until the marker below is
+updated, and so does deleting a name to quieten it. It had rotted to eleven entries while the
+registry held sixteen.
+
+<!-- guarded:kernel-operations Box Chamfer Common Cut Cylinder Extrude Fillet Fuse Hole Import Mirror Pattern Plane Revolve Sketch Translate -->
 
 ---
 
 ## What does not work
 
-### 1. The renderer — the largest single gap
+### 1. The renderer works; what is missing is a pixel
 
-Instancing has never worked: eight distinct transforms upload, one box draws. It reproduces on both
-the persistent and transient instance paths, and **the root cause is unfound**. Consequences:
+This section used to say instancing had never worked — eight transforms uploading and one box
+drawing, root cause unfound — and that the shell's viewport was a Qt-painted placeholder. Both
+were true when written. Neither is now, and **nothing failed when they stopped being true**, which
+is why the claim is now an assertion: `docs_claims.cpp` builds two bodies and requires two DRAWN
+draw ranges in the frame, and `vcad_probe` reports the live path (`renderer Metal, presenting
+directly`).
 
-- Every scale figure this project ever published is void (ADR 0007 amendment).
-- The viewport in the shell is a **Qt-painted placeholder**, not the GPU path.
-- On-screen presentation has never been attempted.
+What is genuinely still absent:
 
-The rule that came out of it, which generalises: **a rendering claim is not established by a
-counter.** Any scale or correctness claim needs a pixel assertion on more than one part at more
-than one transform.
+- **No test looks at a pixel.** Everything above counts draw calls, instances and ranges, which is
+  a proxy. The rule that came out of the original failure still stands unmet: **a rendering claim
+  is not established by a counter.**
+- **Mesh dedupe has no producer.** One mesh shared by many instances is implemented and unit
+  tested, but nothing in the application shares a mesh: each feature's mesh carries its own element
+  names, so two identical boxes hash differently. The case it exists for is assembly references,
+  and assemblies do not exist. Every claim about 50,000-part scenes is therefore still untested at
+  the application level.
+- Scale figures published before ADR 0007's amendment remain void; nothing has re-measured them.
 
 ### 2. Not enough operations
 
@@ -90,7 +109,12 @@ Logging landed. Still absent: **crash reporting** (designed — ADR 0010), **aut
 ### 5. Test coverage has a shaped hole
 
 **Nothing looks at a pixel**, which is exactly how the instancing failure passed a benchmark and got
-reported as a success. `shell_qt` has no automated tests at all.
+reported as a success.
+
+`shell_qt` is no longer untested — `vcad_probe` drives the real widgets with synthetic events and
+asks the Controller what happened — but it is registered with `QT_QPA_PLATFORM=offscreen`, so every
+check in it that needs a native window (the window-button band, and anything about the GPU path)
+reports SKIP under `ctest` and only ever runs when someone runs the binary by hand.
 
 ---
 
@@ -110,17 +134,19 @@ strongest.
 
 ## Next, in order
 
-1. **Fix instancing.** The one place the project currently misrepresents itself.
-2. **Autosave and recovery.** Days of work; loses hours of a user's work without it.
-3. **More features** — pattern and mirror first, both unblocked now that `nameCopy` and the kernel's
-   `rotate`/`mirror` exist. Ordinary work, large payoff.
+1. **Autosave and recovery.** Days of work; loses hours of a user's work without it, and it is the
+   largest single gap between this and something a stranger can be handed.
+2. **A pixel assertion.** One test that renders a known scene and reads the buffer back would close
+   the hole every other renderer claim is measured through a proxy to avoid.
+3. **More features** — sweep, loft, shell, draft, rib. Ordinary work now that sketches, extrude,
+   pattern and mirror exist.
 4. **Point selection in sketches** — unlocks the five constraints that act on points, including
    Distance, which is what makes a sketch dimensioned rather than merely constrained.
 5. **The plugin loader**, with the module ownership table crash attribution needs (ADR 0010).
-6. Assemblies, then drawings.
+6. Assemblies, then drawings — and assemblies are what finally exercises mesh dedupe.
 
-Items 2–4 need no GPU, which matters: the renderer is the one part of the stack that cannot be
-verified without a human at a screen.
+Items 1, 3 and 4 need no GPU, which matters: the renderer is the one part of the stack whose
+remaining gap cannot be closed without either a screen or that pixel test.
 
 ---
 

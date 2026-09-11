@@ -24,9 +24,12 @@
 // two are meant to be edited together.
 
 #include "cad/app/Controller.h"
+#include "cad/features/Builtins.h"
+#include "cad/recompute/Engine.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -64,6 +67,15 @@ std::vector<std::string> guardedList(const std::string& document, const std::str
     return words;
 }
 
+/// The command with this id, or null. Used by the tests below rather than a bool, because the
+/// instancing check has to INVOKE one.
+const cad::app::Command* commandNamed(const cad::app::Controller& app, const std::string& id) {
+    for (const auto& command : app.commands()) {
+        if (command.id == id) return &command;
+    }
+    return nullptr;
+}
+
 bool commandExists(const cad::app::Controller& app, const std::string& id) {
     for (const auto& command : app.commands()) {
         if (command.id == id) return true;
@@ -99,6 +111,68 @@ TEST_CASE("every command STATUS.md omits is one it does not claim is missing", "
     const auto status = contentsOf(repoFile("docs/STATUS.md"));
     const auto missing = guardedList(status, "missing-features");
     REQUIRE(missing.size() >= 5);   // a floor, not a count: an emptied marker is the failure mode
+}
+
+TEST_CASE("STATUS.md lists exactly the operations the registry has", "[docs][guard]") {
+    // The list rotted in BOTH directions at once: it named eleven operations while the registry held
+    // sixteen, so Hole, Mirror, Pattern, Plane and Revolve were all missing from a sentence that says
+    // "all of them". Checked against the registry rather than the command catalogue because that is
+    // what the sentence claims to enumerate -- what the kernel can build, not what a button reaches.
+    //
+    // Both directions, for the reason the missing-features pair already establishes: a one-way check
+    // just moves the rot. Adding an operation must fail this, and so must deleting a name to quiet it.
+    const auto status = contentsOf(repoFile("docs/STATUS.md"));
+    auto listed = guardedList(status, "kernel-operations");
+    REQUIRE_FALSE(listed.empty());   // the marker itself must still be there
+
+    auto actual = cad::features::builtins().names();
+    std::sort(listed.begin(), listed.end());
+    std::sort(actual.begin(), actual.end());
+
+    INFO("STATUS.md's operation list and features::builtins() disagree. Edit the marker and the "
+         "sentence above it together.");
+    CHECK(listed == actual);
+}
+
+TEST_CASE("every body reaches the frame as a drawn instance", "[docs][guard][render]") {
+    // The claim this replaces said the renderer had NEVER worked -- "eight distinct transforms
+    // upload, one box draws, root cause unfound" -- and that the shell's viewport was a Qt-painted
+    // placeholder. Both were true when written; neither is now, and nothing failed when they stopped
+    // being true. So the claim becomes an assertion.
+    //
+    // UPLOADED is not DRAWN, and that distinction is the whole lesson of the original failure: a
+    // counter of instance uploads reported success while one box appeared. So this counts the draw
+    // RANGES in the frame -- what survived culling and will actually be issued -- and not just the
+    // instances resident in the buffer.
+    //
+    // What it deliberately does NOT claim is "one mesh, many instances". Measured here: two boxes
+    // come out as two meshes, two instances, two batches. Mesh dedupe is real and unit-tested
+    // (shape_hash_validity.cpp), but nothing in the application shares a mesh yet -- each feature's
+    // mesh carries its own element names, so two identical boxes hash differently, and the case
+    // dedupe exists for is assembly references, which do not exist. Asserting the bolt-field
+    // property here would be asserting a future.
+    //
+    // Headless, through the null backend, so it guards on every machine rather than only where there
+    // is a GPU. It cannot see pixels: the shell probe checks the Metal path natively, and STATUS.md
+    // still says nothing looks at a pixel, which remains true.
+    cad::app::Controller app;
+    for (int i = 0; i < 2; ++i) {
+        const auto* box = commandNamed(app, "feature.box");
+        REQUIRE(box != nullptr);
+        box->invoke();
+    }
+    app.refresh();
+
+    const auto stats = app.stats();
+    std::size_t drawnRanges = 0;
+    for (const auto& batch : app.frame().batches) drawnRanges += batch.ranges.size();
+
+    INFO("objects " << stats.objects << ", meshes " << stats.uniqueMeshes << ", instances "
+                    << stats.instances << ", draw ranges " << drawnRanges << ", triangles "
+                    << stats.triangles);
+    CHECK(stats.instances == 2);              // both bodies are in the frame
+    CHECK(drawnRanges == stats.instances);    // and both are drawn, not merely resident
+    CHECK(stats.triangles > 0);               // with geometry in them
 }
 
 TEST_CASE("no document claims TKHLR is linked while it is not", "[docs][guard]") {
