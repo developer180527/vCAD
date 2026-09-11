@@ -152,7 +152,7 @@ kernel::Result<ObjectId> Controller::importFile(const std::filesystem::path& pat
     // Recompute BEFORE committing. An import that cannot be read must not land in history: the
     // user would get an undo step for a feature that never produced geometry, and every later
     // recompute would retry the same unreadable file.
-    recompute::Engine engine(registry_, cache_);
+    recompute::Engine engine(runtime_.registry(), runtime_.cache());
     auto computed = engine.recompute(next);
     if (!computed) return computed.error();
 

@@ -128,6 +128,7 @@ message(STATUS "OCCT ${OpenCASCADE_VERSION} at ${OpenCASCADE_INCLUDE_DIR}")
 add_subdirectory(core)
 
 add_subdirectory(render)
+add_subdirectory(runtime)
 
 # abi/ is the application-facing facade over core AND render, so it sits above both —
 # it is deliberately NOT inside core/, which may not depend on the renderer.

@@ -16,6 +16,7 @@
 #include "cad/recompute/DdcCache.h"
 #include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
+#include "cad/runtime/DocumentRuntime.h"
 #include "cad/render/Camera.h"
 #include "cad/render/BgfxBackend.h"
 #include "cad/render/NullBackend.h"
@@ -1232,10 +1233,13 @@ private:
     /// no output yet.
     [[nodiscard]] std::vector<naming::ElementName> edgesOf(document::ObjectId) const;
 
-    recompute::FeatureRegistry registry_ = features::builtins();
-    recompute::MemoryCache cache_;
-    recompute::MemoryBlobStore blobs_;
-    std::unique_ptr<render::MeshCache> meshes_;
+    /// The feature registry, the cache tiers and the mesh cache over them.
+    ///
+    /// One object, in cad::runtime, because abi::Session assembled the identical stack by hand and
+    /// the two could drift with nothing to notice -- and did: the shells had no disk cache tier at
+    /// all, because the four members this replaces hard-coded the memory pair. See
+    /// runtime/include/cad/runtime/DocumentRuntime.h.
+    runtime::DocumentRuntime runtime_;
 
     /// The fallback, and still the default. The scene layer is complete and tested against it,
     /// so a shell that never attaches a GPU is fully functional — which is the whole point of

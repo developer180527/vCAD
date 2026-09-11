@@ -51,7 +51,7 @@ std::string Controller::featureTypeOf(const std::string& commandId) {
 }
 
 std::string Controller::selectionShortfall(const std::string& featureType) const {
-    const recompute::FeatureType* type = registry_.find(featureType);
+    const recompute::FeatureType* type = runtime_.registry().find(featureType);
     if (type == nullptr) return "That feature is not installed.";
     const auto& inputs = type->inputs;
     if (inputs.accepts.empty()) return {};   // a primitive needs nothing selected
@@ -108,7 +108,7 @@ bool Controller::beginCommand(const std::string& id) {
     commandParameters_.clear();
 
     const std::string type = featureTypeOf(id);
-    const recompute::FeatureType* feature = type.empty() ? nullptr : registry_.find(type);
+    const recompute::FeatureType* feature = type.empty() ? nullptr : runtime_.registry().find(type);
     if (feature == nullptr || feature->inputs.values.empty()) {
         return false;   // no values to type: the shell invokes it directly, as before
     }
@@ -304,7 +304,7 @@ void Controller::registerCommands() {
     // default is zero, because a move must not move anything the moment its panel opens, while its
     // direct invoke nudges by 10mm so that pressing the button does something visible.
     const auto declared = [this](const char* type, const char* value) {
-        const recompute::FeatureType* feature = registry_.find(type);
+        const recompute::FeatureType* feature = runtime_.registry().find(type);
         if (feature == nullptr) return 0.0;
         for (const auto& v : feature->inputs.values) {
             if (v.name == value) return v.base;

@@ -57,6 +57,14 @@ FORBIDDEN: dict[str, list[str]] = {
     # `#include "cad/app/Controller.h"` would have passed CI and quietly ended its reusability.
     #
     # Domain-free means EVERY cad/ header, not a list of the ones that would hurt most.
+    # The document-computing stack shared by app and abi. May use core and render -- that is its
+    # whole purpose -- and may not reach UP into the application or a shell, which is what would
+    # make it unusable by the C session it exists to serve.
+    "runtime": [
+        "Q",
+        "bgfx/", "bx/", "Diligent",
+        "cad/app/", "cad/shell",
+    ],
     "proshell": [
         "cad/",
     ],
@@ -83,6 +91,8 @@ def layer_of(path: Path, root: Path) -> str | None:
         return "app"
     if top == "abi":
         return "abi"
+    if top == "runtime":
+        return "runtime"
     if parts[:2] == ("modules", "proshell"):
         return "proshell"
     return None

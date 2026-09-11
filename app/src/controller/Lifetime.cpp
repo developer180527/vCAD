@@ -30,9 +30,8 @@
 
 namespace cad::app {
 Controller::Controller() {
-    meshes_ = std::make_unique<render::MeshCache>(blobs_);
     active_ = backend_.handle();
-    scene_ = std::make_unique<render::SceneBuilder>(*meshes_, *active_.resources);
+    scene_ = std::make_unique<render::SceneBuilder>(runtime_.meshes(), *active_.resources);
     viewport_.width = 1280;
     viewport_.height = 800;
     scene_->setViewport(viewport_);
@@ -248,7 +247,7 @@ void Controller::refresh() {
     const auto expressionProblems = std::move(rebuilt.problems);
     history_.replaceCurrent(std::move(rebuilt.document));
 
-    recompute::Engine engine(registry_, cache_);
+    recompute::Engine engine(runtime_.registry(), runtime_.cache());
     auto result = engine.recompute(history_.current());
     if (!result) {
         // A cycle, typically. The message names the features involved.

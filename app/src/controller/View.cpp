@@ -155,7 +155,7 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     // A SceneBuilder holds buffer ids issued by the resources it was built against, so it cannot
     // be pointed at a different backend. Rebuild it and re-upload; at startup the document is
     // usually empty, and when it is not this is a one-off cost at attach.
-    scene_ = std::make_unique<render::SceneBuilder>(*meshes_, *active_.resources);
+    scene_ = std::make_unique<render::SceneBuilder>(runtime_.meshes(), *active_.resources);
     viewport_ = config.viewport;
     scene_->setViewport(viewport_);
     active_.frames->resize(viewport_);

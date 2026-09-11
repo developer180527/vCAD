@@ -30,4 +30,4 @@ target_compile_definitions(cad_app PRIVATE
   CAD_VERSION="${PROJECT_VERSION}"
   CAD_BUILD_TYPE="$<IF:$<CONFIG:Debug>,Debug,Release>"
   CAD_PLANEGCS_COMMIT="64bc717")
-target_link_libraries(cad_app PUBLIC cad::core cad::render)
+target_link_libraries(cad_app PUBLIC cad::core cad::render cad::runtime)
