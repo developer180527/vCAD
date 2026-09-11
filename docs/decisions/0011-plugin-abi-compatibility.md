@@ -42,10 +42,18 @@ Two things are still true and worth stating plainly:
 
 - **Capabilities are advisory.** There is no sandbox, so a plugin runs with the host's full
   privileges; PLUGIN_CONTRACT.md 4.4 says so and the plugin manager shows it to the user.
-- **A plugin's features do not reach the application.** They register into the `abi` session's own
-  registry, and `app::Controller`'s registry is only ever `features::builtins()` — so plugin
-  features and ribbon commands exist for the Rust suite and the tests, and not in the shipping
-  shells. That is a consequence of the two parallel applications over one core, not of this ABI.
+- **A plugin loads in the shell, but only its settings arrive.** The Qt shell creates an ABI
+  session of its own (`MainWindow::pluginSession_`), loads plugins into it with `cad_plugins_load`,
+  and renders their settings pages — that landed in `e5f86a9`, ABI 1.21. What does not cross is
+  feature types and ribbon commands: those register into that session's registry, while the
+  document the user edits is computed by `app::Controller`'s registry, which is only ever
+  `features::builtins()`. So a plugin's feature cannot be placed in a part, and nothing anywhere
+  reads `cad_ribbon_counts`. That is a consequence of the two parallel applications over one core,
+  not of this ABI.
+
+  An earlier revision of this section said flatly that plugins did not reach the application at
+  all. That was wrong in the direction this ADR keeps failing in — asserting a state of the code
+  from memory instead of reading it.
 
 ---
 

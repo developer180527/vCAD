@@ -469,9 +469,21 @@ fn editing_a_sketch_dimension_changes_the_solid() {
     );
 }
 
-/// An unclosed profile must fail at the SKETCH, naming the profile — not deep inside the extrude.
+/// An unclosed profile fails at the EXTRUDE, and the sketch itself is fine.
+///
+/// This asserted the opposite until today: that the SKETCH failed, naming the profile, and that the
+/// extrude was merely blocked by its failed input. That was the behaviour once, and it was changed
+/// deliberately. `core/features/src/Features.cpp` records why, beside the code: "A sketch is valid
+/// geometry on its own. Requiring a closed profile HERE made drawing a single line an error on the
+/// feature: the moment the user drew anything that was not yet a loop, the model tree showed the
+/// sketch as failed and the viewport lost it." A sketch now yields a face when its curves close and
+/// the curves themselves when they do not, and `computeExtrude` states the requirement instead.
+///
+/// The test kept asserting the old rule for weeks and nothing noticed, because this suite is not in
+/// ctest. Rewritten rather than deleted: the rule still deserves a guard, at the place that now
+/// owns it.
 #[test]
-fn an_open_profile_fails_at_the_sketch_feature() {
+fn an_open_profile_fails_at_the_extrude_not_the_sketch() {
     let mut s = session();
     let sk = s.new_sketch(Plane::Xy).unwrap();
     let _ = s.add_line(sk, (0.0, 0.0), (10.0, 0.0)).unwrap();
@@ -483,18 +495,25 @@ fn an_open_profile_fails_at_the_sketch_feature() {
     // recompute reports failure rather than erroring: partial failure is the engine's contract.
     let _ = s.recompute();
 
+    // The sketch computed, and its output is the curves rather than a face.
     assert_eq!(
         s.state(profile).unwrap(),
+        State::Clean,
+        "an open sketch is valid geometry on its own"
+    );
+
+    // The consumer is where the requirement lives, and it has to SAY so: a user with an open
+    // profile needs to be told what is wrong with it, not merely that something failed.
+    assert_eq!(
+        s.state(solid).unwrap(),
         State::Failed,
-        "an open profile was accepted"
+        "an extrude of an open profile was accepted"
     );
-    let message = s.object_error(profile);
+    let message = s.object_error(solid);
     assert!(
-        message.contains("profile") || message.contains("open"),
-        "unhelpful: {message}"
+        message.contains("closed profile"),
+        "the extrude must say what it needs: {message}"
     );
-    // The extrude is blocked by its failed input rather than failing on its own terms.
-    assert_eq!(s.state(solid).unwrap(), State::Blocked);
 }
 
 /// An arc's angles must agree with its endpoints after solving.

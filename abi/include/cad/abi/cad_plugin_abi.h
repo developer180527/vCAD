@@ -50,7 +50,7 @@ extern "C" {
 #endif
 
 #define CAD_ABI_VERSION_MAJOR 1
-#define CAD_ABI_VERSION_MINOR 22
+#define CAD_ABI_VERSION_MINOR 23
 
 /* --- status ------------------------------------------------------------------------- */
 typedef int32_t CadStatus;
@@ -484,20 +484,6 @@ struct CadHost {
     CadStatus (*register_feature)(void* ctx, const CadFeatureDesc* desc,
                                   const CadParamDesc* params, uint32_t param_count);
 
-    /* Ribbon structure. Order matters and the host enforces it: a section must name a tab that
-     * exists, and a command must name a section that exists. Registering in the wrong order is
-     * refused with a message rather than silently creating what was missing.
-     *
-     * All three are legal for a plugin, which is a deliberate change from the first draft of
-     * PLUGIN_CONTRACT 7.3: it forbade new tabs outright, and the reason to allow them is that a
-     * real domain suite genuinely owns one. The protection moved from "you may not" to "the user
-     * may hide it". */
-    /* Settings arrive WITH their page, so a page and its fields cannot disagree. */
-    CadStatus (*register_settings_page)(void* ctx, const CadSettingsPageDesc* page,
-                                       const CadSettingDesc* settings, uint32_t setting_count);
-
-    CadStatus (*register_tab)(void* ctx, const CadTabDesc* desc);
-    CadStatus (*register_section)(void* ctx, const CadSectionDesc* desc);
     CadStatus (*register_command)(void* ctx, const CadCommandDesc* desc);
     CadStatus (*register_format)(void* ctx, const CadFormatDesc* desc);
 
@@ -580,6 +566,40 @@ struct CadHost {
      * accessors above accept either, so they are written once rather than duplicated for the two
      * moments a plugin needs to read its own parameters. */
     CadStatus (*compute_feature_ctx)(void* ctx, CadComputeCtx cc, CadFeatureCtx* out);
+
+    /* --- appended in 1.23: MOVED here from the middle of this struct -----------------------
+     *
+     * These three arrived in 1.19/1.20 inserted between `register_feature` and
+     * `register_command`, which is precisely what the rule above forbids. The damage was not
+     * hypothetical: the Rust suite mirrors the leading members of this struct, its `shape_sub_at`
+     * then resolved to this host's `register_command`, and a test calling it passed CAD_SUB_FACE
+     * where a descriptor pointer was expected and dereferenced address 0x1. That SIGSEGV aborted
+     * the plugin-host binary after four of its thirty-eight tests, so thirty-four stopped running
+     * and nothing said so.
+     *
+     * `abi_golden.txt` holds a hash of this struct and did catch it -- and the golden was
+     * regenerated in the SAME commit, which recorded the break as the new baseline. Regenerating
+     * the snapshot belongs in its own commit, exactly as tests-rs/cad-tests/tests/abi_golden.rs
+     * says, so that a reviewer sees what the boundary gained.
+     *
+     * Moving them is itself a layout change, and legal only because this ABI has no third-party
+     * consumers yet: the in-tree host and the demo plugin both reach these BY NAME. It restores a
+     * promise that would otherwise have been false for every plugin ever compiled. */
+
+    /* Settings arrive WITH their page, so a page and its fields cannot disagree. */
+    CadStatus (*register_settings_page)(void* ctx, const CadSettingsPageDesc* page,
+                                       const CadSettingDesc* settings, uint32_t setting_count);
+
+    /* Ribbon structure. Order matters and the host enforces it: a section must name a tab that
+     * exists, and a command must name a section that exists. Registering in the wrong order is
+     * refused with a message rather than silently creating what was missing.
+     *
+     * All three are legal for a plugin, a deliberate change from the first draft of
+     * PLUGIN_CONTRACT 7.3: it forbade new tabs outright, and the reason to allow them is that a
+     * real domain suite genuinely owns one. The protection moved from "you may not" to "the user
+     * may hide it". */
+    CadStatus (*register_tab)(void* ctx, const CadTabDesc* desc);
+    CadStatus (*register_section)(void* ctx, const CadSectionDesc* desc);
 };
 
 /* Sub-shape kinds for shape_sub_count / shape_sub_at.
