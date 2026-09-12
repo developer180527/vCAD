@@ -365,9 +365,15 @@ std::uint64_t Document::digest() const {
 // --- History ---------------------------------------------------------------------------
 
 History::History(Document initial, std::size_t depth)
-    : current_(std::move(initial)), currentLabel_("Initial"), depth_(depth) {}
+    : current_(std::move(initial)), currentLabel_("Initial"), depth_(depth) {
+    // Seeded from the document we were handed, which matters when it came from a FILE: a loaded
+    // document's allocator is already past every id the file uses, and starting the mark at 1
+    // would let the first undo hand those ids out again.
+    highWater_ = current_.nextId();
+}
 
 void History::commit(Document next, std::string label) {
+    highWater_ = std::max(highWater_, next.nextId());
     past_.push_back({current_, currentLabel_});
     if (past_.size() > depth_) past_.erase(past_.begin());
     future_.clear();          // a new edit discards the redo branch, as everywhere else
@@ -375,12 +381,19 @@ void History::commit(Document next, std::string label) {
     currentLabel_ = std::move(label);
 }
 
-void History::replaceCurrent(Document next) { current_ = std::move(next); }
+void History::replaceCurrent(Document next) {
+    highWater_ = std::max(highWater_, next.nextId());
+    current_ = std::move(next);
+}
 
 bool History::undo() {
     if (past_.empty()) return false;
+    highWater_ = std::max(highWater_, current_.nextId());
     future_.push_back({current_, currentLabel_});
-    current_ = past_.back().doc;
+    // The older document's allocator, moved FORWARD to the high-water mark. Undoing an edit
+    // releases nothing: the ids it used are still referenced by saved files, by element names in
+    // anyone's clipboard, and by the redo branch sitting in future_.
+    current_ = past_.back().doc.withNextId(highWater_);
     currentLabel_ = past_.back().label;
     past_.pop_back();
     return true;
@@ -388,8 +401,11 @@ bool History::undo() {
 
 bool History::redo() {
     if (future_.empty()) return false;
+    highWater_ = std::max(highWater_, current_.nextId());
     past_.push_back({current_, currentLabel_});
-    current_ = future_.back().doc;
+    // Symmetrically, though a redone document's allocator is normally already ahead: withNextId
+    // takes the maximum, so this costs nothing and cannot regress if the branch was pruned.
+    current_ = future_.back().doc.withNextId(highWater_);
     currentLabel_ = future_.back().label;
     future_.pop_back();
     return true;

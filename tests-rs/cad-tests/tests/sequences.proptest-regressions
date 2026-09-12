@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3cd456a9b8658134a77ea0dcefb5f45a304a8f11fe36de970abe17a5a06b9146 # shrinks to actions = [AddCylinder(1, 1), Undo, Undo, Undo, Translate(0, 0, 0, 0)]

@@ -274,6 +274,22 @@ private:
     };
     Document current_;
     std::string currentLabel_;
+
+    /// The highest id ever allocated in this history, which only ever rises.
+    ///
+    /// `nextId` lives INSIDE a Document, so undo restores an older one and hands the allocator
+    /// back ids that are already spoken for. What that produced: add a cylinder (id 1), undo it,
+    /// then add a Translate referencing that cylinder -- and the Translate is itself handed id 1,
+    /// so it references ITSELF. Recompute reports "These features depend on each other in a loop",
+    /// the save succeeds, and the file cannot be reopened.
+    ///
+    /// `Document::withNextId` already exists for exactly this invariant and says so: "Only ever
+    /// forward. A loader that passed a stale value must not be able to walk the allocator backwards
+    /// into ids that are already in use." Undo was doing what the loader is forbidden to do.
+    ///
+    /// An id is also a naming serial, stamped into every element name, so reuse is not only a
+    /// dependency problem: two features with one id name their faces identically.
+    std::uint64_t highWater_ = 1;
     std::vector<Entry> past_;
     std::vector<Entry> future_;
     std::size_t depth_;
