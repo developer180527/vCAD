@@ -141,3 +141,41 @@ endif()
 # Named separately for the same reason: "the two DXF readers disagree" is a specific and alarming
 # finding, and it should say so in the failure list.
 add_test(NAME dxf_differential COMMAND cad_tests "[differential]")
+
+# ── the Rust suite, as a ctest entry ────────────────────────────────────────────────────
+#
+# It drives the C ABI: ~190 tests including concurrency, property invariants, the torture test,
+# scaling, rollback and persistence. They are the deepest tests in the project and NOTHING RAN THEM.
+#
+# That is not a theoretical complaint. While unwatched the suite accumulated: a cad-sys ABI constant
+# three minors behind the header, a test still asserting a sketch rule that had deliberately moved to
+# the extrude, and a SIGSEGV from a reordered CadHost that aborted the plugin-host binary after four
+# of its thirty-eight tests -- so thirty-four stopped running and nothing anywhere said so. Every one
+# of those was found the first time someone typed `cargo test`.
+#
+# Its own entry rather than folded into another, for the reason rust_boundary and dxf_differential
+# already establish: "the Rust suite is broken" must appear by name in the failure list.
+if(NOT IOS)
+  find_program(CAD_CARGO cargo)
+  if(CAD_CARGO)
+    # --no-fail-fast, because a crashing binary must not hide the suites after it. That is exactly
+    # how the plugin-host SIGSEGV masked its own neighbours.
+    add_test(NAME rust_suite
+             COMMAND ${CAD_CARGO} test --no-fail-fast
+                     --manifest-path ${CMAKE_SOURCE_DIR}/tests-rs/Cargo.toml)
+    # CAD_BUILD_DIR is how cad-sys/build.rs finds the library CMake built. It deliberately does not
+    # invoke CMake itself, so this entry assumes the build already happened -- which is true of
+    # `cmake --build . && ctest` and of CI, and gives a legible error otherwise.
+    #
+    # A long timeout because the first run COMPILES the suite: minutes on a cold target directory,
+    # seconds afterwards.
+    set_tests_properties(rust_suite PROPERTIES
+      ENVIRONMENT "CAD_BUILD_DIR=${CMAKE_BINARY_DIR}"
+      LABELS "rust"
+      TIMEOUT 1800)
+  elseif(CAD_REQUIRE_RUST)
+    message(FATAL_ERROR "CAD_REQUIRE_RUST=ON but cargo was not found: the Rust suite cannot run")
+  else()
+    message(STATUS "cargo not found -- the Rust acceptance suite will not run")
+  endif()
+endif()

@@ -1,6 +1,6 @@
 # Where vCAD stands
 
-Last audited: 10 Sep 2026, commit `0bfb40a`. Measured from the repository, not estimated.
+Last audited: 12 Sep 2026, commit `af45ece`. Measured from the repository, not estimated.
 
 Re-audit rather than trusting this. Every claim was checked against code on the date above, and the
 fastest way to make it lie is to read it six months from now. The previous revision went stale in
@@ -35,15 +35,16 @@ infrastructure in §4 below, autosave first among it.
 | **Sketch → Extrude** | Working. A dimension edit drives the solid |
 | Native format (`.vpart`) | Working. SQLite, atomic saves, schema v1. Save / Save As / Open wired |
 | Foreign formats | STEP, IGES, STL. **DXF in and out**, with constraint inference on import |
-| C ABI + Python | Working. ABI 1.8, with a real version tripwire |
+| C ABI + Python | Working. ABI 1.23, with a version tripwire that fired — it sat three minors behind |
 | **Logging** | Working. Categories, file sink beside the binary, Qt and OCCT adopted |
 | Qt desktop shell | Working. Ribbon, browser with state badges, command property panel, Home, marking menu |
 | Renderer | Working. bgfx; Metal verified on macOS by `vcad_probe`, presenting directly |
-| Test infrastructure | 5 tiers, 488 registered `ctest` entries, CI on macOS/Linux/Windows |
+| Test infrastructure | 5 tiers, all under one `ctest` run — the Rust suite among them since 12 Sep — CI on macOS/Linux/Windows |
 
 **Size:** 202 commits, ~62,600 lines of our own code (excluding vendored planegcs and assetlib).
 Counted with `git rev-list --count HEAD` and a `wc -l` over first-party sources — recount rather
-than trusting either number, which is why the command is written here instead of the method.
+than trusting either number, which is why the command is written here instead of the method. For the
+test count, ask `ctest -N`: a number written here went stale three times in one afternoon.
 
 **Kernel operations — all of them:** `Box` `Chamfer` `Common` `Cut` `Cylinder` `Extrude` `Fillet`
 `Fuse` `Hole` `Import` `Mirror` `Pattern` `Plane` `Revolve` `Sketch` `Translate`.
@@ -73,11 +74,15 @@ What is genuinely still absent:
 - **No test looks at a pixel.** Everything above counts draw calls, instances and ranges, which is
   a proxy. The rule that came out of the original failure still stands unmet: **a rendering claim
   is not established by a counter.**
-- **Mesh dedupe has no producer.** One mesh shared by many instances is implemented and unit
-  tested, but nothing in the application shares a mesh: each feature's mesh carries its own element
-  names, so two identical boxes hash differently. The case it exists for is assembly references,
-  and assemblies do not exist. Every claim about 50,000-part scenes is therefore still untested at
-  the application level.
+- **Content addressing is currently lost to naming, and with it the scale claim.** One mesh shared
+  by many instances is implemented and unit tested, but nothing in the application shares a mesh,
+  and it is not merely that assemblies do not exist yet. `Engine::cacheKeyOf` mixes in the object's
+  id — correctly, because the id is the naming serial and is stamped into every element name — so
+  two identical features are not identical to the cache, and N identical parts tessellate N times.
+  Three tests in the Rust suite assert the lost property and are `#[ignore]`d against the ADR 0004
+  amendment, which records the fix: cache a RELATIVE element map keyed by content without the
+  serial, and rebase the names on retrieval. Until then every claim about 50,000-part scenes is
+  false rather than merely untested.
 - Scale figures published before ADR 0007's amendment remain void; nothing has re-measured them.
 
 ### 2. Not enough operations
@@ -136,16 +141,18 @@ strongest.
 
 1. **Autosave and recovery.** Days of work; loses hours of a user's work without it, and it is the
    largest single gap between this and something a stranger can be handed.
-2. **A pixel assertion.** One test that renders a known scene and reads the buffer back would close
+2. **Rebasable cached names**, which buys back content addressing and the scale claim — see the
+   ADR 0004 amendment. Three ignored Rust tests come back on when it lands.
+3. **A pixel assertion.** One test that renders a known scene and reads the buffer back would close
    the hole every other renderer claim is measured through a proxy to avoid.
-3. **More features** — sweep, loft, shell, draft, rib. Ordinary work now that sketches, extrude,
+4. **More features** — sweep, loft, shell, draft, rib. Ordinary work now that sketches, extrude,
    pattern and mirror exist.
-4. **Point selection in sketches** — unlocks the five constraints that act on points, including
+5. **Point selection in sketches** — unlocks the five constraints that act on points, including
    Distance, which is what makes a sketch dimensioned rather than merely constrained.
-5. **The plugin loader**, with the module ownership table crash attribution needs (ADR 0010).
-6. Assemblies, then drawings — and assemblies are what finally exercises mesh dedupe.
+6. **The plugin loader**, with the module ownership table crash attribution needs (ADR 0010).
+7. Assemblies, then drawings — and assemblies are what finally exercises mesh dedupe.
 
-Items 1, 3 and 4 need no GPU, which matters: the renderer is the one part of the stack whose
+Items 1, 2, 4 and 5 need no GPU, which matters: the renderer is the one part of the stack whose
 remaining gap cannot be closed without either a screen or that pixel test.
 
 ---

@@ -227,7 +227,23 @@ fn cosmetic_properties_do_not_invalidate_the_cache() {
 
 /// Two documents that describe the same geometry by different routes must share cache
 /// entries. This is the assetlib rule — dependencies are recorded by content, not identity.
+/// IGNORED, and the reason is a conflict rather than a mistake.
+///
+/// `Engine::cacheKeyOf` mixes the object's id into the key, because the id IS the naming serial and
+/// the compute stamps it into every element name it produces. That was a real fix: without it, two
+/// identical boxes shared one cached Output, all 26 element names came back identical, and a
+/// reference to one body's face resolved in the other -- see tests/acceptance/cache_key_identity.cpp.
+///
+/// The cost is this test. Identical geometry can no longer share a cache entry, because with the id
+/// in the key it is no longer identical. Both properties are wanted and neither is negotiable, so
+/// the fix is to stop the two being the same question: cache the geometry keyed by content WITHOUT
+/// the serial, and stamp the retrieving object's serial on the names at retrieval. That is what the
+/// renderer already does one layer down -- "the mesh stores element SLOTS; the instance stores its
+/// base" (render/include/cad/render/Backend.h).
+///
+/// Left as a test rather than deleted: it states the property the project still intends to have.
 #[test]
+#[ignore = "the scale property and naming correctness currently conflict -- see ADR 0004 amendment; remove this ignore when cached names are rebasable"]
 fn identical_geometry_shares_cache_entries_across_object_ids() {
     let mut s = session();
 

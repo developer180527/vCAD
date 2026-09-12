@@ -64,3 +64,41 @@ Three things the implementation forced that the design note did not anticipate:
 Still open: the L1 write is synchronous. ADR 0004 calls for a background writer once the
 interactive path is measured; that needs its own lifetime and ordering rules and should be
 bought with evidence rather than assumption.
+
+---
+
+## Amendment (12 Sep 2026) — content addressing lost to naming, and how to get it back
+
+This ADR's premise is that a result is keyed by its CONTENT, so anything computed once is served
+everywhere it recurs. That premise is currently false, deliberately and for a good reason, and the
+cost was not recorded when it was paid.
+
+`a91b3d4` mixed the object's own id into `Engine::cacheKeyOf`. That was a real fix: the id IS
+`ComputeContext::namingSerial`, the compute stamps it into every element name it produces, and
+without it two identical boxes shared one cached `Output` — all 26 element names came back
+identical, a reference to one body's face resolved in the other, and every boolean between two
+identical bodies failed with a naming collision. `tests/acceptance/cache_key_identity.cpp` holds
+that line.
+
+**The consequence: two features that differ only by identity can no longer share anything.** With
+the id in the key they are not identical. The same follows one layer down, because a mesh is keyed
+by content that includes its element names — so N identical parts tessellate N times.
+
+What that costs is this project's central scale claim. Three tests in the Rust suite assert the lost
+property and are now `#[ignore]`d, each naming this amendment:
+
+- `m2_recompute::identical_geometry_shares_cache_entries_across_object_ids`
+- `m3_tessellation::identical_parts_tessellate_once` — which calls itself "THE scale assertion"
+- `plugin_host::identical_plugin_features_share_a_cache_entry`
+
+They are ignored rather than rewritten because the property is still wanted. **Removing those three
+ignores is the definition of done.**
+
+The fix is not to choose between the two. It is to stop them being one question, using the trick
+the renderer already uses a layer down — `render/include/cad/render/Backend.h`: "the mesh stores
+element SLOTS; the instance stores its base." Cache the geometry and a RELATIVE element map, keyed
+by content with no serial in it, and stamp the retrieving object's serial onto the names at
+retrieval. Identical boxes then share one computation and still get distinct names.
+
+That touches naming, the cache key and the mesh cache together, which is why it is written down
+here rather than attempted alongside the change that found it.
