@@ -179,3 +179,20 @@ if(NOT IOS)
     message(STATUS "cargo not found -- the Rust acceptance suite will not run")
   endif()
 endif()
+
+# ── the ABI firebreak, as a ctest entry ─────────────────────────────────────────────────
+#
+# Every exported C function must pass through withSession, withSessionStr, readSessionStr or a try.
+# The rule was stated in the first lines of abi/src/Session.cpp and enforced by nothing, and four
+# exports broke it: two could leak bad_alloc into a C caller, and all four touched per-session state
+# under the global mutex instead of the session's own. tools/check_abi_firebreak.py says why a source
+# check is the honest test for this particular rule.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME abi_firebreak
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_abi_firebreak.py
+                   ${CMAKE_SOURCE_DIR})
+  set_tests_properties(abi_firebreak PROPERTIES LABELS "abi")
+else()
+  message(STATUS "Python3 not found -- the ABI firebreak check will not run")
+endif()

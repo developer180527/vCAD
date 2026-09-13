@@ -351,6 +351,36 @@ const char* withSessionStr(CadSession handle, Fn&& fn) {
     }
 }
 
+/// For reads of state a PREVIOUS call left behind: the last error, and the import summary.
+///
+/// The other two wrappers begin by CLEARING that state -- withSession empties `lastError` and
+/// withSessionStr empties `scratch` -- which is right for a call producing something new and
+/// exactly wrong for one whose whole purpose is to read the old. So these reads were hand-rolled,
+/// and hand-rolled they locked the GLOBAL mutex rather than the session's own: they read
+/// `lastError` and `scratch` under a different lock from every call that writes them. Two locks
+/// guarding one member is no lock at all.
+///
+/// Everything inside the try, including the lookup, so the firebreak this file promises covers the
+/// whole call and not merely the part after the handle resolved.
+///
+/// The pointer returned outlives the lock, exactly as the header's contract allows: valid until
+/// the next call on this session. The lock protects the read itself, which is what was racing.
+template <class Fn>
+const char* readSessionStr(CadSession handle, const char* invalid, Fn&& fn) {
+    try {
+        std::shared_ptr<Session> owner;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            owner = lookup(handle);
+        }
+        if (!owner) return invalid;
+        std::lock_guard<std::mutex> lock(owner->mutex);
+        return fn(*owner);
+    } catch (...) {
+        return "";
+    }
+}
+
 CadStatus fail(Session& s, CadStatus code, std::string message) {
     s.lastError = std::move(message);
     return code;
@@ -1778,7 +1808,13 @@ int32_t cad_abi_accepts(std::uint32_t pluginAbiMajor, std::uint32_t pluginMinHos
 CadSession cad_session_create(void) { return createSession({}); }
 
 CadSession cad_session_create_cached(const char* dir) {
-    return createSession(dir == nullptr ? std::string{} : std::string(dir));
+    // Inside a try of its own: building the std::string from `dir` allocates, and it happens
+    // BEFORE createSession's catch is in scope -- so a bad_alloc here escaped into the caller.
+    try {
+        return createSession(dir == nullptr ? std::string{} : std::string(dir));
+    } catch (...) {
+        return 0;
+    }
 }
 
 void cad_session_release(CadSession handle) {
@@ -1787,9 +1823,8 @@ void cad_session_release(CadSession handle) {
 }
 
 const char* cad_session_last_error(CadSession handle) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto s = lookup(handle);
-    return s ? s->lastError.c_str() : "invalid session handle";
+    return readSessionStr(handle, "invalid session handle",
+                          [](Session& s) { return s.lastError.c_str(); });
 }
 
 CadStatus cad_object_add(CadSession handle, const char* type, CadObject* out) {
@@ -2489,28 +2524,30 @@ CadStatus cad_import_probe(CadSession handle, const char* path, int32_t assumed,
 }
 
 const char* cad_import_summary(CadSession handle) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto s = lookup(handle);
-    // Deliberately does NOT clear the scratch: this reads what cad_import_probe just left.
-    return s ? s->scratch.c_str() : "";
+    // Deliberately does NOT clear the scratch: this reads what cad_import_probe just left, which is
+    // why it cannot go through withSessionStr.
+    return readSessionStr(handle, "", [](Session& s) { return s.scratch.c_str(); });
 }
 
-static const char* joinExtensions(CadSession handle, bool writable) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto s = lookup(handle);
-    if (!s) return "";
-    s->scratch.clear();
-    const auto list = writable ? s->formats.writableExtensions()
-                               : s->formats.readableExtensions();
+/// Fills `scratch` with the extensions, comma separated. Called only from inside withSessionStr,
+/// which holds the session's lock, clears the scratch first, and catches what the vector and the
+/// string growth below can throw. It used to do all three itself, and did two of them wrongly: the
+/// GLOBAL mutex instead of the session's, and no catch at all -- so a bad_alloc crossed the C
+/// boundary this file promises nothing crosses.
+static void joinExtensionsInto(Session& s, bool writable) {
+    const auto list = writable ? s.formats.writableExtensions() : s.formats.readableExtensions();
     for (std::size_t i = 0; i < list.size(); ++i) {
-        if (i) s->scratch += ",";
-        s->scratch += list[i];
+        if (i) s.scratch += ",";
+        s.scratch += list[i];
     }
-    return s->scratch.c_str();
 }
 
-const char* cad_readable_extensions(CadSession h) { return joinExtensions(h, false); }
-const char* cad_writable_extensions(CadSession h) { return joinExtensions(h, true); }
+const char* cad_readable_extensions(CadSession h) {
+    return withSessionStr(h, [](Session& s) { joinExtensionsInto(s, false); });
+}
+const char* cad_writable_extensions(CadSession h) {
+    return withSessionStr(h, [](Session& s) { joinExtensionsInto(s, true); });
+}
 
 CadStatus cad_object_tessellate(CadSession handle, CadObject id, double deflection,
                                 double angular, CadMeshInfo* out) {
