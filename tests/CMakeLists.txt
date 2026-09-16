@@ -193,6 +193,22 @@ if(Python3_Interpreter_FOUND)
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_abi_firebreak.py
                    ${CMAKE_SOURCE_DIR})
   set_tests_properties(abi_firebreak PROPERTIES LABELS "abi")
+
+  # ── the architecture audit ─────────────────────────────────────────────────────────────
+  #
+  # app::Controller and abi::Session each assembled the document stack by hand and drifted in both
+  # directions before anyone noticed. The DocumentRuntime extraction fixed two copies; the audit's
+  # first run found four more. arch_audit fails on any NEW structural violation against the committed
+  # baseline in tools/audit/baseline.json -- and on a baseline entry that has gone stale.
+  #
+  # arch_audit_selftest is not optional. It proves every rule can fail, on trees built to break each
+  # one; a check nobody has seen fail is how this project got a layering rule that let a layer be
+  # included from below.
+  add_test(NAME arch_audit
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/audit/audit.py ${CMAKE_SOURCE_DIR})
+  add_test(NAME arch_audit_selftest
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/audit/selftest.py)
+  set_tests_properties(arch_audit arch_audit_selftest PROPERTIES LABELS "architecture")
 else()
-  message(STATUS "Python3 not found -- the ABI firebreak check will not run")
+  message(STATUS "Python3 not found -- the ABI firebreak check and the architecture audit will not run")
 endif()

@@ -1,0 +1,12 @@
+# Everything, every night, whether or not the branch moved: a run on an unchanged commit still catches
+# a toolchain, dependency or server change that broke the build.
+[Unit]
+Description=vCAD nightly audit
+
+[Timer]
+OnCalendar=*-*-* 03:00
+Persistent=true
+Unit=vcad-audit@nightly.service
+
+[Install]
+WantedBy=timers.target

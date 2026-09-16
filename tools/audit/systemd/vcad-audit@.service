@@ -1,0 +1,15 @@
+# One audit run. The instance name is the mode: vcad-audit@nightly or vcad-audit@changed.
+# User unit: install under ~/.config/systemd/user/ -- see tools/audit/README.md.
+[Unit]
+Description=vCAD architecture audit, build and tests (%i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/vcad-audit.env
+ExecStart=%h/vcad-audit/bin/nightly.sh %i
+# A full build can take a long time on a cold cache; the timeout is about hung runs, not slow ones.
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle

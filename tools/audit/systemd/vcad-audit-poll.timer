@@ -1,0 +1,12 @@
+# A cheap check every 30 minutes: runs only when the branch has moved, so drift is reported within
+# half an hour of the commit that introduced it rather than the next morning.
+[Unit]
+Description=vCAD audit on new commits
+
+[Timer]
+OnCalendar=*:0/30
+RandomizedDelaySec=120
+Unit=vcad-audit@changed.service
+
+[Install]
+WantedBy=timers.target

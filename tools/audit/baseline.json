@@ -1,0 +1,85 @@
+{
+  "_about": "Known architectural debt. Each entry is a finding the audit reports without failing. A NEW finding fails; an entry that no longer matches a finding is STALE and fails too, so paid debt must be removed here. Never add an entry without a reason, and prefer fixing the code to adding one. See tools/audit/audit.py.",
+  "accepted": [
+    {
+      "check": "single_assembly",
+      "key": "bindings/python/src/module.cpp:DdcCache",
+      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
+    },
+    {
+      "check": "single_assembly",
+      "key": "bindings/python/src/module.cpp:FeatureRegistry",
+      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
+    },
+    {
+      "check": "single_assembly",
+      "key": "bindings/python/src/module.cpp:MemoryCache",
+      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
+    },
+    {
+      "check": "single_assembly",
+      "key": "bindings/python/src/module.cpp:TieredCache",
+      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/bgfx_offscreen/main.cpp:FeatureRegistry",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/bgfx_offscreen/main.cpp:MemoryBlobStore",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/bgfx_offscreen/main.cpp:MemoryCache",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/bgfx_offscreen/main.cpp:MeshCache",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/highlight/main.cpp:FeatureRegistry",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/highlight/main.cpp:MemoryBlobStore",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/highlight/main.cpp:MemoryCache",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/highlight/main.cpp:MeshCache",
+      "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/scale/main.cpp:FeatureRegistry",
+      "reason": "A BENCHMARK on a memory-only stack while the product ships a tiered one, so its numbers do not describe the product. Build it on DocumentRuntime, or retire it."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/scale/main.cpp:MemoryBlobStore",
+      "reason": "A BENCHMARK on a memory-only stack while the product ships a tiered one, so its numbers do not describe the product. Build it on DocumentRuntime, or retire it."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/scale/main.cpp:MemoryCache",
+      "reason": "A BENCHMARK on a memory-only stack while the product ships a tiered one, so its numbers do not describe the product. Build it on DocumentRuntime, or retire it."
+    },
+    {
+      "check": "single_assembly",
+      "key": "spikes/scale/main.cpp:MeshCache",
+      "reason": "A BENCHMARK on a memory-only stack while the product ships a tiered one, so its numbers do not describe the product. Build it on DocumentRuntime, or retire it."
+    }
+  ]
+}
