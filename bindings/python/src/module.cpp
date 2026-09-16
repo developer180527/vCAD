@@ -11,14 +11,14 @@
 #include "cad/document/Document.h"
 #include "cad/io/Format.h"
 #include "cad/naming/ElementMap.h"
-#include "cad/recompute/DdcCache.h"
-#include "cad/features/Builtins.h"
 #include "cad/recompute/Engine.h"
+#include "cad/runtime/DocumentRuntime.h"
 #include "cad/units/Units.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <filesystem>
 #include <memory>
 
 namespace py = pybind11;
@@ -45,24 +45,22 @@ T unwrap(kernel::Result<T> r) {
     if constexpr (!std::is_void_v<T>) return std::move(r).value();
 }
 
-/// A document, a registry and a cache, matching the C ABI's session. Python owns one of
-/// these; everything else hangs off it.
+/// A document over the SAME document-computing stack the application and the C ABI use.
+///
+/// It used to build its own: a registry, and a memory or tiered cache chosen here. That was the
+/// drift app::Controller and abi::Session had -- each assembling the stack by hand, each diverging
+/// without anyone deciding to -- and this was the copy the DocumentRuntime extraction missed. It
+/// had already fallen behind: no mesh cache, and on the disk path no DDC blob tier, so a tessellated
+/// mesh never reached the shared cache from Python the way it does from the ABI.
+///
+/// An empty cache_dir means memory only and a path opts into the shared DDC tier, which is what
+/// DocumentRuntime means by them too -- so the Python-facing behaviour is unchanged.
 class Session {
 public:
-    explicit Session(const std::string& cacheDir) {
-        auto l0 = std::make_unique<recompute::MemoryCache>();
-        if (cacheDir.empty()) {
-            cache_ = std::move(l0);
-        } else {
-            // Opting into the DDC gives this session the shared-tier behaviour: a colleague
-            // or CI that already built this geometry means we fetch instead of recompute.
-            cache_ = std::make_unique<recompute::TieredCache>(
-                std::move(l0), std::make_unique<recompute::DdcCache>(cacheDir));
-        }
-    }
+    explicit Session(const std::string& cacheDir) : runtime_(std::filesystem::path(cacheDir)) {}
 
     document::ObjectId add(const std::string& type) {
-        if (registry_.find(type) == nullptr) {
+        if (runtime_.registry().find(type) == nullptr) {
             throw py::type_error("unknown feature type '" + type + "'");
         }
         auto [next, id] = history_.current().add(type);
@@ -84,7 +82,7 @@ public:
     }
 
     recompute::RecomputeReport recompute() {
-        recompute::Engine engine(registry_, *cache_);
+        recompute::Engine engine(runtime_.registry(), runtime_.cache());
         auto result = unwrap(engine.recompute(history_.current()));
         history_.replaceCurrent(std::move(result.first));
         return result.second;
@@ -110,12 +108,11 @@ public:
     }
 
     const io::FormatRegistry& formats() const { return formats_; }
-    const recompute::Cache& cache() const { return *cache_; }
+    const recompute::Cache& cache() const { return runtime_.cache(); }
 
 private:
-    recompute::FeatureRegistry registry_ = features::builtins();
+    runtime::DocumentRuntime runtime_;
     io::FormatRegistry formats_ = io::FormatRegistry::builtins();
-    std::unique_ptr<recompute::Cache> cache_;
     document::History history_{document::Document{}};
 };
 

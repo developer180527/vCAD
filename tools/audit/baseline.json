@@ -3,26 +3,6 @@
   "accepted": [
     {
       "check": "single_assembly",
-      "key": "bindings/python/src/module.cpp:DdcCache",
-      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
-    },
-    {
-      "check": "single_assembly",
-      "key": "bindings/python/src/module.cpp:FeatureRegistry",
-      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
-    },
-    {
-      "check": "single_assembly",
-      "key": "bindings/python/src/module.cpp:MemoryCache",
-      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
-    },
-    {
-      "check": "single_assembly",
-      "key": "bindings/python/src/module.cpp:TieredCache",
-      "reason": "The Python bindings build their own registry and a Memory/Tiered/Ddc cache, with no mesh cache and no DDC blob tier -- the same drift Controller and Session had, and the copy the DocumentRuntime extraction (8ed1262, 5de7fa8) missed. Move Session onto cad::runtime::DocumentRuntime; pytest in CI covers the result."
-    },
-    {
-      "check": "single_assembly",
       "key": "spikes/bgfx_offscreen/main.cpp:FeatureRegistry",
       "reason": "Throwaway spike predating DocumentRuntime. Build it on DocumentRuntime or delete it; a spike left compiling is a copy that drifts."
     },

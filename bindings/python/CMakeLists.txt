@@ -34,7 +34,9 @@ endif()
 message(STATUS "Python bindings: ${Python3_EXECUTABLE} (pybind11 ${pybind11_VERSION})")
 
 pybind11_add_module(_cad src/module.cpp)
-target_link_libraries(_cad PRIVATE cad::core)
+# cad::runtime, not cad::core alone: the session is built on the shared document stack rather than
+# assembling its own, which is the drift tools/audit/audit.py's single_assembly check exists for.
+target_link_libraries(_cad PRIVATE cad::core cad::runtime)
 cad_set_warnings(_cad)
 
 # Land the module next to the package so `PYTHONPATH=bindings/python python3 -c "import cad"`

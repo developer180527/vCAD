@@ -67,6 +67,9 @@ public:
     [[nodiscard]] const recompute::FeatureRegistry& registry() const noexcept { return registry_; }
 
     [[nodiscard]] recompute::Cache& cache() noexcept { return *cache_; }
+    /// Read-only, for a consumer reporting on the cache rather than computing through it -- the
+    /// Python session's `cache_stats` asks for hit and miss counts on a const session.
+    [[nodiscard]] const recompute::Cache& cache() const noexcept { return *cache_; }
     [[nodiscard]] recompute::BlobStore& blobs() noexcept { return *blobs_; }
     [[nodiscard]] render::MeshCache& meshes() noexcept { return *meshes_; }
 
