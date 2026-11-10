@@ -1,7 +1,7 @@
 #include "cad/render/UiPass.h"
 
 #include "BgfxDetail.h"
-#include "cad/render/BgfxBackend.h"
+#include "cad/render/Renderer.h"
 
 #include <bgfx/bgfx.h>
 
@@ -120,9 +120,12 @@ UiPass::~UiPass() {
     if (bgfx::isValid(impl_->sTex)) bgfx::destroy(impl_->sTex);
 }
 
-kernel::Result<std::unique_ptr<UiPass>> UiPass::create(BgfxBackend& backend, std::span<const UiAttribute> layout,
+kernel::Result<std::unique_ptr<UiPass>> UiPass::create(IRenderer& renderer, std::span<const UiAttribute> layout,
                                                        std::uint32_t stride) {
-    if (!backend.ready()) return Error{ErrorCode::InvalidInput, "The renderer is not running."};
+    if (const auto info = renderer.info(); info.id != "bgfx") {
+        return Error{ErrorCode::Unsupported, "This renderer cannot draw the interface yet.",
+                     "the interface pass is bgfx only; the renderer is '" + info.id + "'"};
+    }
 
     const auto expectedCount = std::size(kLayout);
     if (layout.size() != expectedCount) {

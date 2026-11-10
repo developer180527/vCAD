@@ -24,7 +24,7 @@
 #include "Viewport.h"
 
 #include "cad/app/Controller.h"
-#include "cad/render/BgfxBackend.h"
+#include "cad/render/Renderer.h"
 
 #include <QAbstractButton>
 #include <QApplication>

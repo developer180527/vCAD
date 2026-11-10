@@ -18,7 +18,7 @@
 #include "cad/recompute/Engine.h"
 #include "cad/runtime/DocumentRuntime.h"
 #include "cad/render/Camera.h"
-#include "cad/render/BgfxBackend.h"
+#include "cad/render/Renderer.h"
 #include "cad/render/NullBackend.h"
 #include "cad/render/Scene.h"
 #include "cad/sketch/Sketch.h"
@@ -562,12 +562,24 @@ public:
 
     [[nodiscard]] bool rendererAttached() const noexcept { return gpu_ != nullptr; }
 
-    /// The running backend, for a shell that draws its own interface with bgfx (shell_libgui's
-    /// render::UiPass). Null until attachRenderer() succeeds.
+    /// The running renderer, for a shell that draws its own interface through it (shell_libgui's
+    /// render::UiPass). Null until attachRenderer() succeeds. Which renderer it is, nobody above
+    /// `render/` may ask by type (ADR 0012).
     ///
-    /// Handed out rather than a second backend being made, because bgfx is a process singleton:
-    /// two owners would be two inits of one context. The shell draws with it and never shuts it down.
-    [[nodiscard]] render::BgfxBackend* renderBackend() noexcept { return gpu_.get(); }
+    /// Handed out rather than a second one being made, because a renderer owns the GPU device:
+    /// two owners would be two devices. The shell draws with it and never shuts it down.
+    [[nodiscard]] render::IRenderer* renderer() noexcept { return gpu_.get(); }
+
+    /// Which renderer to bring up, by id ("bgfx"), from a command-line flag or a saved setting. Call
+    /// before attaching. Empty, the default, takes $CAD_RENDERER and then the best this build has.
+    /// One that was asked for and fails is an error from attach, never a quiet substitute.
+    void setPreferredRenderer(std::string id) { preferredRenderer_ = std::move(id); }
+
+    /// Every renderer the last attach tried, in order, and why each one that failed did. What a
+    /// shell shows when the viewport is blank, and what a bug report needs.
+    [[nodiscard]] const std::vector<render::RendererAttempt>& rendererAttempts() const noexcept {
+        return rendererAttempts_;
+    }
 
     /// Which renderer bgfx chose, or "null". Worth showing: "why is it blank" has twice been
     /// "it fell back to Noop", and the name is the only clue.
@@ -1284,7 +1296,9 @@ private:
 
     /// Non-null once attachRenderer() succeeds. Held by pointer because bgfx is a process
     /// singleton with a real lifetime, unlike the null backend which is just memory.
-    std::unique_ptr<render::BgfxBackend> gpu_;
+    std::unique_ptr<render::IRenderer> gpu_;
+    std::string preferredRenderer_;
+    std::vector<render::RendererAttempt> rendererAttempts_;
 
     /// Whichever of the two the scene is currently built against. Nothing above the seam knows
     /// which one it holds.

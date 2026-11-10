@@ -21,59 +21,26 @@
 
 #include "cad/kernel/Result.h"
 #include "cad/render/Backend.h"
+#include "cad/render/Renderer.h"
 
 #include <memory>
 #include <string>
 
 namespace cad::render {
 
-struct BgfxConfig {
-    /// Native window handle (NSWindow*, HWND, X11 Window). Null for offscreen.
-    void* nativeWindow = nullptr;
-    void* nativeDisplay = nullptr;      ///< X11 only
-    Viewport viewport;
-
-    /// Force a specific renderer. Empty means "let bgfx choose", which is Metal on macOS,
-    /// D3D12 on Windows, Vulkan on Linux. "noop" is the CI path.
-    std::string rendererName;
-
-    /// Render into a framebuffer instead of the swap chain, and enable readback.
-    ///
-    /// Does NOT mean "no window" — see the note at the top of this file. On macOS a window is
-    /// still required to get a Metal device at all.
-    bool offscreen = false;
-    /// Present to `nativeWindow` AND render the scene into a texture, for a shell that draws the
-    /// viewport as one widget among others (shell_libgui). The swap chain is the whole window and
-    /// sized by resizeSurface(); `viewport` is the scene's own target, sized to the widget. The
-    /// shell's interface draws the window and samples sceneTexture() where the viewport goes.
-    ///
-    /// Unlike `offscreen`, this has a real swap chain -- and unlike plain windowed mode, the scene
-    /// does not own it.
-    bool sceneToTexture = false;
-    /// The swap chain's size in pixels when `sceneToTexture` is set. Ignored otherwise.
-    std::uint32_t surfaceWidth = 0;
-    std::uint32_t surfaceHeight = 0;
-
-    /// Depth bias applied to edges, in NDC. Tuned by eye at 1e-4; too small z-fights, too
-    /// large makes edges float visibly off silhouettes.
-    float edgeDepthBias = 1.5e-4f;
-
-    /// Ambient floor. CAD models are untextured, so this is most of what stops unlit faces
-    /// reading as holes.
-    float ambient = 0.35f;
-
-};
-
-/// Where to load compiled shader binaries from. The shell sets this to the directory beside its
-/// own executable; $CAD_SHADER_DIR still overrides it. Call before initialise().
-void setShaderDirectory(std::string);
+/// The bgfx renderer's configuration is the common one. The name is kept for the spikes, which use
+/// this class directly; nothing above `render/` may (ADR 0012).
+using BgfxConfig = RendererConfig;
 
 /// Owns the bgfx context. One per process — bgfx is a singleton, which is a real constraint
 /// rather than an implementation detail: two viewports share one backend and differ by view id.
-class BgfxBackend {
+///
+/// Reached through render::createRenderer, as an IRenderer. The concrete methods below are for the
+/// spikes and for the other bgfx passes inside `render/`.
+class BgfxBackend final : public IRenderer {
 public:
     BgfxBackend();
-    ~BgfxBackend();
+    ~BgfxBackend() override;
     BgfxBackend(const BgfxBackend&) = delete;
     BgfxBackend& operator=(const BgfxBackend&) = delete;
 
@@ -83,7 +50,8 @@ public:
     void shutdown();
 
     [[nodiscard]] bool ready() const noexcept;
-    [[nodiscard]] Backend handle() noexcept;
+    [[nodiscard]] Backend handle() noexcept override;
+    [[nodiscard]] RendererInfo info() const override;
 
     /// Which renderer bgfx actually chose. Worth surfacing: "why is it slow" is usually
     /// "it fell back to OpenGL", and "why is it blank" was "it fell back to Noop".
@@ -99,15 +67,15 @@ public:
 
     /// Reads the colour buffer back into RGBA8. Offscreen only. This is the golden-image hook
     /// and the reason the offscreen mode exists.
-    kernel::Result<std::vector<std::uint8_t>> captureFrame();
+    kernel::Result<std::vector<std::uint8_t>> captureFrame() override;
 
     /// The texture the scene rendered into, or TextureId::None when there is none (plain windowed
     /// mode). Valid until the viewport is resized: re-read it every frame.
-    [[nodiscard]] TextureId sceneTexture() const;
+    [[nodiscard]] TextureId sceneTexture() const override;
 
     /// Resizes the swap chain in `sceneToTexture` mode, where the window and the scene differ in
     /// size. The caller resizes the CAMetalLayer first (MetalSurface.h).
-    void resizeSurface(std::uint32_t width, std::uint32_t height);
+    void resizeSurface(std::uint32_t width, std::uint32_t height) override;
 
     struct Impl;
 

@@ -21,7 +21,7 @@
 
 namespace cad::render {
 
-class BgfxBackend;
+class IRenderer;
 
 /// One vertex attribute as the toolkit lays it out: a name and a count of 32-bit floats, in order.
 /// The pass knows which names its shader reads and refuses a layout that does not match.
@@ -57,12 +57,13 @@ struct UiFrame {
     std::uint64_t atlasVersion = 0;
 };
 
-/// Needs a running BgfxBackend: bgfx is a process singleton and the backend owns it.
+/// Needs a running renderer, and today only draws on the bgfx one: `create` says so by name on any
+/// other. ADR 0012 step 3 makes this an interface each renderer provides.
 class UiPass {
 public:
     /// Fails, naming the problem, when `layout` is not what the UI shader reads or the shaders did
     /// not load.
-    static kernel::Result<std::unique_ptr<UiPass>> create(BgfxBackend&, std::span<const UiAttribute> layout,
+    static kernel::Result<std::unique_ptr<UiPass>> create(IRenderer&, std::span<const UiAttribute> layout,
                                                           std::uint32_t stride);
     ~UiPass();
     UiPass(const UiPass&) = delete;

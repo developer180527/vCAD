@@ -12,6 +12,7 @@ set(CAD_RENDER_SOURCES
   src/NullBackend.cpp
   src/BgfxBackend.cpp
   src/BgfxUiPass.cpp
+  src/Renderers.cpp
 )
 # Objective-C++, and only on Apple platforms: bgfx's Metal backend cannot initialise without a
 # CAMetalLayer, so headless rendering has to create one. See src/MetalSurface.mm.

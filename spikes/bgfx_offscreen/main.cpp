@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     config.viewport.width = 512;
     config.viewport.height = 384;
     config.offscreen = true;
-    if (noop) config.rendererName = "noop";
+    if (noop) config.api = "noop";
 
     // NO WINDOW, deliberately, and this is load-bearing.
     //

@@ -119,7 +119,6 @@ kernel::Result<void> Controller::attachRendererTo(std::uint32_t width, std::uint
     // fail identically, or succeed on-screen while the shell believed it was blitting.
     releaseSurface();
 
-    auto gpu = std::make_unique<render::BgfxBackend>();
     const std::uint32_t w = width != 0 ? width : viewport_.width;
     const std::uint32_t h = height != 0 ? height : viewport_.height;
 
@@ -148,7 +147,7 @@ kernel::Result<void> Controller::attachRendererTo(std::uint32_t width, std::uint
     surface_ = nativeView;
 #endif
 
-    render::BgfxConfig config;
+    render::RendererConfig config;
     config.nativeWindow = surface_;
     // Mutually exclusive, and bgfx enforces it: offscreen init demands a 0x0 backbuffer, so a
     // surface handle and offscreen mode cannot both be set.
@@ -162,31 +161,23 @@ kernel::Result<void> Controller::attachRendererTo(std::uint32_t width, std::uint
     config.surfaceWidth = surfaceWidth;
     config.surfaceHeight = surfaceHeight;
 
-    if (auto r = gpu->initialise(config); !r) {
+    // Which renderer is render's business, not ours: it tries what was asked for, or the best this
+    // build has, and a renderer that would draw nothing counts as one that failed (ADR 0012).
+    rendererAttempts_.clear();
+    auto gpu = render::createRenderer(config, preferredRenderer_, &rendererAttempts_);
+    if (!gpu) {
         releaseSurface();
-        return r.error();
+        return gpu.error();
     }
 
-    // Noop is not a failure to bgfx: it validates every call and draws nothing, so init succeeds
-    // and the frame comes back blank with no error anywhere. Refuse it here instead, because a
-    // viewport that silently renders nothing is the single most expensive bug this project has
-    // had, twice.
-    if (gpu->rendererName() == "Noop") {
-        gpu->shutdown();
-        releaseSurface();
-        return kernel::Error{kernel::ErrorCode::Internal,
-                             "No GPU renderer available; the viewport would draw nothing.",
-                             "bgfx selected the Noop renderer"};
-    }
-
-    gpu_ = std::move(gpu);
+    gpu_ = std::move(gpu.value());
     active_ = gpu_->handle();
     presenting_ = surface_ != nullptr;
     composited_ = config.sceneToTexture;
 
     // Before any camera matrix is built. The two conventions differ by renderer, and getting it
     // wrong depth-clips the whole scene and draws nothing — with no error.
-    camera_.setHomogeneousDepth(gpu_->homogeneousDepth());
+    camera_.setHomogeneousDepth(gpu_->info().homogeneousDepth);
 
     // A SceneBuilder holds buffer ids issued by the resources it was built against, so it cannot
     // be pointed at a different backend. Rebuild it and re-upload; at startup the document is
@@ -203,7 +194,7 @@ kernel::Result<void> Controller::attachRendererTo(std::uint32_t width, std::uint
 }
 
 std::string Controller::rendererName() const {
-    return gpu_ ? gpu_->rendererName() : std::string("null");
+    return gpu_ ? gpu_->info().api : std::string("null");
 }
 
 void Controller::presentFrame() {

@@ -97,7 +97,7 @@ bgfx::VertexLayout& edgeVertexLayout() {
 }
 
 /// Set by the shell to the directory beside its executable. Empty until then.
-std::string& shaderDirectory() {
+std::string& shaderDirectoryStorage() {
     static std::string dir;
     return dir;
 }
@@ -118,7 +118,7 @@ std::string& shaderDirectory() {
 std::string shaderPath(const std::string& name) {
     const char* env = std::getenv("CAD_SHADER_DIR");
     const std::string base = (env != nullptr && *env != '\0') ? std::string(env)
-                             : !shaderDirectory().empty() ? shaderDirectory()
+                             : !shaderDirectoryStorage().empty() ? shaderDirectoryStorage()
                                                           : std::string("shaders");
     std::string profile;
     switch (bgfx::getRendererType()) {
@@ -1430,25 +1430,27 @@ BgfxBackend::~BgfxBackend() { shutdown(); }
 kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
     if (impl_->initialised) return Error{ErrorCode::InvalidInput, "The renderer is already running."};
     impl_->config = config;
+    // A directory given for this renderer wins over the process default; $CAD_SHADER_DIR over both.
+    if (!config.shaderDirectory.empty()) shaderDirectoryStorage() = config.shaderDirectory;
 
     // A window is required for ON-SCREEN rendering only. Offscreen must NOT have one — see the
     // platformData assignment below, where passing a window handle deadlocks Metal.
-    if (config.nativeWindow == nullptr && !config.offscreen && config.rendererName != "noop") {
+    if (config.nativeWindow == nullptr && !config.offscreen && config.api != "noop") {
         // Refused explicitly rather than left to bgfx, which would quietly fall back to Noop:
         // init succeeds, nothing draws, and the failure surfaces as a blank viewport with no
         // error anywhere. Better to say so here.
         return Error{ErrorCode::InvalidInput,
                      "The renderer needs a window handle.",
                      "nativeWindow is null and offscreen is false. Pass a native window handle, "
-                     "set offscreen=true, or set rendererName=\"noop\" for validation only."};
+                     "set offscreen=true, or set api=\"noop\" for validation only."};
     }
 
     bgfx::Init init;
     init.type = bgfx::RendererType::Count;      // let bgfx choose
-    if (config.rendererName == "noop") init.type = bgfx::RendererType::Noop;
-    else if (config.rendererName == "metal") init.type = bgfx::RendererType::Metal;
-    else if (config.rendererName == "vulkan") init.type = bgfx::RendererType::Vulkan;
-    else if (config.rendererName == "d3d12") init.type = bgfx::RendererType::Direct3D12;
+    if (config.api == "noop") init.type = bgfx::RendererType::Noop;
+    else if (config.api == "metal") init.type = bgfx::RendererType::Metal;
+    else if (config.api == "vulkan") init.type = bgfx::RendererType::Vulkan;
+    else if (config.api == "d3d12") init.type = bgfx::RendererType::Direct3D12;
 
     if (config.offscreen) {
         // Headless bgfx requires a 0x0 BACKBUFFER — it rejects init outright with
@@ -1682,7 +1684,16 @@ void BgfxBackend::Impl::destroyTargets() {
     pickTarget = bgfx::TextureHandle{bgfx::kInvalidHandle};
 }
 
-void setShaderDirectory(std::string dir) { shaderDirectory() = std::move(dir); }
+void setShaderDirectory(std::string dir) { shaderDirectoryStorage() = std::move(dir); }
+const std::string& shaderDirectory() { return static_cast<const std::string&>(shaderDirectoryStorage()); }
+
+RendererInfo BgfxBackend::info() const {
+    RendererInfo i;
+    i.id = "bgfx";
+    i.api = rendererName();
+    i.homogeneousDepth = homogeneousDepth();
+    return i;
+}
 
 kernel::Result<std::vector<std::uint8_t>> BgfxBackend::captureFrame() {
     if (!ready() || !bgfx::isValid(impl_->colourFb)) {

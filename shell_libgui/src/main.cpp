@@ -7,7 +7,7 @@
 // vCAD's loop instead of owning it.
 
 #include "Shell.h"
-#include "cad/render/BgfxBackend.h"
+#include "cad/render/Renderer.h"
 
 #include <SDL3/SDL.h>
 

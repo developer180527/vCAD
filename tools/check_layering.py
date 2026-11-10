@@ -42,6 +42,7 @@ FORBIDDEN: dict[str, list[str]] = {
         "cad/app/", "cad/shell",
     ],
     "app": [
+        "cad/render/Bgfx",   # a renderer is reached through cad/render/Renderer.h (ADR 0012)
         "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "bgfx/", "bx/",   # app talks to render through cad/render, not the RHI directly
@@ -50,6 +51,7 @@ FORBIDDEN: dict[str, list[str]] = {
     # The C facade over core + render. May use both; may not reach a UI toolkit or the RHI,
     # because everything it exposes has to be callable from Swift and from a plugin.
     "abi": [
+        "cad/render/Bgfx",   # a renderer is reached through cad/render/Renderer.h (ADR 0012)
         "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "bgfx/", "bx/", "Diligent",
@@ -65,6 +67,7 @@ FORBIDDEN: dict[str, list[str]] = {
     # whole purpose -- and may not reach UP into the application or a shell, which is what would
     # make it unusable by the C session it exists to serve.
     "runtime": [
+        "cad/render/Bgfx",   # a renderer is reached through cad/render/Renderer.h (ADR 0012)
         "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "bgfx/", "bx/", "Diligent",
@@ -77,6 +80,7 @@ FORBIDDEN: dict[str, list[str]] = {
     # The libgui shell: libgui only through its own directory, and never Qt or the RHI directly --
     # it draws through cad::render, like every other shell.
     "shell_libgui": [
+        "cad/render/Bgfx",   # a renderer is reached through cad/render/Renderer.h (ADR 0012)
         "Q",
         "bgfx/", "bx/", "Diligent",
     ],

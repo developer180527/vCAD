@@ -53,7 +53,7 @@ kernel::Result<void> Shell::attach(void* nativeView, std::uint32_t pixelWidth, s
                                    double scale) {
     if (!main_) return kernel::Error{kernel::ErrorCode::Internal, "The interface could not start.", gui::Surface::lastError()};
     if (auto r = controller_.attachCompositedRenderer(nativeView, pixelWidth, pixelHeight, scale); !r) return r;
-    auto* backend = controller_.renderBackend();
+    auto* backend = controller_.renderer();
     if (backend == nullptr || controller_.sceneTexture() == render::TextureId::None)
         return kernel::Error{kernel::ErrorCode::Internal, "The renderer did not attach to the window.",
                              "no scene texture in composited mode"};
