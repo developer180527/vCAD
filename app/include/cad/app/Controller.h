@@ -532,6 +532,23 @@ public:
     kernel::Result<void> attachRenderer(std::uint32_t width, std::uint32_t height,
                                         void* nativeView = nullptr, double scale = 1.0);
 
+    /// Brings up bgfx presenting to `nativeView`, with the scene rendered into a texture rather
+    /// than onto the window -- for a shell that draws its own interface over the whole window and
+    /// shows the viewport as one widget in it (shell_libgui).
+    ///
+    /// The window and the scene are sized separately: setViewportSize() is the scene, the widget;
+    /// resizeSurface() is the window. sceneTexture() is what to draw where the viewport goes.
+    kernel::Result<void> attachCompositedRenderer(void* nativeView, std::uint32_t surfaceWidth,
+                                                  std::uint32_t surfaceHeight, double scale);
+
+    /// The window's size in pixels, in composited mode. Resizes the native layer and the swap chain
+    /// together, in that order.
+    void resizeSurface(std::uint32_t width, std::uint32_t height);
+
+    /// The texture the scene is in, in composited mode; TextureId::None otherwise. Changes when
+    /// the viewport resizes, so read it every frame. Only the renderer that issued it can draw it.
+    [[nodiscard]] render::TextureId sceneTexture() const;
+
     /// True when the renderer presents directly to a native surface rather than being blitted.
     /// The shell needs to know: presenting is submit-only, blitting needs a paint.
     [[nodiscard]] bool presentsDirectly() const noexcept { return presenting_; }
@@ -544,6 +561,13 @@ public:
     void presentFrame();
 
     [[nodiscard]] bool rendererAttached() const noexcept { return gpu_ != nullptr; }
+
+    /// The running backend, for a shell that draws its own interface with bgfx (shell_libgui's
+    /// render::UiPass). Null until attachRenderer() succeeds.
+    ///
+    /// Handed out rather than a second backend being made, because bgfx is a process singleton:
+    /// two owners would be two inits of one context. The shell draws with it and never shuts it down.
+    [[nodiscard]] render::BgfxBackend* renderBackend() noexcept { return gpu_.get(); }
 
     /// Which renderer bgfx chose, or "null". Worth showing: "why is it blank" has twice been
     /// "it fell back to Noop", and the name is the only clue.
@@ -1087,7 +1111,15 @@ public:
 
     /// Starts a parameterised command. False if the id has none, in which case the shell should
     /// invoke it directly as before.
-    bool beginCommand(const std::string& id);
+    ///
+    /// `pickAfter`: open the panel even when the selection does not fit yet, and let the user pick
+    /// with it open -- Inventor's way, where Extrude opens and then asks for a profile. Off, a
+    /// command refuses to start until the selection fits, which is what shell_qt relies on.
+    bool beginCommand(const std::string& id, bool pickAfter = false);
+
+    /// What the command in progress acts on, judged against the CURRENT selection. Empty (not
+    /// `needed`) when no command is in progress or it takes no selection.
+    [[nodiscard]] CommandSelection commandSelection() const;
 
     /// Empty when no command is in progress.
     [[nodiscard]] const std::string& activeCommand() const noexcept { return activeCommand_; }
@@ -1146,6 +1178,10 @@ public:
     /// Every format that can be WRITTEN. Asked of the registry rather than hard-coded, so a format
     /// compiled in conditionally (3MF) appears exactly when it is available.
     [[nodiscard]] static std::vector<ExportFormat> exportFormats();
+
+    /// Everything importFile can read, in the same shape, for the Import dialog's filters. From the
+    /// registry, so a format compiled in conditionally is offered exactly when it can be read.
+    [[nodiscard]] static std::vector<ExportFormat> importFormats();
 
     /// Writes the visible bodies to `path`, choosing the format by extension.
     ///
@@ -1259,6 +1295,9 @@ private:
     /// Drops our reference to the presentation surface and forgets it. Null-safe, and a no-op
     /// where the surface belongs to the shell.
     void releaseSurface() noexcept;
+    kernel::Result<void> attachRendererTo(std::uint32_t width, std::uint32_t height, void* nativeView,
+                                          double scale, bool composited, std::uint32_t surfaceWidth,
+                                          std::uint32_t surfaceHeight);
 
     /// The platform surface the renderer presents into.
     ///
@@ -1267,6 +1306,9 @@ private:
     /// than a destroy call at each site.
     void* surface_ = nullptr;
     double viewportScale_ = 1.0;   ///< device pixel ratio, kept for layer resizes
+    /// The scene renders to a texture and the native surface is the whole window (see
+    /// attachCompositedRenderer). setViewportSize must then leave the window's layer alone.
+    bool composited_ = false;
 
     std::unique_ptr<render::SceneBuilder> scene_;
     /// The camera as it was before entering the sketch, restored on finish or cancel.

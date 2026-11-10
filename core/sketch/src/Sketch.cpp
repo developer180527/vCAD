@@ -563,8 +563,25 @@ SolveReport Sketch::solve() {
                     const double dy1 = *arcs[m.index].start.y - g.p[1];
                     const double dx2 = *arcs[m.index].end.x - g.p[0];
                     const double dy2 = *arcs[m.index].end.y - g.p[1];
-                    g.p[3] = std::atan2(dy1, dx1);
-                    g.p[4] = std::atan2(dy2, dx2);
+                    // atan2 answers in (-pi, pi], and the wire is built through the MID-angle of
+                    // these two -- so writing both back raw turned an arc drawn from 90 to 270
+                    // degrees into 90 to -90 and drew it on the other side of its centre. The end
+                    // is therefore the start plus the sweep, taken the SAME WAY ROUND as the arc was
+                    // before this solve: positive stays positive, negative stays negative, and a
+                    // major arc stays major. tests/acceptance/sketch_arcs.cpp.
+                    const double wasSweep = g.p[4] - g.p[3];
+                    const double start = std::atan2(dy1, dx1);
+                    double sweep = std::atan2(dy2, dx2) - start;
+                    constexpr double kTurn = 2.0 * 3.14159265358979323846;
+                    if (wasSweep >= 0) {
+                        while (sweep <= 0) sweep += kTurn;
+                        while (sweep > kTurn) sweep -= kTurn;
+                    } else {
+                        while (sweep >= 0) sweep -= kTurn;
+                        while (sweep < -kTurn) sweep += kTurn;
+                    }
+                    g.p[3] = start;
+                    g.p[4] = start + sweep;
                     break;
                 }
             }

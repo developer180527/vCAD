@@ -306,6 +306,65 @@ QAction* MainWindow::parameterised(const char* id, const QString& label,
     return action;
 }
 
+/// One ribbon item, as a QAction.
+///
+/// The three cases the data distinguishes, in one place rather than at 97 call sites:
+///
+///   - an EMPTY id is a planned command: a disabled label, honest about not existing yet;
+///   - a `shell.` id is an action only a shell can offer -- Import needs a file dialog, Parameters
+///     a dialog, Orbit is a checkable mode -- and is bound here by name;
+///   - anything else is a command id, resolved through the catalogue.
+///
+/// `opensPanel` decides between wrapping the command in a panel-opening action and using the
+/// command's OWN action. That distinction matters more than it looks: the command's own action
+/// carries its shortcut and is what refreshCommandStates enables and disables.
+QAction* MainWindow::resolveRibbonItem(const cad::app::RibbonItem& item) {
+    const QString label = QString::fromStdString(item.label);
+    const QString iconName = QString::fromStdString(item.iconName);
+
+    if (item.id.empty()) return planned(label, iconName);
+
+    if (item.id == "shell.import") {
+        auto* action = new QAction(icon(iconName), label, this);
+        action->setToolTip(tr("Import a STEP, IGES or STL file into this part"));
+        connect(action, &QAction::triggered, this, &MainWindow::importFile);
+        return action;
+    }
+    if (item.id == "shell.parameters") {
+        auto* action = new QAction(icon(iconName), label, this);
+        action->setToolTip(tr("Name values and use them in any field"));
+        connect(action, &QAction::triggered, this, &MainWindow::showParameters);
+        return action;
+    }
+    if (item.id == "shell.orbit") {
+        // Held in a member because setOrbitMode has to be able to un-check it.
+        orbitAction_ = new QAction(icon(iconName), label, this);
+        orbitAction_->setCheckable(true);
+        orbitAction_->setShortcut(QKeySequence(QStringLiteral("O")));
+        orbitAction_->setToolTip(tr("Orbit (O) — drag to rotate. Alt-drag orbits at any time."));
+        connect(orbitAction_, &QAction::triggered, this, [this](bool on) { setOrbitMode(on); });
+        return orbitAction_;
+    }
+
+    if (item.opensPanel) return parameterised(item.id.c_str(), label, iconName);
+    return commandOr(item.id.c_str(), label, iconName);
+}
+
+/// The drop-down a Combine-shaped item asks for: its modes, as the commands' own actions.
+void MainWindow::attachItemMenu(QToolButton* button, const cad::app::RibbonItem& item) {
+    if (item.menu.empty()) return;
+    auto* modes = new QMenu(button);
+    for (const auto& id : item.menu) {
+        if (auto* action = command(id.c_str())) modes->addAction(action);
+    }
+    if (modes->isEmpty()) {
+        delete modes;
+        return;
+    }
+    button->setMenu(modes);
+    button->setPopupMode(QToolButton::MenuButtonPopup);
+}
+
 QAction* MainWindow::commandOr(const char* id, const QString& label, const QString& iconName) {
     if (auto* existing = command(id)) return existing;
     return planned(label, iconName);
@@ -704,189 +763,29 @@ void MainWindow::rebuildRibbon() {
         return;
     }
 
-    // ── 3D Model ────────────────────────────────────────────────────────────────────────
-    auto* model = ribbon()->addTab(tr("3D Model"));
-
-    auto* sketchPanel = model->addPanel(tr("Sketch"));
-    sketchPanel->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
-                                    QStringLiteral("sketch")));
-
-    // Create and Modify are Inventor's, command for command and in Inventor's order — two large
-    // buttons then small ones stacked three per column, which is why the column breaks below fall
-    // where they do. Read down each column, not across:
+    // ── the Part environment, from cad::app::partRibbon() ───────────────────────────────
     //
-    //   Create   Extrude Revolve | Sweep  Emboss Decal
-    //                            | Loft   Derive Import
-    //                            | Coil   Rib    Unwrap
+    // 97 addPanel/addLarge/addSmall calls used to sit here, and the iPad hardcoded its own rail
+    // beside them. The arrangement is now one list in app/, so the two shells cannot drift: see
+    // app/include/cad/app/RibbonLayout.h for why it moved and why placeholders moved with it.
     //
-    //   Modify   Hole    Fillet  | Chamfer Thread          Split       Mark
-    //                            | Shell   Combine         Direct      Finish
-    //                            | Draft   Thicken/Offset  Delete Face
-    //
-    // Almost all of it is disabled, and that is the point: the tab shows what a Part document is
-    // for, so nothing moves when the commands arrive. Inventor's own layout is the specification
-    // here — we are not designing a ribbon, we are copying one people already know.
-    auto* create = model->addPanel(tr("Create"));
-    create->addLarge(parameterised("feature.extrude", tr("Extrude"), QStringLiteral("extrude")));
-    // `parameterised`, not `planned`: Revolve takes an angle, and defaults to a full turn — the same
-    // default computeRevolve uses when none is stored, so the panel and the compute agree.
-    create->addLarge(parameterised("feature.revolve", tr("Revolve"), QStringLiteral("revolve")));
-    create->addSmall(planned(tr("Sweep"), QStringLiteral("sweep")));
-    create->addSmall(planned(tr("Loft"), QStringLiteral("loft")));
-    create->addSmall(planned(tr("Coil"), QStringLiteral("coil")));
-    create->addSmall(planned(tr("Emboss"), QStringLiteral("emboss")));
-    create->addSmall(planned(tr("Derive"), QStringLiteral("derive")));
-    create->addSmall(planned(tr("Rib"), QStringLiteral("rib")));
-    create->addSmall(planned(tr("Decal"), QStringLiteral("decal")));
-    // Import resolves to a command the day one is registered. The capability already exists —
-    // core/io reads STEP, IGES and STL, and FeatureRegistry::builtins() has an Import feature —
-    // but no Controller command wraps it yet, so commandOr falls back to disabled.
-    // Import is a shell action rather than a Controller command, because it needs a file dialog
-    // and app/ must stay toolkit-free for the iPad shell. The command registry deliberately has
-    // no way to pass a parameter; anything needing one is wired like this.
-    {
-        auto* action = new QAction(icon(QStringLiteral("import")), tr("Import"), this);
-        action->setToolTip(tr("Import a STEP, IGES or STL file into this part"));
-        connect(action, &QAction::triggered, this, &MainWindow::importFile);
-        create->addSmall(action);
-    }
-    create->addSmall(planned(tr("Unwrap"), QStringLiteral("unwrap")));
-
-    // Ours, not Inventor's, and deliberately a SEPARATE panel rather than smuggled into Create.
-    //
-    // Inventor has no primitive solids in the 3D Model tab: every solid starts as a sketch, so
-    // Create begins at Extrude. We cannot sketch yet, which would leave a Part document with no
-    // way to make geometry at all. Keeping them in their own panel means Create still matches the
-    // reference exactly, and this panel disappears the day Sketch + Extrude work rather than
-    // leaving a permanent wart inside a panel we are supposed to be copying.
-    auto* primitives = model->addPanel(tr("Primitives"));
-    primitives->addLarge(parameterised("feature.box", tr("Box"), QStringLiteral("box")));
-    primitives->addLarge(
-        parameterised("feature.cylinder", tr("Cylinder"), QStringLiteral("cylinder")));
-
-    auto* modify = model->addPanel(tr("Modify"));
-    // `parameterised`, not `planned`: Hole takes a diameter and a depth, so it opens the command
-    // panel the way Box and Cylinder do rather than drilling a size nobody chose.
-    modify->addLarge(parameterised("feature.hole", tr("Hole"), QStringLiteral("hole")));
-    modify->addLarge(commandOr("feature.fillet", tr("Fillet"), QStringLiteral("fillet")));
-    modify->addSmall(commandOr("feature.chamfer", tr("Chamfer"), QStringLiteral("chamfer")));
-    modify->addSmall(planned(tr("Shell"), QStringLiteral("shell")));
-    modify->addSmall(planned(tr("Draft"), QStringLiteral("draft")));
-    modify->addSmall(planned(tr("Thread"), QStringLiteral("thread")));
-    // Inventor's Combine IS the boolean between solid bodies, and Join / Cut / Intersect are its
-    // three modes — exactly our Fuse, Cut and Common. All three are implemented, so the button
-    // gets a drop-down rather than silently exposing only one of them. Inventor puts drop-downs on
-    // ribbon buttons too (its own Fillet has one), so this is copying the reference, not diverging
-    // from it.
-    if (auto* combine = modify->addSmall(
-            commandOr("feature.cut", tr("Combine"), QStringLiteral("combine")))) {
-        auto* modes = new QMenu(combine);
-        for (const auto& [id, label] : {std::pair{"feature.cut", tr("Cut")},
-                                        std::pair{"feature.fuse", tr("Join")},
-                                        std::pair{"feature.common", tr("Intersect")}}) {
-            if (auto* action = command(id)) {
-                action->setText(label);
-                modes->addAction(action);
+    // What stays here is RESOLUTION -- turning an id into a QAction -- because that is the part
+    // that is genuinely Qt's.
+    for (const auto& tab : cad::app::partRibbon()) {
+        auto* page = ribbon()->addTab(QString::fromStdString(tab.label));
+        for (const auto& section : tab.sections) {
+            auto* panel = page->addPanel(QString::fromStdString(section.label));
+            for (const auto& item : section.items) {
+                QAction* action = resolveRibbonItem(item);
+                if (action == nullptr) continue;
+                if (item.size == cad::app::ItemSize::Large) {
+                    panel->addLarge(action);
+                } else if (auto* button = panel->addSmall(action); button != nullptr) {
+                    attachItemMenu(button, item);
+                }
             }
         }
-        if (!modes->isEmpty()) {
-            combine->setMenu(modes);
-            combine->setPopupMode(QToolButton::MenuButtonPopup);
-        }
     }
-    modify->addSmall(planned(tr("Thicken/Offset"), QStringLiteral("thicken")));
-    modify->addSmall(planned(tr("Split"), QStringLiteral("split")));
-    // Move sits beside Direct because both edit a body's placement rather than its shape. Direct
-    // (push-pull on a face) is still a stand-in; Move is real and takes a vector.
-    modify->addSmall(parameterised("feature.translate", tr("Move"), QStringLiteral("move")));
-    modify->addSmall(planned(tr("Direct"), QStringLiteral("direct")));
-    modify->addSmall(planned(tr("Delete Face"), QStringLiteral("delete-face")));
-    modify->addSmall(planned(tr("Mark"), QStringLiteral("mark")));
-    modify->addSmall(planned(tr("Finish"), QStringLiteral("finish")));
-
-    auto* pattern = model->addPanel(tr("Pattern"));
-    // Rectangular IS the linear pattern; Circular is still unbuilt and stays a placeholder.
-    pattern->addSmall(
-        commandOr("feature.pattern", tr("Rectangular"), QStringLiteral("pattern-rect")));
-    pattern->addSmall(planned(tr("Circular"), QStringLiteral("pattern-circular")));
-    pattern->addSmall(commandOr("feature.mirror", tr("Mirror"), QStringLiteral("mirror")));
-
-    auto* editPanel = model->addPanel(tr("Edit"));
-    editPanel->addSmall(commandOr("edit.undo", tr("Undo"), QStringLiteral("undo")));
-    editPanel->addSmall(commandOr("edit.redo", tr("Redo"), QStringLiteral("redo")));
-    editPanel->addSmall(commandOr("edit.delete", tr("Delete"), QStringLiteral("delete")));
-
-    // Rollback gets its own panel rather than sitting in Edit: it is not an edit at all -- it moves
-    // where you are in the tree, and grouping it with Undo/Delete would suggest otherwise.
-    auto* historyPanel = model->addPanel(tr("History"));
-    historyPanel->addSmall(commandOr("edit.rollback", tr("Roll Back"),
-                                     QStringLiteral("rollback")));
-    historyPanel->addSmall(commandOr("edit.rollforward", tr("Roll Forward"),
-                                     QStringLiteral("rollforward")));
-
-    // ── Sketch ──────────────────────────────────────────────────────────────────────────
-    auto* sketch = ribbon()->addTab(tr("Sketch"));
-    auto* sketchManage = sketch->addPanel(tr("Manage"));
-    sketchManage->addLarge(commandOr("feature.sketch", tr("Start\nSketch"),
-                                     QStringLiteral("sketch")));
-    sketchManage->addLarge(commandOr("sketch.edit", tr("Edit\nSketch"),
-                                     QStringLiteral("sketch-edit")));
-    sketchManage->addLarge(planned(tr("Delete\nSketch"), QStringLiteral("delete")));
-
-    // ── Inspect ─────────────────────────────────────────────────────────────────────────
-    auto* inspect = ribbon()->addTab(tr("Inspect"));
-    auto* measure = inspect->addPanel(tr("Measure"));
-    measure->addLarge(commandOr("feature.measure", tr("Measure"), QStringLiteral("measure")));
-    auto* analysis = inspect->addPanel(tr("Analysis"));
-    analysis->addLarge(planned(tr("Section\nView"), QStringLiteral("section")));
-    analysis->addSmall(planned(tr("Mass Properties"), QStringLiteral("mass")));
-    analysis->addSmall(planned(tr("Draft Analysis"), QStringLiteral("draft")));
-
-    // ── Annotate ────────────────────────────────────────────────────────────────────────
-    auto* annotate = ribbon()->addTab(tr("Annotate"));
-    auto* annotation = annotate->addPanel(tr("3D Annotation"));
-    annotation->addLarge(planned(tr("Dimension"), QStringLiteral("dimension")));
-    annotation->addLarge(planned(tr("Note"), QStringLiteral("note")));
-
-    // ── Manage ──────────────────────────────────────────────────────────────────────────
-    auto* manage = ribbon()->addTab(tr("Manage"));
-    auto* parameters = manage->addPanel(tr("Parameters"));
-    {
-        // Real, and on the Manage tab where Inventor and Fusion both put it.
-        auto* action = new QAction(icon(QStringLiteral("parameters")), tr("Parameters"), this);
-        action->setToolTip(tr("Name values and use them in any field"));
-        connect(action, &QAction::triggered, this, &MainWindow::showParameters);
-        parameters->addLarge(action);
-    }
-    // The DDC, surfaced in the UI. No other CAD application has this panel because no other CAD
-    // application has a content-addressed recompute cache (ADR 0004).
-    auto* cache = manage->addPanel(tr("Cache"));
-    cache->addLarge(planned(tr("Cache\nStatus"), QStringLiteral("cache")));
-    cache->addSmall(planned(tr("Purge Local"), QStringLiteral("purge")));
-
-    // ── View ────────────────────────────────────────────────────────────────────────────
-    auto* view = ribbon()->addTab(tr("View"));
-    auto* navigate = view->addPanel(tr("Navigate"));
-
-    // A VISIBLE way to rotate the view. Orbit is otherwise on the middle button or on Alt, and
-    // neither is discoverable: a laptop has no middle button, and nobody finds a modifier chord by
-    // looking at the screen. Checkable, because it is a mode the user stays in until they leave it.
-    orbitAction_ = new QAction(icon(QStringLiteral("ortho")), tr("Orbit"), this);
-    orbitAction_->setCheckable(true);
-    orbitAction_->setShortcut(QKeySequence(QStringLiteral("O")));
-    orbitAction_->setToolTip(tr("Orbit (O) — drag to rotate. Alt-drag orbits at any time."));
-    connect(orbitAction_, &QAction::triggered, this, [this](bool on) { setOrbitMode(on); });
-    navigate->addLarge(orbitAction_);
-
-    navigate->addLarge(commandOr("view.fit", tr("Fit"), QStringLiteral("fit")));
-    navigate->addLarge(commandOr("view.ortho", tr("Ortho"), QStringLiteral("ortho")));
-    auto* appearance = view->addPanel(tr("Appearance"));
-    appearance->addSmall(planned(tr("Shaded"), QStringLiteral("shaded")));
-    appearance->addSmall(planned(tr("Shaded + Edges"), QStringLiteral("shaded-edges")));
-    appearance->addSmall(planned(tr("Wireframe"), QStringLiteral("wireframe")));
-    auto* visibility = view->addPanel(tr("Visibility"));
-    visibility->addSmall(planned(tr("Origin Planes"), QStringLiteral("origin")));
-    visibility->addSmall(planned(tr("All Sketches"), QStringLiteral("sketches")));
 
     ribbon()->setCurrentTab(0);
     refreshCommandStates();
@@ -1955,6 +1854,18 @@ void MainWindow::refreshCommandStates() {
         const auto it = actions_.find(command.id);
         if (it == actions_.end()) continue;
         it->second->setEnabled(command.enabled ? command.enabled(ctx) : true);
+    }
+
+    // AND the panel-opening wrappers, which are not in actions_ because they are not the command's
+    // own action. `parameterised` said "enablement follows the real command's, so the two cannot
+    // disagree" and set it ONCE, at build time; the list recording the pairs was pushed to, cleared,
+    // and never read by anything. So every wrapper kept whatever state its command had when the
+    // ribbon was assembled -- which is before a document exists, so Extrude, Revolve, Hole and Move
+    // sat enabled with nothing selected and never greyed out again.
+    for (const auto& pair : parameterisedActions_) {
+        if (pair.action != nullptr && pair.real != nullptr) {
+            pair.action->setEnabled(pair.real->isEnabled());
+        }
     }
 }
 

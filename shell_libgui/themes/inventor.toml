@@ -1,0 +1,103 @@
+# vCAD's libgui shell, dressed like Autodesk Inventor 2024's light theme -- the reference the shell
+# copies (we are not designing a look, we are matching one people already know).
+#
+# Compiled into the binary (libgui reads no files). To tune it without rebuilding, point
+# VCAD_THEME at a copy of this file: the shell reads it at start and reports any key libgui rejects.
+# Key reference: libgui's themes/_exported.toml.
+#
+# This theme is the LIBGUI shell's only. shell_qt's light palette is final and is not derived
+# from this file.
+
+name = "Inventor"
+extends = "light"
+density = "compact"
+
+[palette]
+bg_app = "#ffffff"          # the canvas behind everything: Inventor's white graphics window
+bg_panel = "#f5f5f5"        # browser, ribbon and Properties panels
+bg_inset = "#ffffff"        # fields sit white on the grey panel
+surface = "#f5f5f5"         # ribbon buttons are flat until hovered
+surface_hover = "#e5f1fb"
+surface_active = "#cce4f7"
+border = "#d4d4d4"
+border_strong = "#adadad"
+shadow = "#00000026"
+accent = "#0696d7"          # Autodesk blue
+accent_hover = "#2aa7e0"
+accent_active = "#0b6dbf"
+text = "#1e1e1e"
+text_muted = "#3c3c3c"      # section captions: Sketch, Create, Modify
+text_faint = "#a0a0a0"      # disabled commands
+text_on_accent = "#ffffff"
+
+[metrics]
+radius = 2
+radius_large = 2
+font_size = 12
+font_size_small = 11
+font_size_heading = 12.5
+control_height = 22
+row_height = 20
+tab_height = 24
+
+[button]
+highlight = 0.0
+press_offset = 0.0
+fill = { normal = "transparent", hover = "#e5f1fb", active = "#cce4f7" }
+border = { normal = "transparent", hover = "#cce4f7", active = "#99c9ef" }
+text = { normal = "#1e1e1e", hover = "#1e1e1e", active = "#1e1e1e" }
+shadow = { color = "transparent", offset_y = 0, blur = 0 }
+
+[button_primary]
+# OK in the Properties panel: Inventor draws it as an outlined default button, not a solid fill.
+highlight = 0.0
+fill = { normal = "#ffffff", hover = "#e5f1fb", active = "#cce4f7" }
+border = { normal = "#0b6dbf", hover = "#0b6dbf", active = "#0b6dbf" }
+text = { normal = "#1e1e1e", hover = "#1e1e1e", active = "#1e1e1e" }
+shadow = { color = "transparent", offset_y = 0, blur = 0 }
+
+[selectable]
+fill_hover = "#e5f1fb"
+fill_selected = "#cce8ff"   # the browser's pale-blue selected row (Sketch3 in the reference)
+indicator = "#0696d7"
+text_selected = "#1e1e1e"
+radius = 0
+indicator_width = 0
+
+[text_input]
+fill = "#ffffff"
+border = "#c0c0c0"
+border_hover = "#7eb4ea"
+border_focus = "#0696d7"
+focus_ring = "transparent"
+selection = "#cce8ff"
+radius = 0
+
+[segmented]
+# The ribbon's tab strip: 3D Model / Sketch / Annotate on grey, the open one white.
+fill = "#ececec"
+border = "#d4d4d4"
+fill_selected = "#ffffff"
+text = "#3c3c3c"
+text_selected = "#1e1e1e"
+radius = 0
+
+[tab]
+# Browser and document tabs: "Model", "Properties".
+bar_fill = "#ececec"
+fill_hover = "#f7f7f7"
+fill_active = "#f5f5f5"
+text = "#3c3c3c"
+text_active = "#1e1e1e"
+accent = "#0696d7"
+accent_height = 2
+radius = 0
+
+[panel]
+fill = "#f5f5f5"
+border = "#d4d4d4"
+radius = 0
+
+[viewport]
+radius = 0
+border = "#d4d4d4"

@@ -212,6 +212,7 @@ LAYERS: dict[str, dict[str, str]] = {
     "shell_qt": {"app": "", "abi": "version macros and plugin hosting", "core": "", "render": "",
                  "runtime": "", "modules/proshell": ""},
     "shell_ios": {"app": "", "core": "", "render": "", "runtime": ""},
+    "shell_libgui": {"app": "", "core": "", "render": "the scene, and the UiPass it draws the interface with"},
     "bindings/python": {"core": "", "render": "", "runtime": ""},
     "modules/proshell": {},
     "modules/assetlib": {},

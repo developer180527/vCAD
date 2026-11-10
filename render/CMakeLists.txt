@@ -11,6 +11,7 @@ set(CAD_RENDER_SOURCES
   src/Camera.cpp
   src/NullBackend.cpp
   src/BgfxBackend.cpp
+  src/BgfxUiPass.cpp
 )
 # Objective-C++, and only on Apple platforms: bgfx's Metal backend cannot initialise without a
 # CAMetalLayer, so headless rendering has to create one. See src/MetalSurface.mm.
@@ -46,6 +47,12 @@ if(CAD_SHADERS_AVAILABLE)
     OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders"
     SHADERS vs_shaded fs_shaded vs_edge fs_edge fs_pick)
   add_dependencies(cad_render cad_shaders)
+  # The interface pass. Its own directory, because a directory has one varying.def.sc.
+  cad_compile_shaders(cad_ui_shaders
+    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ui"
+    OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders"
+    SHADERS vs_ui fs_ui)
+  add_dependencies(cad_render cad_ui_shaders)
 endif()
 
 target_include_directories(cad_render PUBLIC include)

@@ -20,6 +20,8 @@ cad_core_library(cad_app
   src/controller/Parameters.cpp
   src/controller/Measure.cpp
   src/Session.cpp
+  src/RibbonLayout.cpp
+  src/ViewportInput.cpp
 )
 target_include_directories(cad_app PUBLIC include)
 # About reports what this binary is BUILT FROM, so the facts come from the build rather than from

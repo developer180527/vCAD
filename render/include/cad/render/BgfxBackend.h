@@ -42,6 +42,17 @@ struct BgfxConfig {
     /// Does NOT mean "no window" — see the note at the top of this file. On macOS a window is
     /// still required to get a Metal device at all.
     bool offscreen = false;
+    /// Present to `nativeWindow` AND render the scene into a texture, for a shell that draws the
+    /// viewport as one widget among others (shell_libgui). The swap chain is the whole window and
+    /// sized by resizeSurface(); `viewport` is the scene's own target, sized to the widget. The
+    /// shell's interface draws the window and samples sceneTexture() where the viewport goes.
+    ///
+    /// Unlike `offscreen`, this has a real swap chain -- and unlike plain windowed mode, the scene
+    /// does not own it.
+    bool sceneToTexture = false;
+    /// The swap chain's size in pixels when `sceneToTexture` is set. Ignored otherwise.
+    std::uint32_t surfaceWidth = 0;
+    std::uint32_t surfaceHeight = 0;
 
     /// Depth bias applied to edges, in NDC. Tuned by eye at 1e-4; too small z-fights, too
     /// large makes edges float visibly off silhouettes.
@@ -89,6 +100,14 @@ public:
     /// Reads the colour buffer back into RGBA8. Offscreen only. This is the golden-image hook
     /// and the reason the offscreen mode exists.
     kernel::Result<std::vector<std::uint8_t>> captureFrame();
+
+    /// The texture the scene rendered into, or TextureId::None when there is none (plain windowed
+    /// mode). Valid until the viewport is resized: re-read it every frame.
+    [[nodiscard]] TextureId sceneTexture() const;
+
+    /// Resizes the swap chain in `sceneToTexture` mode, where the window and the scene differ in
+    /// size. The caller resizes the CAMetalLayer first (MetalSurface.h).
+    void resizeSurface(std::uint32_t width, std::uint32_t height);
 
     struct Impl;
 

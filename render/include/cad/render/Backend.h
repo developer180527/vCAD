@@ -28,6 +28,9 @@ namespace cad::render {
 
 /// Opaque GPU resource handles. Zero is null.
 enum class BufferId : std::uint64_t { None = 0 };
+/// A texture, named without saying whose it is. What the value MEANS belongs to the backend that
+/// issued it and to nobody else: nothing above `render/` may construct one from a number, compare
+/// it to anything but `None`, or pass it to a backend other than the one it came from (ADR 0012).
 enum class TextureId : std::uint64_t { None = 0 };
 
 struct Viewport {

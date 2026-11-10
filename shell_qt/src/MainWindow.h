@@ -7,6 +7,7 @@
 
 #include <QPixmap>
 #include "cad/app/Session.h"
+#include "cad/app/RibbonLayout.h"
 #include "proshell/ShellWindow.h"
 
 #include <map>
@@ -149,6 +150,11 @@ private:
     /// The real command if `Controller` exposes it, otherwise a disabled stand-in. Lets the
     /// ribbon be written once against the full command set: a command becomes live the day
     /// `app/` grows it, with no edit here.
+    /// One item of cad::app::partRibbon(), as an action. Null when the item cannot be offered.
+    [[nodiscard]] QAction* resolveRibbonItem(const cad::app::RibbonItem&);
+    /// The drop-down an item asks for, if it asks for one.
+    void attachItemMenu(class QToolButton*, const cad::app::RibbonItem&);
+
     [[nodiscard]] QAction* commandOr(const char* id, const QString& label,
                                      const QString& iconName);
 

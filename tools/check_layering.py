@@ -28,6 +28,7 @@ INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
 # Forbidden include prefixes per layer directory.
 FORBIDDEN: dict[str, list[str]] = {
     "core": [
+        "libgui",       # the interface library belongs to shell_libgui alone
         "Q",            # Qt: QtCore/, QWidget, QString...
         "bgfx/", "bx/", "Diligent",
         "Metal/", "MetalKit/", "QuartzCore/",
@@ -36,10 +37,12 @@ FORBIDDEN: dict[str, list[str]] = {
         "cad/render/", "cad/app/", "cad/shell",
     ],
     "render": [
+        "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "cad/app/", "cad/shell",
     ],
     "app": [
+        "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "bgfx/", "bx/",   # app talks to render through cad/render, not the RHI directly
         "cad/shell",
@@ -47,6 +50,7 @@ FORBIDDEN: dict[str, list[str]] = {
     # The C facade over core + render. May use both; may not reach a UI toolkit or the RHI,
     # because everything it exposes has to be callable from Swift and from a plugin.
     "abi": [
+        "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "bgfx/", "bx/", "Diligent",
         "cad/shell",
@@ -61,12 +65,20 @@ FORBIDDEN: dict[str, list[str]] = {
     # whole purpose -- and may not reach UP into the application or a shell, which is what would
     # make it unusable by the C session it exists to serve.
     "runtime": [
+        "libgui",       # the interface library belongs to shell_libgui alone
         "Q",
         "bgfx/", "bx/", "Diligent",
         "cad/app/", "cad/shell",
     ],
     "proshell": [
         "cad/",
+        "libgui",
+    ],
+    # The libgui shell: libgui only through its own directory, and never Qt or the RHI directly --
+    # it draws through cad::render, like every other shell.
+    "shell_libgui": [
+        "Q",
+        "bgfx/", "bx/", "Diligent",
     ],
 }
 

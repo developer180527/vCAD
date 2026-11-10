@@ -18,6 +18,7 @@
 // feel like more work than adding the command, and it should be argued in the comment beside it.
 
 #include "cad/app/Controller.h"
+#include "cad/app/RibbonLayout.h"
 #include "cad/features/Builtins.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -214,6 +215,24 @@ std::string sourceOf(const Shell& shell) {
 
 }   // namespace
 
+/// Every id the Part ribbon offers -- buttons and their drop-down modes.
+///
+/// Read from DATA, which is what this file's source scan was a proxy for. Anything not here that is
+/// still reachable on the desktop is reached from code that has not moved yet -- the sketch-editing
+/// environment, the quick access strip, context menus -- and the source scan still covers that part.
+std::set<std::string> ribbonIds() {
+    std::set<std::string> ids;
+    for (const auto& tab : cad::app::partRibbon()) {
+        for (const auto& section : tab.sections) {
+            for (const auto& item : section.items) {
+                if (!item.id.empty()) ids.insert(item.id);
+                for (const auto& mode : item.menu) ids.insert(mode);
+            }
+        }
+    }
+    return ids;
+}
+
 TEST_CASE("every command reaches a button in both shells", "[reachability][commands]") {
     if (!cad::testing::hasRepoFixtures()) {
         SKIP("the repository sources are not reachable from this build");
@@ -228,9 +247,15 @@ TEST_CASE("every command reaches a button in both shells", "[reachability][comma
         // that finds nothing and passes. It is the same self-agreeing failure the file is about.
         REQUIRE(source.size() > 1000);
 
+        // The desktop builds its Part ribbon from data now, so for that shell a command in the data
+        // is reachable whether or not its id is spelled anywhere in MainWindow.cpp.
+        const bool desktop = shell.name == "Qt desktop";
+        const auto fromData = desktop ? ribbonIds() : std::set<std::string>{};
+
         std::vector<std::string> unreachable;
         for (const auto& command : controller.commands()) {
             if (shell.exemptCommands.count(command.id) != 0) continue;
+            if (fromData.count(command.id) != 0) continue;
             // Quoted, so "feature.cut" does not match "feature.cut_something" and a partial name
             // cannot make an absent command look present.
             if (source.find('"' + command.id + '"') == std::string::npos) {
@@ -261,6 +286,42 @@ TEST_CASE("an exemption names a command that exists", "[reachability][commands]"
     }
 }
 
+TEST_CASE("every id the ribbon names is something that exists", "[reachability][ribbon]") {
+    // The failure this prevents is the quiet one. A command id the catalogue does not know resolves,
+    // in the shell, to a DISABLED PLACEHOLDER -- so "feature.fillett" would draw a greyed-out button
+    // labelled Fillet next to nothing, with no error anywhere, and look exactly like an unbuilt
+    // command. Moving the arrangement into data made that one character away from happening.
+    Controller controller;
+    for (const auto& tab : cad::app::partRibbon()) {
+        for (const auto& section : tab.sections) {
+            for (const auto& item : section.items) {
+                std::vector<std::string> ids = item.menu;
+                if (!item.id.empty()) ids.push_back(item.id);
+                for (const auto& id : ids) {
+                    if (id.rfind("shell.", 0) == 0) continue;   // bound by the shell, checked below
+                    INFO(tab.label << " > " << section.label << ": '" << id
+                                   << "' is not a command, so it would render as a placeholder");
+                    CHECK(catalogueHas(controller, id));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("every shell action the ribbon names is one the desktop binds", "[reachability][ribbon]") {
+    // A `shell.` id is a promise that a shell binds it -- Import, Parameters, Orbit. An unbound one
+    // would resolve to nothing and the slot would silently vanish from the ribbon.
+    if (!cad::testing::hasRepoFixtures()) {
+        SKIP("the repository sources are not reachable from this build");
+    }
+    const auto source = sourceOf(shells().front());
+    for (const auto& id : ribbonIds()) {
+        if (id.rfind("shell.", 0) != 0) continue;
+        INFO("the ribbon names '" << id << "' and MainWindow.cpp does not bind it");
+        CHECK(source.find('"' + id + '"') != std::string::npos);
+    }
+}
+
 TEST_CASE("nothing is still marked planned once it exists", "[reachability][commands]") {
     // The other half. A capability can be reachable AND still be advertised as unbuilt, which is
     // how a button ends up next to a placeholder for the same thing. Measure was `planned(...)` in
@@ -268,8 +329,23 @@ TEST_CASE("nothing is still marked planned once it exists", "[reachability][comm
     if (!cad::testing::hasRepoFixtures()) {
         SKIP("the repository sources are not reachable from this build");
     }
-    const auto source = sourceOf(shells().front());   // the Qt ribbon is what has placeholders
+    const auto source = sourceOf(shells().front());   // the sketch environment still has some
     Controller controller;
+
+    // In DATA first: a planned item carries an empty id and a label, so a placeholder standing in for
+    // a command that now exists is a label match.
+    for (const auto& tab : cad::app::partRibbon()) {
+        for (const auto& section : tab.sections) {
+            for (const auto& item : section.items) {
+                if (!item.id.empty()) continue;
+                for (const auto& command : controller.commands()) {
+                    INFO(command.id << " is implemented but the ribbon data still lists '"
+                                    << item.label << "' as planned in " << section.label);
+                    CHECK(item.label != command.label);
+                }
+            }
+        }
+    }
 
     for (const auto& command : controller.commands()) {
         // The ribbon labels a placeholder with the same words as the command it stands in for.

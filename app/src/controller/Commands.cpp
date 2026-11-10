@@ -10,6 +10,7 @@
 #include "cad/document/Parameters.h"
 #include "cad/expr/Expression.h"
 
+#include <cctype>
 #include <numbers>
 
 #include "cad/io/Format.h"
@@ -101,7 +102,7 @@ std::string Controller::selectionShortfall(const std::string& featureType) const
     return inputs.prompt.empty() ? "That is not the right selection for this." : inputs.prompt;
 }
 
-bool Controller::beginCommand(const std::string& id) {
+bool Controller::beginCommand(const std::string& id, bool pickAfter) {
     // Built from the FEATURE'S OWN DECLARATION, not from a table here. The table this replaces
     // listed each feature's selection rule, its refusal message and its fields -- all of which the
     // feature also stated elsewhere, and all of which drifted. See recompute/FeatureInputs.h.
@@ -115,7 +116,7 @@ bool Controller::beginCommand(const std::string& id) {
 
     if (const auto shortfall = selectionShortfall(type); !shortfall.empty()) {
         status(shortfall);
-        return false;
+        if (!pickAfter) return false;
     }
 
     for (const auto& value : feature->inputs.values) {
@@ -154,8 +155,41 @@ bool Controller::beginCommand(const std::string& id) {
 
     activeCommand_ = id;
     notifyDocument();
-    status("Enter values, then OK.");
+    status(selectionShortfall(type).empty() ? "Enter values, then OK." : feature->inputs.prompt);
     return true;
+}
+
+CommandSelection Controller::commandSelection() const {
+    CommandSelection out;
+    if (activeCommand_.empty()) return out;
+    const recompute::FeatureType* feature = runtime_.registry().find(featureTypeOf(activeCommand_));
+    if (feature == nullptr || feature->inputs.accepts.empty()) return out;
+
+    out.needed = true;
+    out.satisfied = selectionShortfall(feature->name).empty();
+    out.prompt = feature->inputs.prompt;
+
+    // Named by the FIRST alternative, which is the one a feature lists as its usual input: Fillet
+    // takes edges, or a whole body as the fallback. A face of a sketch is what Inventor calls a
+    // profile, and saying "face" there would describe the data rather than what the user picked.
+    using Of = recompute::FeatureInputs::Requirement::Of;
+    const auto& need = feature->inputs.accepts.front();
+    const bool ofSketch = need.ownerType == "Sketch";
+    const auto selected = selectionByKind();
+    std::size_t count = 0;
+    std::string one, many;
+    switch (need.of) {
+        case Of::Face: count = selected.faces.size(); one = ofSketch ? "profile" : "face"; break;
+        case Of::Edge: count = selected.edges.size(); one = ofSketch ? "sketch edge" : "edge"; break;
+        case Of::Vertex: count = selected.vertices.size(); one = "vertex"; break;
+        case Of::Object: count = selection_.size(); one = ofSketch ? "sketch" : "body"; break;
+    }
+    many = one == "vertex" ? "vertices" : one + "s";
+    std::string caption = need.most == 1 ? one : many;
+    caption[0] = char(std::toupper(static_cast<unsigned char>(caption[0])));
+    out.label = caption;
+    out.picked = count == 0 ? "Nothing selected" : std::to_string(count) + " " + (count == 1 ? one : many);
+    return out;
 }
 
 bool Controller::setCommandParameter(const std::string& name, const std::string& text) {
@@ -187,6 +221,16 @@ bool Controller::setCommandParameter(const std::string& name, const std::string&
 bool Controller::commitCommand() {
     if (activeCommand_.empty()) return false;
     const std::string id = activeCommand_;
+
+    // The selection may have changed since the panel opened -- with pickAfter it was never checked.
+    // Refused HERE, keeping the panel and its values, rather than by the feature's own guard after
+    // the panel has closed and taken the typed values with it.
+    if (const std::string type = featureTypeOf(id); !type.empty()) {
+        if (const auto shortfall = selectionShortfall(type); !shortfall.empty()) {
+            status(shortfall);
+            return false;
+        }
+    }
 
     const auto lengthOf = [this](const char* name) -> double {
         for (const auto& p : commandParameters_) {

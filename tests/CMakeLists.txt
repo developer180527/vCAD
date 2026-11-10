@@ -73,6 +73,13 @@ endif()
 # cad::app for face_pick: picking is driven through Controller, because "a click at these pixels
 # means that face" is a model rule that must exist on both shells, not a Qt one.
 target_link_libraries(cad_tests PRIVATE cad::abi cad::app)
+
+# oracle_solidcraft.cpp replays SolidCraft's reference parts (tests/oracle/solidcraft, MIT; see the
+# README there). The recipes are JSON, hence the one test-only JSON library -- nothing shipped
+# links it -- and the data is found through its SOURCE path, so the suite runs from any build dir.
+find_package(nlohmann_json CONFIG REQUIRED)
+target_link_libraries(cad_tests PRIVATE nlohmann_json::nlohmann_json)
+target_compile_definitions(cad_tests PRIVATE CAD_ORACLE_DIR="${CMAKE_SOURCE_DIR}/tests/oracle/solidcraft")
 target_link_libraries(cad_tests PRIVATE cad::sketch)
 # catch_discover_tests runs the suite from the build tree, so a relative path to a fixture finds
 # nothing. Baked in rather than copied beside the binary: the fixture is also the Rust fuzzer's

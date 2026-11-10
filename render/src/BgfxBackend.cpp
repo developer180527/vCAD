@@ -3,6 +3,7 @@
 #include "cad/log/Log.h"
 
 #include "cad/render/MetalSurface.h"
+#include "BgfxDetail.h"
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
@@ -181,6 +182,12 @@ public:
 };
 
 }  // namespace
+
+// For the other bgfx passes in this module (BgfxUiPass.cpp), so every shader resolves through the
+// one path rule above rather than a copy of it. See BgfxDetail.h.
+namespace detail {
+bgfx::ShaderHandle loadShaderBinary(const std::string& name) { return loadShader(name); }
+}  // namespace detail
 
 // ── resources ───────────────────────────────────────────────────────────────────────────
 
@@ -1048,7 +1055,8 @@ public:
         const Viewport was = impl_.config.viewport;
         impl_.config.viewport = v;
         // The BACKBUFFER, when there is one. Offscreen mode has none: it renders into textures.
-        if (!impl_.config.offscreen) bgfx::reset(v.width, v.height, BGFX_RESET_NONE);
+        // In sceneToTexture mode the backbuffer is the WINDOW, not this viewport: resizeSurface.
+        if (!impl_.config.offscreen && !impl_.config.sceneToTexture) bgfx::reset(v.width, v.height, BGFX_RESET_NONE);
 
         if (!impl_.initialised || (was.width == v.width && was.height == v.height)) return;
 
@@ -1449,6 +1457,9 @@ kernel::Result<void> BgfxBackend::initialise(const BgfxConfig& config) {
         // that does not exist. Found by running the spike; no amount of reading finds this.
         init.resolution.width = 0;
         init.resolution.height = 0;
+    } else if (config.sceneToTexture) {
+        init.resolution.width = std::max(config.surfaceWidth != 0 ? config.surfaceWidth : config.viewport.width, 1u);
+        init.resolution.height = std::max(config.surfaceHeight != 0 ? config.surfaceHeight : config.viewport.height, 1u);
     } else {
         init.resolution.width = std::max(config.viewport.width, 1u);
         init.resolution.height = std::max(config.viewport.height, 1u);
@@ -1616,7 +1627,9 @@ Backend BgfxBackend::handle() noexcept {
 }
 
 void BgfxBackend::Impl::createTargets(std::uint16_t w, std::uint16_t h) {
-    if (config.offscreen) {
+    // The scene's colour target. submit() renders into it whenever it exists, so creating it is
+    // the whole of what sceneToTexture changes about drawing.
+    if (config.offscreen || config.sceneToTexture) {
         bgfx::TextureHandle colour = bgfx::createTexture2D(
             w, h, false, 1, bgfx::TextureFormat::RGBA8,
             BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
@@ -1680,6 +1693,15 @@ kernel::Result<std::vector<std::uint8_t>> BgfxBackend::captureFrame() {
     // backbuffer, which headless mode deliberately sizes 0x0. See DiagnosticCallback.
     return impl_->readTarget(impl_->colourTarget, impl_->colourReadback,
                              impl_->config.viewport.width, impl_->config.viewport.height);
+}
+
+TextureId BgfxBackend::sceneTexture() const {
+    return impl_ ? detail::toTextureId(impl_->colourTarget) : TextureId::None;
+}
+
+void BgfxBackend::resizeSurface(std::uint32_t width, std::uint32_t height) {
+    if (!impl_ || !impl_->initialised || !impl_->config.sceneToTexture) return;
+    bgfx::reset(std::max(width, 1u), std::max(height, 1u), BGFX_RESET_NONE);
 }
 
 }  // namespace cad::render

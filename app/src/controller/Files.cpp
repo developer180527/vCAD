@@ -37,6 +37,17 @@ std::vector<Controller::ExportFormat> Controller::exportFormats() {
     return out;
 }
 
+std::vector<Controller::ExportFormat> Controller::importFormats() {
+    static const io::FormatRegistry registry = io::FormatRegistry::builtins();
+    std::vector<ExportFormat> out;
+    for (const io::IFormatProvider* provider : registry.all()) {
+        const auto caps = provider->capabilities();
+        if (!caps.read) continue;
+        out.push_back(ExportFormat{provider->id(), provider->displayName(), provider->extensions(), caps.solids});
+    }
+    return out;
+}
+
 bool Controller::exportDocument(const std::string& path) {
     if (path.empty()) {
         status("No file name given.");

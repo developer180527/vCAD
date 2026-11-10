@@ -64,4 +64,20 @@ struct Measurement {
 /// 0 apart" is what a user needs to hear when checking a fit.
 [[nodiscard]] Result<double> distanceBetween(const Shape&, const Shape&);
 
+/// The shortest distance from a shape to a point in space, in millimetres. What "the edge nearest
+/// this point" is asked with: a selection written down as a point (a script, a test recipe, a
+/// reference part) has no element name until something measures which element it is on.
+[[nodiscard]] Result<double> distanceToPoint(const Shape&, double x, double y, double z);
+
+/// An axis-aligned box around a shape, in millimetres.
+struct BoundingBox {
+    double min[3]{};
+    double max[3]{};
+};
+
+/// The TIGHT box: computed from the geometry, not from its control points. OCCT's default box is
+/// padded by tolerances and, for a curved face, by the poles of its surface -- a fillet's box can
+/// come out a millimetre too large, which is a wrong answer to "how big is this part".
+[[nodiscard]] Result<BoundingBox> boundingBox(const Shape&);
+
 }  // namespace cad::kernel

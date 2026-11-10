@@ -39,6 +39,8 @@ product. Everything here is at or below LGPL, which is what keeps the plugin sto
 | bgfx / bx | BSD-2-Clause | Renderer. |
 | assetlib | see `modules/assetlib/` | Content-addressed cache, vendored. |
 | Catch2 / proptest | BSL-1.0 / MIT-Apache | Tests only; not distributed. |
+| nlohmann/json | MIT | Tests only (reads the reference recipes below); not distributed. |
+| SolidCraft reference parts | MIT (taken under the MIT option of MIT OR Apache-2.0) | `tests/oracle/solidcraft/`: recipes and expected values, data only; see the README there. Not distributed. |
 
 ### Deliberately rejected
 

@@ -4,6 +4,9 @@
 #include "cad/kernel/internal/Occt.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <Bnd_Box.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
@@ -11,6 +14,8 @@
 #include <GProp_GProps.hxx>
 #include <TopoDS.hxx>
 #include <gp_Pnt.hxx>
+
+#include <cmath>
 
 namespace cad::kernel {
 namespace {
@@ -120,6 +125,34 @@ Result<double> distanceBetween(const Shape& a, const Shape& b) {
             throw std::runtime_error("the distance between these two could not be computed");
         }
         return distance.Value();
+    });
+}
+
+Result<double> distanceToPoint(const Shape& shape, double x, double y, double z) {
+    if (shape.isNull()) return Error{ErrorCode::InvalidInput, "There is nothing here to measure from."};
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        return Error{ErrorCode::InvalidInput, "That point is not a finite position."};
+    }
+    return guard("measure a distance to a point", [&]() -> double {
+        const TopoDS_Vertex point = BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, z)).Vertex();
+        BRepExtrema_DistShapeShape distance(occt(shape), point);
+        if (!distance.IsDone() || distance.NbSolution() < 1) {
+            throw std::runtime_error("the distance to this point could not be computed");
+        }
+        return distance.Value();
+    });
+}
+
+Result<BoundingBox> boundingBox(const Shape& shape) {
+    if (shape.isNull()) return Error{ErrorCode::InvalidInput, "There is nothing here to measure."};
+    return guard("measure a bounding box", [&]() -> BoundingBox {
+        Bnd_Box box;
+        // useTriangulation=false: the exact geometry, never a display mesh's approximation of it.
+        BRepBndLib::AddOptimal(occt(shape), box, /*useTriangulation=*/false, /*useShapeTolerance=*/false);
+        if (box.IsVoid()) throw std::runtime_error("this shape has no extent");
+        BoundingBox out;
+        box.Get(out.min[0], out.min[1], out.min[2], out.max[0], out.max[1], out.max[2]);
+        return out;
     });
 }
 

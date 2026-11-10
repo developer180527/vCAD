@@ -56,6 +56,7 @@ void Controller::releaseSurface() noexcept {
     render::destroyMetalLayer(surface_);
 #endif
     surface_ = nullptr;
+    composited_ = false;
 }
 
 void Controller::onDocumentChanged(std::function<void()> fn) { documentChanged_ = std::move(fn); }

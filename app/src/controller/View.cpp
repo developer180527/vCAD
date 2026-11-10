@@ -36,7 +36,8 @@ void Controller::setViewportSize(std::uint32_t width, std::uint32_t height) {
 #if defined(__APPLE__)
     // Before the backend's resize: bgfx::reset builds a swap chain against the layer, and a layer
     // still at the old drawableSize gives a surface that disagrees with the backbuffer.
-    if (surface_ != nullptr) render::resizeMetalLayer(surface_, width, height, viewportScale_);
+    // Not in composited mode: there the layer is the WINDOW, sized by resizeSurface.
+    if (surface_ != nullptr && !composited_) render::resizeMetalLayer(surface_, width, height, viewportScale_);
 #endif
     if (active_.frames != nullptr) active_.frames->resize(viewport_);
     notifyView();
@@ -80,6 +81,34 @@ void Controller::setViewportBackground(int r, int g, int b) {
 
 kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32_t height,
                                                 void* nativeView, double scale) {
+    return attachRendererTo(width, height, nativeView, scale, false, 0, 0);
+}
+
+kernel::Result<void> Controller::attachCompositedRenderer(void* nativeView, std::uint32_t surfaceWidth,
+                                                          std::uint32_t surfaceHeight, double scale) {
+    if (nativeView == nullptr) {
+        return kernel::Error{kernel::ErrorCode::InvalidInput, "The renderer needs a window to draw into.",
+                             "attachCompositedRenderer with a null view"};
+    }
+    // The scene starts at the window's size; the shell sizes it to its widget on the first frame.
+    return attachRendererTo(surfaceWidth, surfaceHeight, nativeView, scale, true, surfaceWidth, surfaceHeight);
+}
+
+void Controller::resizeSurface(std::uint32_t width, std::uint32_t height) {
+    if (!gpu_ || !composited_ || width == 0 || height == 0) return;
+#if defined(__APPLE__)
+    if (surface_ != nullptr) render::resizeMetalLayer(surface_, width, height, viewportScale_);
+#endif
+    gpu_->resizeSurface(width, height);
+}
+
+render::TextureId Controller::sceneTexture() const {
+    return gpu_ ? gpu_->sceneTexture() : render::TextureId::None;
+}
+
+kernel::Result<void> Controller::attachRendererTo(std::uint32_t width, std::uint32_t height, void* nativeView,
+                                                  double scale, bool composited, std::uint32_t surfaceWidth,
+                                                  std::uint32_t surfaceHeight) {
     // bgfx is a process singleton, so this is idempotent rather than an error: two viewports
     // share one backend and differ by view id.
     if (gpu_) return {};
@@ -107,10 +136,13 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     viewport_.devicePixelRatio = static_cast<float>(scale);
 
 #if defined(__APPLE__)
+    // Composited: the layer covers the whole window, not the viewport.
+    const std::uint32_t lw = composited ? surfaceWidth : w;
+    const std::uint32_t lh = composited ? surfaceHeight : h;
     // A CAMetalLayer, never the view: bgfx::init parks the calling thread waiting for the render
     // thread, and given a view the render thread must build the layer on the main thread and
     // wait for it. Both wait forever. See render/src/MetalSurface.mm.
-    if (nativeView != nullptr) surface_ = render::createMetalLayerForView(nativeView, w, h, scale);
+    if (nativeView != nullptr) surface_ = render::createMetalLayerForView(nativeView, lw, lh, scale);
 #else
     // Windows and X11 take the window handle directly; no intermediate surface object.
     surface_ = nativeView;
@@ -126,6 +158,9 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     // The backend needs the display's scale, not only its pixel count: the selection halo is sized
     // in logical pixels and expands by this.
     config.viewport.devicePixelRatio = static_cast<float>(scale);
+    config.sceneToTexture = composited && surface_ != nullptr;
+    config.surfaceWidth = surfaceWidth;
+    config.surfaceHeight = surfaceHeight;
 
     if (auto r = gpu->initialise(config); !r) {
         releaseSurface();
@@ -147,6 +182,7 @@ kernel::Result<void> Controller::attachRenderer(std::uint32_t width, std::uint32
     gpu_ = std::move(gpu);
     active_ = gpu_->handle();
     presenting_ = surface_ != nullptr;
+    composited_ = config.sceneToTexture;
 
     // Before any camera matrix is built. The two conventions differ by renderer, and getting it
     // wrong depth-clips the whole scene and draws nothing — with no error.

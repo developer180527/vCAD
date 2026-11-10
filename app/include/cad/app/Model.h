@@ -90,6 +90,18 @@ struct CommandParameter {
     std::string value;     ///< current text, already formatted with units
 };
 
+/// What the command in progress acts on, for the panel's pick field ("Profiles: 1 profile").
+///
+/// Read from the feature's own declaration (FeatureInputs::accepts), so the panel, the button's
+/// enablement and the commit all judge a selection by one rule.
+struct CommandSelection {
+    bool needed = false;     ///< false for a primitive: no pick field at all
+    bool satisfied = false;  ///< whether OK would accept the current selection
+    std::string label;       ///< the field's caption: "Profile", "Edges", "Body"
+    std::string picked;      ///< "1 profile", "3 edges", or "Nothing selected"
+    std::string prompt;      ///< what to tell the user while it is not satisfied
+};
+
 /// User preferences that change how the application behaves, not what the model is.
 ///
 /// In `app/` rather than the shell because every one of these is consumed BELOW the shell: display
